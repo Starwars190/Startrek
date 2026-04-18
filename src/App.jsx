@@ -6,15 +6,8 @@ import {
 
 /* ═════════════════════════════════════════════════════════════
    FinSight AI — by Pallav Shah
-   Deployment-ready version with environment variable support
+   SECURE VERSION — API key hidden on server
 ════════════════════════════════════════════════════════════════ */
-
-// API key comes from environment variable when deployed
-// For Vite: VITE_ANTHROPIC_KEY  |  For Create React App: REACT_APP_ANTHROPIC_KEY
-const API_KEY =
-  (typeof import.meta !== "undefined" && import.meta.env?.VITE_ANTHROPIC_KEY) ||
-  (typeof process !== "undefined" && process.env?.REACT_APP_ANTHROPIC_KEY) ||
-  "";
 
 const C = {
   bgPage:      "#F9F7F4",
@@ -43,31 +36,23 @@ const C = {
   shadowMd:    "0 2px 12px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.04)",
 };
 
-const API_URL = "https://api.anthropic.com/v1/messages";
+// 🔒 API now goes through our own backend — key is safe!
+const API_URL = "/api/claude";
 const MODEL   = "claude-sonnet-4-5";
 
 async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
-  if (!API_KEY) {
-    throw new Error("⚠️ API key not configured. Set VITE_ANTHROPIC_KEY in your environment variables.");
-  }
-
   const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: "user", content: userMsg }] };
   if (system) body.system = system;
   if (tools.length) body.tools = tools;
 
   const res = await fetch(API_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": API_KEY,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true"
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
 
   const json = await res.json();
-  if (json.error) throw new Error(json.error.message);
+  if (json.error) throw new Error(json.error.message || "API call failed");
   return json.content.filter(b => b.type === "text").map(b => b.text).join("");
 }
 
@@ -284,8 +269,8 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
         </div>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: C.textSec, background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 20, padding: "4px 12px", display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 6, height: 6, borderRadius: "50%", background: API_KEY ? C.green : C.red }} />
-          {API_KEY ? "Powered by Claude" : "API key missing"}
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.green }} />
+          Powered by Claude
         </span>
       </header>
 
