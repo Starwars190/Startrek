@@ -3,11 +3,14 @@ import {
   AreaChart, Area, LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from "recharts";
+import { ClerkProvider, SignedIn, SignedOut, SignIn, SignUp, UserButton, useUser } from "@clerk/clerk-react";
 
 /* ═════════════════════════════════════════════════════════════
    FinSight AI — by Pallav Shah
-   SECURE VERSION — API key hidden on server
+   WITH LOGIN — Clerk authentication + user tracking
 ════════════════════════════════════════════════════════════════ */
+
+const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
 const C = {
   bgPage:      "#F9F7F4",
@@ -36,7 +39,6 @@ const C = {
   shadowMd:    "0 2px 12px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.04)",
 };
 
-// 🔒 API now goes through our own backend — key is safe!
 const API_URL = "/api/claude";
 const MODEL   = "claude-sonnet-4-5";
 
@@ -44,13 +46,11 @@ async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
   const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: "user", content: userMsg }] };
   if (system) body.system = system;
   if (tools.length) body.tools = tools;
-
   const res = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
-
   const json = await res.json();
   if (json.error) throw new Error(json.error.message || "API call failed");
   return json.content.filter(b => b.type === "text").map(b => b.text).join("");
@@ -174,9 +174,53 @@ const GLOBAL_CSS = `
   @keyframes fs-fade { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:none;} }
   @keyframes fs-spin { to { transform: rotate(360deg); } }
   @keyframes fs-step { from{opacity:0;transform:translateX(-8px);} to{opacity:1;transform:none;} }
+  .cl-internal-b3fm6y, .cl-formButtonPrimary { background-color: ${C.accent} !important; }
+  .cl-formButtonPrimary:hover { background-color: ${C.accentDark} !important; }
+  .cl-card { box-shadow: ${C.shadowMd} !important; border: 1px solid ${C.border} !important; }
 `;
 
-export default function FinSightAI() {
+/* ═══════════════════════════════════════════════════════════════
+   LOGIN SCREEN — shown to logged-out users
+═══════════════════════════════════════════════════════════════ */
+function LoginScreen() {
+  return (
+    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <style>{FONTS + GLOBAL_CSS}</style>
+
+      <div style={{ marginBottom: 24, textAlign: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, marginBottom: 16 }}>
+          <FinSightLogo size={56} />
+          <div style={{ textAlign: "left" }}>
+            <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 800, fontSize: 28, color: C.textPrimary, letterSpacing: "-.8px", lineHeight: 1 }}>FinSight AI</div>
+            <div style={{ fontSize: 12, color: C.textMuted, marginTop: 4 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>Pallav Shah</span></div>
+          </div>
+        </div>
+        <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 22, color: C.textPrimary, marginBottom: 6 }}>Welcome to financial intelligence</h2>
+        <p style={{ color: C.textSec, fontSize: 14 }}>Sign in to analyze any company's 5-year financials</p>
+      </div>
+
+      <SignIn
+        appearance={{
+          elements: {
+            rootBox: { width: "100%", maxWidth: 400 },
+            card: { background: C.bgCard, border: `1px solid ${C.border}`, boxShadow: C.shadow },
+            formButtonPrimary: { background: C.accent, "&:hover": { background: C.accentDark } },
+          }
+        }}
+      />
+
+      <div style={{ marginTop: 24, color: C.textMuted, fontSize: 12 }}>
+        By continuing, you agree to our Terms & Privacy Policy
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MAIN APP — shown to logged-in users
+═══════════════════════════════════════════════════════════════ */
+function FinSightApp() {
+  const { user } = useUser();
   const [screen, setScreen]         = useState("landing");
   const [q, setQ]                   = useState("");
   const [data, setData]             = useState(null);
@@ -185,6 +229,26 @@ export default function FinSightAI() {
   const [modal, setModal]           = useState(null);
   const [scriptText, setScriptText] = useState("");
   const [scriptLoading, setScriptLoading] = useState(false);
+
+  // Track user activity on first load
+  useEffect(() => {
+    if (user) {
+      fetch("/api/track-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user.id,
+          email: user.primaryEmailAddress?.emailAddress,
+          phone: user.primaryPhoneNumber?.phoneNumber,
+          name: user.fullName,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          signedUpAt: user.createdAt,
+          provider: user.externalAccounts?.[0]?.provider || "email",
+        })
+      }).catch(() => {});
+    }
+  }, [user]);
 
   useEffect(() => {
     if (screen !== "loading") return;
@@ -195,6 +259,22 @@ export default function FinSightAI() {
 
   const analyze = async (company) => {
     setScreen("loading"); setErr(""); setScriptText(""); setModal(null);
+    
+    // Track which company the user analyzed
+    if (user) {
+      fetch("/api/track-activity", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user.id,
+          email: user.primaryEmailAddress?.emailAddress,
+          action: "analyze",
+          company,
+          timestamp: new Date().toISOString(),
+        })
+      }).catch(() => {});
+    }
+    
     try {
       const raw = await callClaude({
         system: SYSTEM_PROMPT,
@@ -268,10 +348,10 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: C.textSec, background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 20, padding: "4px 12px", display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.green }} />
-          Powered by Claude
+        <span style={{ fontSize: 12, color: C.textSec, marginRight: 12 }}>
+          👋 {user?.firstName || "Welcome"}
         </span>
+        <UserButton afterSignOutUrl="/" />
       </header>
 
       <main style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 24px 32px", animation: "fs-fade .6s ease both" }}>
@@ -408,10 +488,8 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
             <span style={{ background: C.bgSidebar, color: C.textMuted, fontSize: 11, padding: "2px 8px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.exchange}</span>
             <span style={{ background: oc.bg, color: oc.color, fontSize: 11, fontWeight: 600, padding: "2px 10px", borderRadius: 5 }}>{data.outlook}</span>
           </div>
-          <span style={{ color: C.textMuted, fontSize: 12, display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-            {data.market === "India" ? "🇮🇳" : data.market === "US" ? "🇺🇸" : "🌍"} {data.sector}
-          </span>
           <button onClick={() => setScreen("landing")} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 8, padding: "7px 16px", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap", fontFamily: "inherit" }}>← New search</button>
+          <UserButton afterSignOutUrl="/" />
         </header>
 
         <div style={{ maxWidth: 1180, margin: "0 auto", padding: "32px 24px 24px" }}>
@@ -587,4 +665,29 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
   }
 
   return null;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ROOT COMPONENT — wraps everything with Clerk authentication
+═══════════════════════════════════════════════════════════════ */
+export default function App() {
+  if (!CLERK_PUB_KEY) {
+    return (
+      <div style={{ padding: 40, textAlign: "center", fontFamily: "sans-serif" }}>
+        <h2 style={{ color: "#C04040" }}>⚠️ Clerk Key Missing</h2>
+        <p>Please add VITE_CLERK_PUBLISHABLE_KEY to your Vercel environment variables.</p>
+      </div>
+    );
+  }
+
+  return (
+    <ClerkProvider publishableKey={CLERK_PUB_KEY}>
+      <SignedOut>
+        <LoginScreen />
+      </SignedOut>
+      <SignedIn>
+        <FinSightApp />
+      </SignedIn>
+    </ClerkProvider>
+  );
 }
