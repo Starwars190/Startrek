@@ -8,6 +8,7 @@ import { ClerkProvider, SignedIn, SignedOut, SignIn, SignUp, UserButton, useUser
 /* ═════════════════════════════════════════════════════════════
    FinSight AI — by Pallav Shah
    WITH LOGIN — Clerk authentication + user tracking
+   MOBILE RESPONSIVE — v2 (April 19, 2026)
 ════════════════════════════════════════════════════════════════ */
 
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -143,10 +144,10 @@ const Spinner = () => (
 );
 
 const MetricCard = ({ label, value, sub, accent }) => (
-  <div className="fs-card" style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 14px", boxShadow: C.shadow, transition: "all .2s" }}>
-    <div style={{ color: C.textMuted, fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".7px", marginBottom: 8 }}>{label}</div>
-    <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 17, fontWeight: 500, color: accent || C.textPrimary, marginBottom: 4 }}>{value}</div>
-    <div style={{ color: C.textMuted, fontSize: 11 }}>{sub}</div>
+  <div className="fs-card fs-metric" style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 12px", boxShadow: C.shadow, transition: "all .2s", minWidth: 0 }}>
+    <div style={{ color: C.textMuted, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".6px", marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+    <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 16, fontWeight: 500, color: accent || C.textPrimary, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
+    <div style={{ color: C.textMuted, fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>
   </div>
 );
 
@@ -158,9 +159,13 @@ const Byline = () => (
 
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');`;
 
+/* ═════════════════════════════════════════════════════════════
+   RESPONSIVE CSS — mobile-first approach
+   Key breakpoints: 640px (phone→tablet), 1024px (tablet→desktop)
+════════════════════════════════════════════════════════════════ */
 const GLOBAL_CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: ${C.bgPage}; }
+  body { background: ${C.bgPage}; overflow-x: hidden; }
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: ${C.bgPage}; }
   ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }
@@ -177,6 +182,65 @@ const GLOBAL_CSS = `
   .cl-internal-b3fm6y, .cl-formButtonPrimary { background-color: ${C.accent} !important; }
   .cl-formButtonPrimary:hover { background-color: ${C.accentDark} !important; }
   .cl-card { box-shadow: ${C.shadowMd} !important; border: 1px solid ${C.border} !important; }
+
+  /* RESPONSIVE GRIDS — Mobile First */
+  .fs-metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  @media (min-width: 640px) { .fs-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } }
+  @media (min-width: 1024px) { .fs-metrics-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; } }
+
+  .fs-charts-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  @media (min-width: 1024px) { .fs-charts-grid { grid-template-columns: 1fr 1fr; gap: 16px; } }
+
+  .fs-analysis-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  @media (min-width: 1024px) { .fs-analysis-grid { grid-template-columns: 3fr 2fr; gap: 16px; } }
+
+  /* RESPONSIVE HEADERS */
+  .fs-header-dashboard { position: sticky; top: 0; z-index: 100; min-height: 60px; background: ${C.bgCard}; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; gap: 10px; flex-wrap: wrap; }
+  @media (min-width: 1024px) { .fs-header-dashboard { padding: 0 28px; gap: 16px; flex-wrap: nowrap; } }
+
+  .fs-header-landing { height: auto; min-height: 56px; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; background: ${C.bgCard}; gap: 10px; flex-wrap: wrap; }
+  @media (min-width: 640px) { .fs-header-landing { padding: 0 28px; flex-wrap: nowrap; height: 56px; } }
+
+  .fs-dash-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; width: 100%; order: 3; }
+  @media (min-width: 1024px) { .fs-dash-meta { gap: 8px; order: 0; width: auto; } }
+
+  .fs-header-divider { display: none; }
+  @media (min-width: 1024px) { .fs-header-divider { display: block; width: 1px; height: 24px; background: ${C.border}; } }
+
+  .fs-company-name { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; font-weight: 700; color: ${C.textPrimary}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  @media (min-width: 640px) { .fs-company-name { font-size: 15px; max-width: none; } }
+
+  .fs-header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+  /* RESPONSIVE PADDING */
+  .fs-main-container { max-width: 1180px; margin: 0 auto; padding: 20px 14px; }
+  @media (min-width: 640px) { .fs-main-container { padding: 28px 20px 22px; } }
+  @media (min-width: 1024px) { .fs-main-container { padding: 32px 24px 24px; } }
+
+  .fs-description { color: ${C.textSec}; font-size: 14px; line-height: 1.7; max-width: 680px; margin-bottom: 20px; }
+  @media (min-width: 640px) { .fs-description { font-size: 14.5px; line-height: 1.75; margin-bottom: 28px; } }
+
+  .fs-chart-card { background: ${C.bgCard}; border: 1px solid ${C.border}; border-radius: 14px; padding: 16px; box-shadow: ${C.shadow}; }
+  @media (min-width: 640px) { .fs-chart-card { padding: 20px; } }
+  @media (min-width: 1024px) { .fs-chart-card { padding: 24px; } }
+
+  .fs-analysis-card { background: ${C.bgCard}; border: 1px solid ${C.border}; border-radius: 14px; padding: 20px; box-shadow: ${C.shadow}; }
+  @media (min-width: 1024px) { .fs-analysis-card { padding: 28px; } }
+
+  .fs-action-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
+  .fs-action-btn { padding: 12px 20px; font-size: 14px; font-weight: 600; border-radius: 12px; font-family: 'Plus Jakarta Sans', sans-serif; cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  @media (min-width: 640px) { .fs-action-btn { padding: 13px 28px; font-size: 14.5px; } }
+
+  .fs-landing-main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 18px 28px; animation: fs-fade .6s ease both; }
+  @media (min-width: 640px) { .fs-landing-main { padding: 48px 24px 32px; } }
+
+  .fs-landing-hero { font-family: 'Plus Jakarta Sans', sans-serif; font-size: clamp(26px, 7vw, 48px); font-weight: 800; color: ${C.textPrimary}; letter-spacing: -1px; text-align: center; line-height: 1.15; margin-bottom: 14px; }
+
+  .fs-chip-row-label { font-size: 11px; color: ${C.textMuted}; font-weight: 500; min-width: 60px; text-align: right; }
+  @media (min-width: 640px) { .fs-chip-row-label { font-size: 12px; min-width: 70px; } }
+
+  .fs-modal-bubble { max-width: 85%; }
+  @media (min-width: 640px) { .fs-modal-bubble { max-width: 78%; } }
 `;
 
 /* ═══════════════════════════════════════════════════════════════
@@ -184,7 +248,7 @@ const GLOBAL_CSS = `
 ═══════════════════════════════════════════════════════════════ */
 function LoginScreen() {
   return (
-    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
+    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <style>{FONTS + GLOBAL_CSS}</style>
 
       <div style={{ marginBottom: 24, textAlign: "center" }}>
@@ -195,8 +259,8 @@ function LoginScreen() {
             <div style={{ fontSize: 12, color: C.textMuted, marginTop: 4 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>Pallav Shah</span></div>
           </div>
         </div>
-        <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 22, color: C.textPrimary, marginBottom: 6 }}>Welcome to financial intelligence</h2>
-        <p style={{ color: C.textSec, fontSize: 14 }}>Sign in to analyze any company's 5-year financials</p>
+        <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 20, color: C.textPrimary, marginBottom: 6, padding: "0 10px" }}>Welcome to financial intelligence</h2>
+        <p style={{ color: C.textSec, fontSize: 14, padding: "0 10px" }}>Sign in to analyze any company's 5-year financials</p>
       </div>
 
       <SignIn
@@ -209,7 +273,7 @@ function LoginScreen() {
         }}
       />
 
-      <div style={{ marginTop: 24, color: C.textMuted, fontSize: 12 }}>
+      <div style={{ marginTop: 24, color: C.textMuted, fontSize: 12, textAlign: "center", padding: "0 20px" }}>
         By continuing, you agree to our Terms & Privacy Policy
       </div>
     </div>
@@ -230,7 +294,6 @@ function FinSightApp() {
   const [scriptText, setScriptText] = useState("");
   const [scriptLoading, setScriptLoading] = useState(false);
 
-  // Track user activity on first load
   useEffect(() => {
     if (user) {
       fetch("/api/track-user", {
@@ -259,8 +322,7 @@ function FinSightApp() {
 
   const analyze = async (company) => {
     setScreen("loading"); setErr(""); setScriptText(""); setModal(null);
-    
-    // Track which company the user analyzed
+
     if (user) {
       fetch("/api/track-activity", {
         method: "POST",
@@ -274,7 +336,7 @@ function FinSightApp() {
         })
       }).catch(() => {});
     }
-    
+
     try {
       const raw = await callClaude({
         system: SYSTEM_PROMPT,
@@ -300,11 +362,7 @@ function FinSightApp() {
       const niStr  = d.years.map((y, i) => `${y}: ${sym}${(d.netIncome[i] / 1000).toFixed(1)}B`).join(", ");
       const text = await callClaude({
         system: "You write engaging financial podcast scripts. Use real numbers. Be conversational but insightful.",
-        userMsg: `Write a 5-minute podcast between hosts ALEX and PRIYA analyzing ${d.company} (${d.ticker}).
-Revenue: ${revStr}. Net Income: ${niStr}. CAGR: ${d.revenueCAGR}%.
-Outlook: ${d.outlook} — ${d.outlookReason}.
-Strengths: ${d.keyStrengths.join("; ")}. Risks: ${d.keyRisks.join("; ")}.
-Format strictly as alternating ALEX: and PRIYA: turns, 2–3 sentences each.`,
+        userMsg: `Write a 5-minute podcast between hosts ALEX and PRIYA analyzing ${d.company} (${d.ticker}). Revenue: ${revStr}. Net Income: ${niStr}. CAGR: ${d.revenueCAGR}%. Outlook: ${d.outlook} — ${d.outlookReason}. Strengths: ${d.keyStrengths.join("; ")}. Risks: ${d.keyRisks.join("; ")}. Format strictly as alternating ALEX: and PRIYA: turns, 2–3 sentences each.`,
         maxTokens: 1800,
       });
       setScriptText(text);
@@ -314,12 +372,7 @@ Format strictly as alternating ALEX: and PRIYA: turns, 2–3 sentences each.`,
 
   const openGamma = () => {
     const d = data, sym = d.currencySymbol;
-    const prompt = `Create a professional 8-slide financial analysis presentation for ${d.company} (${d.ticker}, ${d.exchange}).
-Revenue 5yr: ${d.years.map((y, i) => `${y}: ${sym}${(d.revenue[i] / 1000).toFixed(1)}B`).join(", ")}.
-Net Income 5yr: ${d.years.map((y, i) => `${y}: ${sym}${(d.netIncome[i] / 1000).toFixed(1)}B`).join(", ")}.
-CAGR: ${d.revenueCAGR}%. Market Cap: ${sym}${(d.marketCap/1000).toFixed(1)}B. P/E: ${d.peRatio}x. Sector: ${d.sector}.
-Outlook: ${d.outlook}. Strengths: ${d.keyStrengths.join(", ")}. Risks: ${d.keyRisks.join(", ")}.
-Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash Flow 5) Key Metrics 6) Strengths & Risks 7) Outlook 8) Summary`;
+    const prompt = `Create a professional 8-slide financial analysis presentation for ${d.company} (${d.ticker}, ${d.exchange}). Revenue 5yr: ${d.years.map((y, i) => `${y}: ${sym}${(d.revenue[i] / 1000).toFixed(1)}B`).join(", ")}. Net Income 5yr: ${d.years.map((y, i) => `${y}: ${sym}${(d.netIncome[i] / 1000).toFixed(1)}B`).join(", ")}. CAGR: ${d.revenueCAGR}%. Market Cap: ${sym}${(d.marketCap/1000).toFixed(1)}B. P/E: ${d.peRatio}x. Sector: ${d.sector}. Outlook: ${d.outlook}. Strengths: ${d.keyStrengths.join(", ")}. Risks: ${d.keyRisks.join(", ")}. Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash Flow 5) Key Metrics 6) Strengths & Risks 7) Outlook 8) Summary`;
     navigator.clipboard.writeText(prompt);
     window.open("https://gamma.app/create/generate", "_blank");
     setModal("ppt");
@@ -339,7 +392,7 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
     <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
       <style>{FONTS + GLOBAL_CSS}</style>
 
-      <header style={{ height: 56, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", padding: "0 28px", background: C.bgCard }}>
+      <header className="fs-header-landing">
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <FinSightLogo size={28} />
           <div style={{ display: "flex", flexDirection: "column" }}>
@@ -348,74 +401,73 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: C.textSec, marginRight: 12 }}>
-          👋 {user?.firstName || "Welcome"}
-        </span>
-        <UserButton afterSignOutUrl="/" />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <UserButton afterSignOutUrl="/" />
+        </div>
       </header>
 
-      <main style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 24px 32px", animation: "fs-fade .6s ease both" }}>
-        <div style={{ marginBottom: 28 }}><FinSightLogo size={72} /></div>
+      <main className="fs-landing-main">
+        <div style={{ marginBottom: 24 }}><FinSightLogo size={64} /></div>
 
-        <h1 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: "clamp(30px, 5.5vw, 48px)", fontWeight: 800, color: C.textPrimary, letterSpacing: "-1.5px", textAlign: "center", lineHeight: 1.15, marginBottom: 14 }}>
+        <h1 className="fs-landing-hero">
           Financial intelligence,<br />
           <span style={{ color: C.accent }}>one company at a time.</span>
         </h1>
 
-        <p style={{ color: C.textSec, fontSize: 16, lineHeight: 1.7, textAlign: "center", maxWidth: 540, marginBottom: 36 }}>
+        <p style={{ color: C.textSec, fontSize: 15, lineHeight: 1.7, textAlign: "center", maxWidth: 540, marginBottom: 32, padding: "0 8px" }}>
           Type any company name. Get a 5-year financial deep-dive with AI analysis, interactive charts, PPT deck, and podcast script.
         </p>
 
         <div style={{ width: "100%", maxWidth: 580, marginBottom: 20 }}>
-          <div style={{ display: "flex", gap: 8, background: C.bgCard, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: "7px 7px 7px 16px", boxShadow: C.shadow }}>
+          <div style={{ display: "flex", gap: 8, background: C.bgCard, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: "6px 6px 6px 14px", boxShadow: C.shadow }}>
             <input
               className="fs-input"
               value={q}
               onChange={e => setQ(e.target.value)}
               onKeyDown={e => e.key === "Enter" && q.trim() && analyze(q.trim())}
-              placeholder="e.g. Apple, Reliance Industries, Tesla, TCS..."
-              style={{ flex: 1, background: "none", border: "none", outline: "none", color: C.textPrimary, fontSize: 15, fontFamily: "inherit" }}
+              placeholder="e.g. Apple, Reliance, Tesla..."
+              style={{ flex: 1, background: "none", border: "none", outline: "none", color: C.textPrimary, fontSize: 15, fontFamily: "inherit", minWidth: 0 }}
             />
             <button
               className="fs-btn-primary"
               onClick={() => q.trim() && analyze(q.trim())}
               disabled={!q.trim()}
-              style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 600, fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", whiteSpace: "nowrap", opacity: q.trim() ? 1 : .55 }}
+              style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 600, fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", whiteSpace: "nowrap", opacity: q.trim() ? 1 : .55 }}
             >
               Analyze →
             </button>
           </div>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center", marginBottom: 48 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", marginBottom: 40, width: "100%" }}>
           {[{ flag: "🇺🇸", label: "US", items: US_EX }, { flag: "🇮🇳", label: "India", items: IN_EX }].map(row => (
-            <div key={row.flag} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-              <span style={{ fontSize: 12, color: C.textMuted, minWidth: 70, textAlign: "right", fontWeight: 500 }}>{row.flag} {row.label}</span>
+            <div key={row.flag} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center", maxWidth: "100%" }}>
+              <span className="fs-chip-row-label">{row.flag} {row.label}</span>
               {row.items.map(c => (
-                <button key={c} className="fs-chip" onClick={() => analyze(c)} style={{ background: C.bgCard, border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 20, padding: "5px 14px", fontSize: 13, fontFamily: "inherit", cursor: "pointer" }}>{c}</button>
+                <button key={c} className="fs-chip" onClick={() => analyze(c)} style={{ background: C.bgCard, border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 20, padding: "5px 12px", fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>{c}</button>
               ))}
             </div>
           ))}
         </div>
 
-        <div style={{ display: "flex", gap: 28, flexWrap: "wrap", justifyContent: "center" }}>
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", justifyContent: "center", padding: "0 16px" }}>
           {[
             { icon: "📈", text: "5-Year Analysis" },
             { icon: "📊", text: "Auto PPT via Gamma" },
             { icon: "🎙️", text: "AI Podcast Script" },
             { icon: "🌍", text: "US + India Markets" },
           ].map(f => (
-            <div key={f.text} style={{ display: "flex", alignItems: "center", gap: 7, color: C.textSec, fontSize: 13 }}>
-              <span style={{ fontSize: 15 }}>{f.icon}</span>
+            <div key={f.text} style={{ display: "flex", alignItems: "center", gap: 6, color: C.textSec, fontSize: 12.5 }}>
+              <span style={{ fontSize: 14 }}>{f.icon}</span>
               <span>{f.text}</span>
             </div>
           ))}
         </div>
       </main>
 
-      <footer style={{ padding: "20px 24px", textAlign: "center", borderTop: `1px solid ${C.border}`, background: C.bgCard }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap" }}>
-          <span style={{ color: C.textMuted, fontSize: 12 }}>FinSight AI · Financial intelligence for everyone</span>
+      <footer style={{ padding: "18px 20px", textAlign: "center", borderTop: `1px solid ${C.border}`, background: C.bgCard }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ color: C.textMuted, fontSize: 11.5 }}>FinSight AI · Financial intelligence for everyone</span>
           <span style={{ color: C.border }}>·</span>
           <Byline />
         </div>
@@ -424,12 +476,12 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
   );
 
   if (screen === "loading") return (
-    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
+    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <style>{FONTS + GLOBAL_CSS}</style>
-      <div style={{ marginBottom: 28 }}><FinSightLogo size={56} /></div>
-      <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 22, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Analyzing financials…</h2>
-      <p style={{ color: C.textSec, fontSize: 14, marginBottom: 44 }}>Searching live data — takes about 20–30 seconds</p>
-      <div style={{ width: 320 }}>
+      <div style={{ marginBottom: 24 }}><FinSightLogo size={52} /></div>
+      <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 20, fontWeight: 700, color: C.textPrimary, marginBottom: 6, textAlign: "center" }}>Analyzing financials…</h2>
+      <p style={{ color: C.textSec, fontSize: 13.5, marginBottom: 36, textAlign: "center", padding: "0 20px" }}>Searching live data — takes about 20–30 seconds</p>
+      <div style={{ width: "100%", maxWidth: 320, padding: "0 16px" }}>
         {STEPS.map((s, i) => {
           const done = i < stepIdx, active = i === stepIdx, pending = i > stepIdx;
           return (
@@ -437,22 +489,22 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
               <div style={{ width: 24, height: 24, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: done ? C.green : active ? C.accent : C.border }}>
                 {done ? <span style={{ color: "#fff", fontSize: 12 }}>✓</span> : active ? <Spinner /> : null}
               </div>
-              <span style={{ fontSize: 14, color: done ? C.green : active ? C.accent : C.textMuted, fontWeight: active ? 600 : 400 }}>{s}</span>
+              <span style={{ fontSize: 13.5, color: done ? C.green : active ? C.accent : C.textMuted, fontWeight: active ? 600 : 400 }}>{s}</span>
             </div>
           );
         })}
       </div>
-      <div style={{ marginTop: 48 }}><Byline /></div>
+      <div style={{ marginTop: 40 }}><Byline /></div>
     </div>
   );
 
   if (screen === "error") return (
-    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center" }}>
+    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center" }}>
       <style>{FONTS + GLOBAL_CSS}</style>
-      <div style={{ width: 56, height: 56, borderRadius: 16, background: C.redBg, border: `1px solid ${C.red}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, marginBottom: 20 }}>⚠️</div>
-      <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 20, fontWeight: 700, color: C.red, marginBottom: 10 }}>Analysis failed</h2>
-      <p style={{ color: C.textSec, maxWidth: 440, lineHeight: 1.7, marginBottom: 28, fontSize: 14 }}>{err}</p>
-      <button onClick={() => setScreen("landing")} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "11px 28px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "'Plus Jakarta Sans', sans-serif" }}>← Try again</button>
+      <div style={{ width: 56, height: 56, borderRadius: 16, background: C.redBg, border: `1px solid ${C.red}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, marginBottom: 18 }}>⚠️</div>
+      <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 19, fontWeight: 700, color: C.red, marginBottom: 10 }}>Analysis failed</h2>
+      <p style={{ color: C.textSec, maxWidth: 440, lineHeight: 1.7, marginBottom: 24, fontSize: 14 }}>{err}</p>
+      <button onClick={() => setScreen("landing")} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "11px 26px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "'Plus Jakarta Sans', sans-serif" }}>← Try again</button>
     </div>
   );
 
@@ -466,36 +518,41 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
     const oc = OUTLOOK[data.outlook] || OUTLOOK.Neutral;
     const latestRev = data.revenue?.[4], latestNI = data.netIncome?.[4];
     const latestFCF = data.freeCashFlow?.[4], latestNM = data.netMargin?.[4];
-    const axisStyle = { fontSize: 11, fill: C.textMuted };
+    const axisStyle = { fontSize: 10.5, fill: C.textMuted };
     const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
 
     return (
       <div style={{ minHeight: "100vh", background: C.bgPage, color: C.textPrimary, fontFamily: "'DM Sans', system-ui, sans-serif" }}>
         <style>{FONTS + GLOBAL_CSS}</style>
 
-        <header style={{ position: "sticky", top: 0, zIndex: 100, height: 60, background: C.bgCard, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", padding: "0 28px", gap: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <FinSightLogo size={26} />
+        <header className="fs-header-dashboard">
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <FinSightLogo size={24} />
             <div style={{ display: "flex", flexDirection: "column" }}>
-              <span style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, color: C.textPrimary, lineHeight: 1 }}>FinSight AI</span>
+              <span style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 13, color: C.textPrimary, lineHeight: 1 }}>FinSight AI</span>
               <span style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>Pallav Shah</span></span>
             </div>
           </div>
-          <div style={{ width: 1, height: 24, background: C.border }} />
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flex: 1, minWidth: 0 }}>
-            <span style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 15, fontWeight: 700, color: C.textPrimary }}>{data.company}</span>
-            <span style={{ background: C.bgSidebar, color: C.textSec, fontSize: 11, fontFamily: "'DM Mono', monospace", padding: "2px 8px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.ticker}</span>
-            <span style={{ background: C.bgSidebar, color: C.textMuted, fontSize: 11, padding: "2px 8px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.exchange}</span>
-            <span style={{ background: oc.bg, color: oc.color, fontSize: 11, fontWeight: 600, padding: "2px 10px", borderRadius: 5 }}>{data.outlook}</span>
+
+          <div className="fs-header-divider" />
+
+          <div className="fs-dash-meta">
+            <span className="fs-company-name">{data.company}</span>
+            <span style={{ background: C.bgSidebar, color: C.textSec, fontSize: 10.5, fontFamily: "'DM Mono', monospace", padding: "2px 7px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.ticker}</span>
+            <span style={{ background: C.bgSidebar, color: C.textMuted, fontSize: 10.5, padding: "2px 7px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.exchange}</span>
+            <span style={{ background: oc.bg, color: oc.color, fontSize: 10.5, fontWeight: 600, padding: "2px 9px", borderRadius: 5 }}>{data.outlook}</span>
           </div>
-          <button onClick={() => setScreen("landing")} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 8, padding: "7px 16px", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap", fontFamily: "inherit" }}>← New search</button>
-          <UserButton afterSignOutUrl="/" />
+
+          <div className="fs-header-actions">
+            <button onClick={() => setScreen("landing")} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap", fontFamily: "inherit" }}>← New</button>
+            <UserButton afterSignOutUrl="/" />
+          </div>
         </header>
 
-        <div style={{ maxWidth: 1180, margin: "0 auto", padding: "32px 24px 24px" }}>
-          <p style={{ color: C.textSec, fontSize: 14.5, lineHeight: 1.75, maxWidth: 680, marginBottom: 28 }}>{data.description}</p>
+        <div className="fs-main-container">
+          <p className="fs-description">{data.description}</p>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 12, marginBottom: 28 }}>
+          <div className="fs-metrics-grid" style={{ marginBottom: 24 }}>
             {[
               { label: "2024 Revenue",    value: fmtMoney(latestRev, sym), sub: `CAGR ${Number(data.revenueCAGR).toFixed(1)}%` },
               { label: "2024 Net Income", value: fmtMoney(latestNI,  sym), sub: `Margin ${Number(latestNM).toFixed(1)}%` },
@@ -506,10 +563,10 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
             ].map(m => <MetricCard key={m.label} {...m} />)}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 24, boxShadow: C.shadow }}>
+          <div className="fs-charts-grid" style={{ marginBottom: 20 }}>
+            <div className="fs-chart-card">
               <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Revenue & Net Income</div>
-              <div style={{ color: C.textMuted, fontSize: 12, marginBottom: 18 }}>5-year trend · {data.currency} millions</div>
+              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>5-year trend · {data.currency} millions</div>
               <ResponsiveContainer width="100%" height={200}>
                 <AreaChart data={cData}>
                   <defs>
@@ -518,53 +575,53 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
                   </defs>
                   <CartesianGrid {...gridStyle} />
                   <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} />
+                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={40} />
                   <Tooltip content={<ChartTip sym={sym} />} />
-                  <Legend wrapperStyle={{ fontSize: 12, color: C.textSec }} />
+                  <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec }} />
                   <Area type="monotone" dataKey="Revenue"    stroke={C.chartA} fill="url(#gA)" strokeWidth={2.2} dot={{ fill: C.chartA, r: 3, strokeWidth: 0 }} />
                   <Area type="monotone" dataKey="Net Income" stroke={C.chartB} fill="url(#gB)" strokeWidth={2.2} dot={{ fill: C.chartB, r: 3, strokeWidth: 0 }} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
 
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 24, boxShadow: C.shadow }}>
+            <div className="fs-chart-card">
               <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Profit Margins</div>
-              <div style={{ color: C.textMuted, fontSize: 12, marginBottom: 18 }}>Gross & Net margin trends · %</div>
+              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Gross & Net margin trends · %</div>
               <ResponsiveContainer width="100%" height={200}>
                 <LineChart data={cData}>
                   <CartesianGrid {...gridStyle} />
                   <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} />
+                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} width={35} />
                   <Tooltip content={<ChartTip isPct />} />
-                  <Legend wrapperStyle={{ fontSize: 12, color: C.textSec }} />
+                  <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec }} />
                   <Line type="monotone" dataKey="Gross Margin" stroke={C.chartC} strokeWidth={2.4} dot={{ fill: C.chartC, r: 4, strokeWidth: 0 }} />
                   <Line type="monotone" dataKey="Net Margin"   stroke={C.chartD} strokeWidth={2.4} dot={{ fill: C.chartD, r: 4, strokeWidth: 0 }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
 
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 24, boxShadow: C.shadow }}>
+            <div className="fs-chart-card">
               <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>EBITDA</div>
-              <div style={{ color: C.textMuted, fontSize: 12, marginBottom: 18 }}>Operating earnings before interest & taxes</div>
+              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Operating earnings before interest & taxes</div>
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={cData}>
                   <CartesianGrid {...gridStyle} />
                   <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} />
+                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={40} />
                   <Tooltip content={<ChartTip sym={sym} />} />
                   <Bar dataKey="EBITDA" fill={C.chartA} radius={[5, 5, 0, 0]} opacity={.9} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
 
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 24, boxShadow: C.shadow }}>
+            <div className="fs-chart-card">
               <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Free Cash Flow</div>
-              <div style={{ color: C.textMuted, fontSize: 12, marginBottom: 18 }}>Cash after capital expenditure</div>
+              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Cash after capital expenditure</div>
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={cData}>
                   <CartesianGrid {...gridStyle} />
                   <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} />
+                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={40} />
                   <Tooltip content={<ChartTip sym={sym} />} />
                   <Bar dataKey="FCF" fill={C.chartB} radius={[5, 5, 0, 0]} opacity={.9} />
                 </BarChart>
@@ -572,58 +629,58 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 16, marginBottom: 28 }}>
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 28, boxShadow: C.shadow }}>
-              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 16, marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
+          <div className="fs-analysis-grid" style={{ marginBottom: 24 }}>
+            <div className="fs-analysis-card">
+              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ width: 24, height: 24, borderRadius: 6, background: C.accentLight, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 14, color: C.accent }}>✦</span>
                 AI Financial Analysis
               </div>
               {String(data.analysis).split(/\n+/).filter(Boolean).map((p, i) => (
-                <p key={i} style={{ color: C.textSec, lineHeight: 1.85, fontSize: 14.5, marginBottom: 12 }}>{p}</p>
+                <p key={i} style={{ color: C.textSec, lineHeight: 1.8, fontSize: 14, marginBottom: 11 }}>{p}</p>
               ))}
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 22, boxShadow: C.shadow, flex: 1 }}>
-                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, color: C.green, marginBottom: 14, fontSize: 14 }}>✓ Key Strengths</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 20, boxShadow: C.shadow }}>
+                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, color: C.green, marginBottom: 12, fontSize: 14 }}>✓ Key Strengths</div>
                 {data.keyStrengths.map((s, i) => (
                   <div key={i} style={{ color: C.textSec, fontSize: 13, lineHeight: 1.7, marginBottom: 10, paddingLeft: 12, borderLeft: `2px solid ${C.green}33` }}>{s}</div>
                 ))}
               </div>
 
-              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 22, boxShadow: C.shadow, flex: 1 }}>
-                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, color: C.red, marginBottom: 14, fontSize: 14 }}>⚠ Key Risks</div>
+              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 20, boxShadow: C.shadow }}>
+                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, color: C.red, marginBottom: 12, fontSize: 14 }}>⚠ Key Risks</div>
                 {data.keyRisks.map((r, i) => (
                   <div key={i} style={{ color: C.textSec, fontSize: 13, lineHeight: 1.7, marginBottom: 10, paddingLeft: 12, borderLeft: `2px solid ${C.red}33` }}>{r}</div>
                 ))}
               </div>
 
-              <div style={{ background: oc.bg, border: `1px solid ${oc.color}33`, borderRadius: 14, padding: 18 }}>
+              <div style={{ background: oc.bg, border: `1px solid ${oc.color}33`, borderRadius: 14, padding: 16 }}>
                 <div style={{ color: oc.color, fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 6 }}>{data.outlook} Outlook</div>
                 <div style={{ color: C.textSec, fontSize: 13, lineHeight: 1.7 }}>{data.outlookReason}</div>
               </div>
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap", marginBottom: 32 }}>
-            <button className="fs-act" onClick={openGamma} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 12, padding: "13px 28px", fontSize: 14.5, fontWeight: 600, fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>📊 Generate PPT via Gamma</button>
-            <button className="fs-act" onClick={genScript} style={{ background: C.bgCard, color: C.textPrimary, border: `1px solid ${C.border}`, borderRadius: 12, padding: "13px 28px", fontSize: 14.5, fontWeight: 600, fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>🎙️ AI Podcast Script</button>
-            <button className="fs-act" onClick={() => setScreen("landing")} style={{ background: "transparent", color: C.textSec, border: `1px solid ${C.border}`, borderRadius: 12, padding: "13px 24px", fontSize: 14.5, fontWeight: 500, fontFamily: "inherit", cursor: "pointer" }}>← New search</button>
+          <div className="fs-action-row">
+            <button className="fs-act fs-action-btn" onClick={openGamma} style={{ background: C.accent, color: "#fff", border: "none" }}>📊 Generate PPT</button>
+            <button className="fs-act fs-action-btn" onClick={genScript} style={{ background: C.bgCard, color: C.textPrimary, border: `1px solid ${C.border}` }}>🎙️ Podcast Script</button>
+            <button className="fs-act fs-action-btn" onClick={() => setScreen("landing")} style={{ background: "transparent", color: C.textSec, border: `1px solid ${C.border}` }}>← New search</button>
           </div>
 
-          <div style={{ textAlign: "center", paddingTop: 24, borderTop: `1px solid ${C.border}` }}><Byline /></div>
+          <div style={{ textAlign: "center", paddingTop: 20, borderTop: `1px solid ${C.border}` }}><Byline /></div>
         </div>
 
         {modal === "script" && (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,24,.5)", backdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,24,.5)", backdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
             <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 18, width: "100%", maxWidth: 720, maxHeight: "82vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(31,27,24,.3)" }}>
-              <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: C.bgSidebar }}>
-                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15 }}>🎙️ AI Podcast Script — {data.company}</div>
-                <button onClick={() => setModal(null)} style={{ background: "none", border: "none", color: C.textMuted, fontSize: 20, cursor: "pointer", padding: 4 }}>✕</button>
+              <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: C.bgSidebar, gap: 10 }}>
+                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>🎙️ Podcast — {data.company}</div>
+                <button onClick={() => setModal(null)} style={{ background: "none", border: "none", color: C.textMuted, fontSize: 22, cursor: "pointer", padding: 4, flexShrink: 0 }}>✕</button>
               </div>
-              <div style={{ overflowY: "auto", flex: 1, padding: 24 }}>
+              <div style={{ overflowY: "auto", flex: 1, padding: 20 }}>
                 {scriptLoading ? (
-                  <div style={{ textAlign: "center", padding: 60, color: C.textSec, fontSize: 14, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+                  <div style={{ textAlign: "center", padding: 50, color: C.textSec, fontSize: 14, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
                     <Spinner />Generating your podcast script... ~15 seconds
                   </div>
                 ) : (
@@ -633,10 +690,10 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
                     if (!isA && !isP) return <div key={i} style={{ color: C.textMuted, fontSize: 12, fontStyle: "italic", textAlign: "center", margin: "10px 0" }}>{line}</div>;
                     return (
                       <div key={i} style={{ display: "flex", gap: 10, marginBottom: 14, flexDirection: isA ? "row" : "row-reverse" }}>
-                        <div style={{ width: 34, height: 34, borderRadius: "50%", background: isA ? C.accentLight : C.blueBg, color: isA ? C.accent : C.chartC, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
+                        <div style={{ width: 32, height: 32, borderRadius: "50%", background: isA ? C.accentLight : C.blueBg, color: isA ? C.accent : C.chartC, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 12, flexShrink: 0 }}>
                           {isA ? "A" : "P"}
                         </div>
-                        <div style={{ background: isA ? C.bgSidebar : C.blueBg, borderRadius: isA ? "4px 14px 14px 14px" : "14px 4px 14px 14px", padding: "11px 16px", maxWidth: "78%", color: C.textPrimary, fontSize: 14, lineHeight: 1.7 }}>
+                        <div className="fs-modal-bubble" style={{ background: isA ? C.bgSidebar : C.blueBg, borderRadius: isA ? "4px 14px 14px 14px" : "14px 4px 14px 14px", padding: "10px 14px", color: C.textPrimary, fontSize: 13.5, lineHeight: 1.65 }}>
                           <div style={{ color: isA ? C.accent : C.chartC, fontSize: 10, fontWeight: 700, letterSpacing: ".8px", marginBottom: 4 }}>{isA ? "ALEX" : "PRIYA"}</div>
                           {line.replace(/^(ALEX|PRIYA):\s*/, "")}
                         </div>
@@ -650,13 +707,13 @@ Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash F
         )}
 
         {modal === "ppt" && (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,24,.5)", backdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 18, padding: "40px 36px", maxWidth: 460, width: "100%", textAlign: "center", boxShadow: "0 20px 60px rgba(31,27,24,.3)" }}>
-              <div style={{ width: 64, height: 64, borderRadius: 18, background: C.greenBg, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 28, marginBottom: 20 }}>✓</div>
-              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 20, fontWeight: 700, color: C.textPrimary, marginBottom: 10 }}>Prompt copied!</div>
-              <div style={{ color: C.textSec, fontSize: 14, marginBottom: 8, lineHeight: 1.7 }}>Gamma has opened in a new tab.</div>
-              <div style={{ color: C.textSec, fontSize: 14, marginBottom: 24, lineHeight: 1.7 }}>Just <strong style={{ color: C.textPrimary }}>paste (⌘V / Ctrl+V)</strong> into Gamma's prompt box and click <strong>Generate</strong>.</div>
-              <button onClick={() => setModal(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 8, padding: "10px 28px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>Close</button>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,24,.5)", backdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 18, padding: "32px 26px", maxWidth: 460, width: "100%", textAlign: "center", boxShadow: "0 20px 60px rgba(31,27,24,.3)" }}>
+              <div style={{ width: 60, height: 60, borderRadius: 18, background: C.greenBg, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 26, marginBottom: 18 }}>✓</div>
+              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 19, fontWeight: 700, color: C.textPrimary, marginBottom: 10 }}>Prompt copied!</div>
+              <div style={{ color: C.textSec, fontSize: 13.5, marginBottom: 8, lineHeight: 1.7 }}>Gamma has opened in a new tab.</div>
+              <div style={{ color: C.textSec, fontSize: 13.5, marginBottom: 22, lineHeight: 1.7 }}>Just <strong style={{ color: C.textPrimary }}>paste (⌘V / Ctrl+V)</strong> into Gamma's prompt box and click <strong>Generate</strong>.</div>
+              <button onClick={() => setModal(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 8, padding: "10px 26px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>Close</button>
             </div>
           </div>
         )}
