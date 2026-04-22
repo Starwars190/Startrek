@@ -8,7 +8,8 @@ import { ClerkProvider, SignedIn, SignedOut, SignIn, SignUp, UserButton, useUser
 /* ═════════════════════════════════════════════════════════════
    FinSight AI — by Pallav Shah
    WITH LOGIN — Clerk authentication + user tracking
-   MOBILE RESPONSIVE — v2 (April 19, 2026)
+   MOBILE RESPONSIVE — v3 (April 22, 2026)
+   NEW: Period selector (6 options) + updated system prompt
 ════════════════════════════════════════════════════════════════ */
 
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -42,6 +43,20 @@ const C = {
 
 const API_URL = "/api/claude";
 const MODEL   = "claude-sonnet-4-5";
+
+/* ═════════════════════════════════════════════════════════════
+   PERIOD OPTIONS — NEW (April 22, 2026)
+════════════════════════════════════════════════════════════════ */
+const PERIODS = [
+  { id: "latest_quarter", label: "Latest Quarter", short: "Q",   desc: "Most recent quarter" },
+  { id: "half_yearly",    label: "Half Yearly",    short: "H1",  desc: "Last 2 quarters" },
+  { id: "1_year",         label: "1 Year",         short: "1Y",  desc: "Full fiscal year" },
+  { id: "2_year",         label: "2 Years",        short: "2Y",  desc: "YoY comparison" },
+  { id: "3_year",         label: "3 Years",        short: "3Y",  desc: "Medium-term trend" },
+  { id: "5_year",         label: "5 Years",        short: "5Y",  desc: "Long-term history" },
+];
+
+const DEFAULT_PERIOD = "1_year";
 
 async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
   const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: "user", content: userMsg }] };
@@ -84,14 +99,67 @@ const IN_EX = ["Reliance Industries", "Infosys", "TCS", "HDFC Bank", "Wipro", "B
 
 const STEPS = [
   "Searching financial databases",
-  "Fetching 5-year revenue data",
+  "Fetching latest financial data",
   "Analyzing profitability trends",
   "Computing key financial ratios",
   "Generating AI insights",
   "Building your dashboard",
 ];
 
-const SYSTEM_PROMPT = `You are a financial data analyst with web search access. Search for real 5-year financial data and return ONLY raw JSON. No markdown, no backticks — only the JSON object.
+/* ═════════════════════════════════════════════════════════════
+   SYSTEM PROMPT v3 — UPDATED April 22, 2026
+   - Targets latest available data (Q3/Q4 FY26)
+   - Dynamic period handling
+   - Explicit current date context
+════════════════════════════════════════════════════════════════ */
+function buildSystemPrompt(period) {
+  const today = new Date().toISOString().split('T')[0];
+  const currentYear = new Date().getFullYear();
+  const prevYear = currentYear - 1;
+  const startYear = currentYear - 5;
+
+  const periodInstructions = {
+    latest_quarter: `Return data for the MOST RECENT QUARTER only (target Q3 FY26 or Q4 FY26 if available).
+- "years" array: Use quarter labels like ["Q3 FY26"] — just 1 entry
+- All financial arrays: 1 value each (the latest quarter)`,
+    half_yearly: `Return data for the LAST 2 QUARTERS.
+- "years" array: Quarter labels like ["Q2 FY26", "Q3 FY26"] — 2 entries
+- All financial arrays: 2 values each`,
+    "1_year": `Return data for the LAST 4 QUARTERS (full fiscal year).
+- "years" array: Quarter labels like ["Q4 FY25", "Q1 FY26", "Q2 FY26", "Q3 FY26"] — 4 entries
+- All financial arrays: 4 values each`,
+    "2_year": `Return data for the LAST 2 FISCAL YEARS.
+- "years" array: ["FY25", "FY26"] — 2 entries (use most recent completed fiscal years)
+- All financial arrays: 2 values each (annual totals)`,
+    "3_year": `Return data for the LAST 3 FISCAL YEARS.
+- "years" array: ["FY24", "FY25", "FY26"] — 3 entries
+- All financial arrays: 3 values each (annual totals)`,
+    "5_year": `Return data for the LAST 5 FISCAL YEARS.
+- "years" array: ["FY22", "FY23", "FY24", "FY25", "FY26"] — 5 entries
+- All financial arrays: 5 values each (annual totals)`,
+  };
+
+  return `You are FinSight AI, a financial research assistant for public companies. Today's date is ${today}.
+
+CRITICAL: You must retrieve the MOST RECENT available data. Current fiscal context:
+- Indian companies: FY26 = April 2025 to March 2026 (latest expected: Q3/Q4 FY26)
+- US companies: Use calendar year quarters (latest expected: Q3/Q4 ${currentYear})
+- NEVER return data older than 6 months as "current" without disclosure
+
+ANALYSIS PERIOD REQUESTED: ${period.toUpperCase()}
+${periodInstructions[period] || periodInstructions["1_year"]}
+
+RESEARCH APPROACH:
+1. Perform web searches for latest data from these priority sources:
+   - Company IR pages (annual/quarterly reports)
+   - BSE/NSE filings (Indian companies)
+   - SEC filings (US companies)
+   - Earnings call transcripts
+   - Recent news (last 3 months)
+2. Prioritize OFFICIAL filings over secondary sources
+3. If latest period data is unavailable, explicitly note "Data as of [period]"
+
+OUTPUT: Return ONLY raw JSON. No markdown, no backticks — only the JSON object.
 
 Return this exact structure (monetary values in MILLIONS of local currency):
 {
@@ -103,23 +171,31 @@ Return this exact structure (monetary values in MILLIONS of local currency):
   "currencySymbol": "$ or ₹ etc",
   "sector": "sector name",
   "description": "2 sentences about what the company does",
-  "years": [2020, 2021, 2022, 2023, 2024],
-  "revenue": [n, n, n, n, n],
-  "netIncome": [n, n, n, n, n],
-  "ebitda": [n, n, n, n, n],
-  "freeCashFlow": [n, n, n, n, n],
-  "grossMargin": [n, n, n, n, n],
-  "netMargin": [n, n, n, n, n],
-  "eps": [n, n, n, n, n],
+  "periodType": "${period}",
+  "dataAsOf": "YYYY-MM-DD (latest data date)",
+  "years": [label, label, ...],
+  "revenue": [n, n, ...],
+  "netIncome": [n, n, ...],
+  "ebitda": [n, n, ...],
+  "freeCashFlow": [n, n, ...],
+  "grossMargin": [n, n, ...],
+  "netMargin": [n, n, ...],
+  "eps": [n, n, ...],
   "marketCap": number,
   "peRatio": number,
   "revenueCAGR": number,
-  "analysis": "4 paragraphs: revenue growth, profitability, cash flow, competitive outlook. Include specific numbers.",
+  "analysis": "3-4 paragraphs with specific numbers: revenue trend, profitability, cash flow, competitive outlook",
   "keyStrengths": ["strength with data", "strength with data", "strength with data"],
   "keyRisks": ["risk with context", "risk with context", "risk with context"],
-  "outlook": "Bullish or Neutral or Bearish",
+  "outlook": "Positive or Mixed or Caution",
   "outlookReason": "One concise sentence"
-}`;
+}
+
+IMPORTANT NOTES ON ARRAYS:
+- ALL financial arrays (revenue, netIncome, ebitda, freeCashFlow, grossMargin, netMargin, eps) MUST have the SAME NUMBER of entries as the "years" array
+- If a metric is unavailable for some periods, use null (not 0)
+- revenueCAGR: Only meaningful for 2+ year periods; return 0 for shorter periods`;
+}
 
 const FinSightLogo = ({ size = 32 }) => (
   <svg width={size} height={size} viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
@@ -159,10 +235,6 @@ const Byline = () => (
 
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');`;
 
-/* ═════════════════════════════════════════════════════════════
-   RESPONSIVE CSS — mobile-first approach
-   Key breakpoints: 640px (phone→tablet), 1024px (tablet→desktop)
-════════════════════════════════════════════════════════════════ */
 const GLOBAL_CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: ${C.bgPage}; overflow-x: hidden; }
@@ -176,6 +248,9 @@ const GLOBAL_CSS = `
   .fs-btn-ghost:hover  { background: ${C.bgSidebar} !important; }
   .fs-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
   .fs-act:hover { opacity: .88 !important; transform: translateY(-1px); }
+  .fs-period-btn { transition: all .18s; }
+  .fs-period-btn:hover { background: ${C.accentLight} !important; border-color: ${C.accent} !important; color: ${C.accent} !important; }
+  .fs-period-btn.active { background: ${C.accent} !important; color: #fff !important; border-color: ${C.accent} !important; }
   @keyframes fs-fade { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:none;} }
   @keyframes fs-spin { to { transform: rotate(360deg); } }
   @keyframes fs-step { from{opacity:0;transform:translateX(-8px);} to{opacity:1;transform:none;} }
@@ -193,6 +268,11 @@ const GLOBAL_CSS = `
 
   .fs-analysis-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
   @media (min-width: 1024px) { .fs-analysis-grid { grid-template-columns: 3fr 2fr; gap: 16px; } }
+
+  /* PERIOD SELECTOR — NEW */
+  .fs-period-row { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-bottom: 16px; padding: 0 8px; }
+  .fs-period-btn { background: ${C.bgCard}; border: 1px solid ${C.border}; color: ${C.textSec}; border-radius: 20px; padding: 6px 12px; font-size: 12.5px; font-weight: 500; cursor: pointer; font-family: inherit; white-space: nowrap; }
+  @media (min-width: 640px) { .fs-period-btn { padding: 7px 14px; font-size: 13px; } }
 
   /* RESPONSIVE HEADERS */
   .fs-header-dashboard { position: sticky; top: 0; z-index: 100; min-height: 60px; background: ${C.bgCard}; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; gap: 10px; flex-wrap: wrap; }
@@ -260,7 +340,7 @@ function LoginScreen() {
           </div>
         </div>
         <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 20, color: C.textPrimary, marginBottom: 6, padding: "0 10px" }}>Welcome to financial intelligence</h2>
-        <p style={{ color: C.textSec, fontSize: 14, padding: "0 10px" }}>Sign in to analyze any company's 5-year financials</p>
+        <p style={{ color: C.textSec, fontSize: 14, padding: "0 10px" }}>Sign in to analyze any company's financials</p>
       </div>
 
       <SignIn
@@ -287,6 +367,7 @@ function FinSightApp() {
   const { user } = useUser();
   const [screen, setScreen]         = useState("landing");
   const [q, setQ]                   = useState("");
+  const [period, setPeriod]         = useState(DEFAULT_PERIOD);
   const [data, setData]             = useState(null);
   const [err, setErr]               = useState("");
   const [stepIdx, setStepIdx]       = useState(0);
@@ -332,15 +413,18 @@ function FinSightApp() {
           email: user.primaryEmailAddress?.emailAddress,
           action: "analyze",
           company,
+          period,
           timestamp: new Date().toISOString(),
         })
       }).catch(() => {});
     }
 
+    const periodLabel = PERIODS.find(p => p.id === period)?.label || "1 Year";
+
     try {
       const raw = await callClaude({
-        system: SYSTEM_PROMPT,
-        userMsg: `Find and analyze 5-year financial data (2020–2024) for: ${company}. Use web search for real numbers. Return ONLY JSON.`,
+        system: buildSystemPrompt(period),
+        userMsg: `Find and analyze the LATEST available financial data for: ${company}. Analysis period requested: ${periodLabel} (${period}). Use web search to retrieve real, recent numbers (target Q3/Q4 FY26 or latest available). Return ONLY JSON matching the schema provided.`,
         tools: [{ type: "web_search_20250305", name: "web_search" }],
       });
       let json = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
@@ -372,7 +456,8 @@ function FinSightApp() {
 
   const openGamma = () => {
     const d = data, sym = d.currencySymbol;
-    const prompt = `Create a professional 8-slide financial analysis presentation for ${d.company} (${d.ticker}, ${d.exchange}). Revenue 5yr: ${d.years.map((y, i) => `${y}: ${sym}${(d.revenue[i] / 1000).toFixed(1)}B`).join(", ")}. Net Income 5yr: ${d.years.map((y, i) => `${y}: ${sym}${(d.netIncome[i] / 1000).toFixed(1)}B`).join(", ")}. CAGR: ${d.revenueCAGR}%. Market Cap: ${sym}${(d.marketCap/1000).toFixed(1)}B. P/E: ${d.peRatio}x. Sector: ${d.sector}. Outlook: ${d.outlook}. Strengths: ${d.keyStrengths.join(", ")}. Risks: ${d.keyRisks.join(", ")}. Slides: 1) Company Overview 2) 5-Year Revenue Journey 3) Profitability 4) Cash Flow 5) Key Metrics 6) Strengths & Risks 7) Outlook 8) Summary`;
+    const periodLabel = PERIODS.find(p => p.id === (d.periodType || period))?.label || "1 Year";
+    const prompt = `Create a professional 8-slide financial analysis presentation for ${d.company} (${d.ticker}, ${d.exchange}). Analysis period: ${periodLabel}. Revenue: ${d.years.map((y, i) => `${y}: ${sym}${(d.revenue[i] / 1000).toFixed(1)}B`).join(", ")}. Net Income: ${d.years.map((y, i) => `${y}: ${sym}${(d.netIncome[i] / 1000).toFixed(1)}B`).join(", ")}. CAGR: ${d.revenueCAGR}%. Market Cap: ${sym}${(d.marketCap/1000).toFixed(1)}B. P/E: ${d.peRatio}x. Sector: ${d.sector}. Outlook: ${d.outlook}. Strengths: ${d.keyStrengths.join(", ")}. Risks: ${d.keyRisks.join(", ")}. Slides: 1) Company Overview 2) Revenue Journey 3) Profitability 4) Cash Flow 5) Key Metrics 6) Strengths & Risks 7) Outlook 8) Summary`;
     navigator.clipboard.writeText(prompt);
     window.open("https://gamma.app/create/generate", "_blank");
     setModal("ppt");
@@ -415,10 +500,10 @@ function FinSightApp() {
         </h1>
 
         <p style={{ color: C.textSec, fontSize: 15, lineHeight: 1.7, textAlign: "center", maxWidth: 540, marginBottom: 32, padding: "0 8px" }}>
-          Type any company name. Get a 5-year financial deep-dive with AI analysis, interactive charts, PPT deck, and podcast script.
+          Type any company name. Get AI-powered financial analysis with interactive charts, PPT deck, and podcast script.
         </p>
 
-        <div style={{ width: "100%", maxWidth: 580, marginBottom: 20 }}>
+        <div style={{ width: "100%", maxWidth: 580, marginBottom: 12 }}>
           <div style={{ display: "flex", gap: 8, background: C.bgCard, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: "6px 6px 6px 14px", boxShadow: C.shadow }}>
             <input
               className="fs-input"
@@ -439,7 +524,24 @@ function FinSightApp() {
           </div>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", marginBottom: 40, width: "100%" }}>
+        {/* NEW: Period Selector */}
+        <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 500, letterSpacing: ".5px", textTransform: "uppercase", marginBottom: 8 }}>
+          Analysis Period
+        </div>
+        <div className="fs-period-row">
+          {PERIODS.map(p => (
+            <button
+              key={p.id}
+              className={`fs-period-btn ${period === p.id ? 'active' : ''}`}
+              onClick={() => setPeriod(p.id)}
+              title={p.desc}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", marginBottom: 40, marginTop: 24, width: "100%" }}>
           {[{ flag: "🇺🇸", label: "US", items: US_EX }, { flag: "🇮🇳", label: "India", items: IN_EX }].map(row => (
             <div key={row.flag} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center", maxWidth: "100%" }}>
               <span className="fs-chip-row-label">{row.flag} {row.label}</span>
@@ -452,7 +554,7 @@ function FinSightApp() {
 
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap", justifyContent: "center", padding: "0 16px" }}>
           {[
-            { icon: "📈", text: "5-Year Analysis" },
+            { icon: "📈", text: "Flexible Periods" },
             { icon: "📊", text: "Auto PPT via Gamma" },
             { icon: "🎙️", text: "AI Podcast Script" },
             { icon: "🌍", text: "US + India Markets" },
@@ -467,7 +569,7 @@ function FinSightApp() {
 
       <footer style={{ padding: "18px 20px", textAlign: "center", borderTop: `1px solid ${C.border}`, background: C.bgCard }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ color: C.textMuted, fontSize: 11.5 }}>FinSight AI · Financial intelligence for everyone</span>
+          <span style={{ color: C.textMuted, fontSize: 11.5 }}>FinSight AI · Research & education only · Not investment advice</span>
           <span style={{ color: C.border }}>·</span>
           <Byline />
         </div>
@@ -480,7 +582,9 @@ function FinSightApp() {
       <style>{FONTS + GLOBAL_CSS}</style>
       <div style={{ marginBottom: 24 }}><FinSightLogo size={52} /></div>
       <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 20, fontWeight: 700, color: C.textPrimary, marginBottom: 6, textAlign: "center" }}>Analyzing financials…</h2>
-      <p style={{ color: C.textSec, fontSize: 13.5, marginBottom: 36, textAlign: "center", padding: "0 20px" }}>Searching live data — takes about 20–30 seconds</p>
+      <p style={{ color: C.textSec, fontSize: 13.5, marginBottom: 36, textAlign: "center", padding: "0 20px" }}>
+        Period: {PERIODS.find(p => p.id === period)?.label} · Searching live data — takes about 20–30 seconds
+      </p>
       <div style={{ width: "100%", maxWidth: 320, padding: "0 16px" }}>
         {STEPS.map((s, i) => {
           const done = i < stepIdx, active = i === stepIdx, pending = i > stepIdx;
@@ -511,13 +615,20 @@ function FinSightApp() {
   if (screen === "dashboard" && data) {
     const sym = data.currencySymbol || "$";
     const OUTLOOK = {
+      Positive: { color: C.green, bg: C.greenBg },
+      Mixed:    { color: C.amber, bg: C.amberBg },
+      Caution:  { color: C.red, bg: C.redBg },
+      // Legacy support
       Bullish: { color: C.green, bg: C.greenBg },
       Neutral: { color: C.amber, bg: C.amberBg },
       Bearish: { color: C.red, bg: C.redBg },
     };
-    const oc = OUTLOOK[data.outlook] || OUTLOOK.Neutral;
-    const latestRev = data.revenue?.[4], latestNI = data.netIncome?.[4];
-    const latestFCF = data.freeCashFlow?.[4], latestNM = data.netMargin?.[4];
+    const oc = OUTLOOK[data.outlook] || OUTLOOK.Mixed;
+    const lastIdx = (data.years?.length || 1) - 1;
+    const latestRev = data.revenue?.[lastIdx], latestNI = data.netIncome?.[lastIdx];
+    const latestFCF = data.freeCashFlow?.[lastIdx], latestNM = data.netMargin?.[lastIdx];
+    const latestLabel = data.years?.[lastIdx] || "Latest";
+    const periodLabel = PERIODS.find(p => p.id === data.periodType)?.label || "Analysis";
     const axisStyle = { fontSize: 10.5, fill: C.textMuted };
     const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
 
@@ -540,6 +651,7 @@ function FinSightApp() {
             <span className="fs-company-name">{data.company}</span>
             <span style={{ background: C.bgSidebar, color: C.textSec, fontSize: 10.5, fontFamily: "'DM Mono', monospace", padding: "2px 7px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.ticker}</span>
             <span style={{ background: C.bgSidebar, color: C.textMuted, fontSize: 10.5, padding: "2px 7px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.exchange}</span>
+            <span style={{ background: C.accentLight, color: C.accent, fontSize: 10.5, fontWeight: 600, padding: "2px 9px", borderRadius: 5 }}>{periodLabel}</span>
             <span style={{ background: oc.bg, color: oc.color, fontSize: 10.5, fontWeight: 600, padding: "2px 9px", borderRadius: 5 }}>{data.outlook}</span>
           </div>
 
@@ -552,21 +664,27 @@ function FinSightApp() {
         <div className="fs-main-container">
           <p className="fs-description">{data.description}</p>
 
+          {data.dataAsOf && (
+            <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 14 }}>
+              📅 Data as of: <strong style={{ color: C.textSec }}>{data.dataAsOf}</strong> · Period: <strong style={{ color: C.accent }}>{periodLabel}</strong>
+            </div>
+          )}
+
           <div className="fs-metrics-grid" style={{ marginBottom: 24 }}>
             {[
-              { label: "2024 Revenue",    value: fmtMoney(latestRev, sym), sub: `CAGR ${Number(data.revenueCAGR).toFixed(1)}%` },
-              { label: "2024 Net Income", value: fmtMoney(latestNI,  sym), sub: `Margin ${Number(latestNM).toFixed(1)}%` },
-              { label: "Market Cap",      value: fmtMoney(data.marketCap, sym), sub: data.exchange },
-              { label: "P/E Ratio",       value: data.peRatio ? `${Number(data.peRatio).toFixed(1)}×` : "N/A", sub: "Current" },
-              { label: "Free Cash Flow",  value: fmtMoney(latestFCF, sym), sub: "2024" },
-              { label: "Revenue CAGR",    value: `${Number(data.revenueCAGR).toFixed(1)}%`, sub: "5-Year", accent: C.accent },
+              { label: `${latestLabel} Revenue`,    value: fmtMoney(latestRev, sym), sub: data.revenueCAGR ? `CAGR ${Number(data.revenueCAGR).toFixed(1)}%` : "Latest" },
+              { label: `${latestLabel} Net Income`, value: fmtMoney(latestNI,  sym), sub: latestNM ? `Margin ${Number(latestNM).toFixed(1)}%` : "Latest" },
+              { label: "Market Cap",                value: fmtMoney(data.marketCap, sym), sub: data.exchange },
+              { label: "P/E Ratio",                 value: data.peRatio ? `${Number(data.peRatio).toFixed(1)}×` : "N/A", sub: "Current" },
+              { label: "Free Cash Flow",            value: fmtMoney(latestFCF, sym), sub: latestLabel },
+              { label: "Revenue Growth",            value: data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(1)}%` : "N/A", sub: periodLabel, accent: C.accent },
             ].map(m => <MetricCard key={m.label} {...m} />)}
           </div>
 
           <div className="fs-charts-grid" style={{ marginBottom: 20 }}>
             <div className="fs-chart-card">
               <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Revenue & Net Income</div>
-              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>5-year trend · {data.currency} millions</div>
+              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>{periodLabel} · {data.currency} millions</div>
               <ResponsiveContainer width="100%" height={200}>
                 <AreaChart data={cData}>
                   <defs>
@@ -666,6 +784,10 @@ function FinSightApp() {
             <button className="fs-act fs-action-btn" onClick={openGamma} style={{ background: C.accent, color: "#fff", border: "none" }}>📊 Generate PPT</button>
             <button className="fs-act fs-action-btn" onClick={genScript} style={{ background: C.bgCard, color: C.textPrimary, border: `1px solid ${C.border}` }}>🎙️ Podcast Script</button>
             <button className="fs-act fs-action-btn" onClick={() => setScreen("landing")} style={{ background: "transparent", color: C.textSec, border: `1px solid ${C.border}` }}>← New search</button>
+          </div>
+
+          <div style={{ background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", marginBottom: 20, fontSize: 11.5, color: C.textMuted, lineHeight: 1.6 }}>
+            <strong style={{ color: C.textSec }}>Disclaimer:</strong> FinSight AI provides research and educational content only. This is not investment advice. We are not a SEBI-registered Investment Advisor. Verify information with original sources and consult a qualified financial advisor before making any investment decisions.
           </div>
 
           <div style={{ textAlign: "center", paddingTop: 20, borderTop: `1px solid ${C.border}` }}><Byline /></div>
