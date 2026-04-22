@@ -7,7 +7,7 @@ import { ClerkProvider, SignedIn, SignedOut, SignIn, SignUp, UserButton, useUser
 
 /* ═════════════════════════════════════════════════════════════
    FinSight AI — by Pallav Shah
-   v3.4 (April 22, 2026) — Segmented AI Analysis (4 sections)
+   v3.5 (April 22, 2026) — Excel Export + Segmented Analysis
 ════════════════════════════════════════════════════════════════ */
 
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -84,6 +84,307 @@ function calcGrowth(arr, idx) {
   return ((arr[idx] - prev) / Math.abs(prev)) * 100;
 }
 
+/* ═════════════════════════════════════════════════════════════
+   EXCEL EXPORT — NEW v3.5
+   Uses SheetJS (xlsx) library loaded lazily via CDN
+════════════════════════════════════════════════════════════════ */
+async function loadSheetJS() {
+  if (window.XLSX) return window.XLSX;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    script.onload = () => resolve(window.XLSX);
+    script.onerror = () => reject(new Error('Failed to load Excel library'));
+    document.head.appendChild(script);
+  });
+}
+
+async function generateExcel(data, periodLabel) {
+  const XLSX = await loadSheetJS();
+  const wb = XLSX.utils.book_new();
+  const sym = data.currencySymbol || "$";
+  const cur = data.currency || "USD";
+  const today = new Date().toISOString().split('T')[0];
+
+  // ═══════════════════════════════════════════════════════════
+  // SHEET 1: EXECUTIVE SUMMARY
+  // ═══════════════════════════════════════════════════════════
+  const lastIdx = (data.years?.length || 1) - 1;
+  const s1Data = [
+    ["FINSIGHT AI — FINANCIAL ANALYSIS REPORT"],
+    ["by Pallav Shah"],
+    [""],
+    ["COMPANY OVERVIEW"],
+    ["Company Name", data.company || "N/A"],
+    ["Ticker", data.ticker || "N/A"],
+    ["Exchange", data.exchange || "N/A"],
+    ["Market", data.market || "N/A"],
+    ["Sector", data.sector || "N/A"],
+    ["Currency", `${cur} (${sym})`],
+    ["Analysis Period", periodLabel],
+    ["Data As Of", data.dataAsOf || "N/A"],
+    ["Report Generated", today],
+    [""],
+    ["DESCRIPTION"],
+    [data.description || "N/A"],
+    [""],
+    ["KEY METRICS (LATEST PERIOD)"],
+    ["Metric", "Value", "Context"],
+    ["Revenue", fmtMoney(data.revenue?.[lastIdx], sym), `Period: ${data.years?.[lastIdx] || "N/A"}`],
+    ["Net Income", fmtMoney(data.netIncome?.[lastIdx], sym), data.netMargin?.[lastIdx] ? `Margin: ${Number(data.netMargin[lastIdx]).toFixed(1)}%` : ""],
+    ["EBITDA", fmtMoney(data.ebitda?.[lastIdx], sym), "Operating earnings"],
+    ["Free Cash Flow", fmtMoney(data.freeCashFlow?.[lastIdx], sym), "Cash after capex"],
+    ["EPS", data.eps?.[lastIdx] != null ? `${sym}${Number(data.eps[lastIdx]).toFixed(2)}` : "N/A", "Per share"],
+    ["Market Cap", fmtMoney(data.marketCap, sym), "Total value"],
+    ["P/E Ratio", data.peRatio ? `${Number(data.peRatio).toFixed(1)}x` : "N/A", "Current"],
+    ["Revenue CAGR", data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(1)}%` : "N/A", periodLabel],
+    [""],
+    ["OUTLOOK"],
+    ["Rating", data.outlook || "N/A"],
+    ["Reasoning", data.outlookReason || "N/A"],
+  ];
+  const ws1 = XLSX.utils.aoa_to_sheet(s1Data);
+  ws1['!cols'] = [{ wch: 25 }, { wch: 35 }, { wch: 30 }];
+  XLSX.utils.book_append_sheet(wb, ws1, "Executive Summary");
+
+  // ═══════════════════════════════════════════════════════════
+  // SHEET 2: FINANCIAL PERFORMANCE
+  // ═══════════════════════════════════════════════════════════
+  const header = ["Metric", ...(data.years || [])];
+  const fmtRow = (label, arr) => {
+    const row = [label];
+    (arr || []).forEach(v => row.push(v != null ? v : "N/A"));
+    return row;
+  };
+  const growthRow = (label, arr) => {
+    const row = [label];
+    (arr || []).forEach((v, i) => {
+      const g = calcGrowth(arr, i);
+      row.push(g != null ? `${g.toFixed(1)}%` : (i === 0 ? "Base" : "N/A"));
+    });
+    return row;
+  };
+
+  const s2Data = [
+    ["FINANCIAL PERFORMANCE"],
+    [`${data.company || ""} | ${periodLabel} | Values in ${cur} millions unless noted`],
+    [""],
+    ["ABSOLUTE VALUES (Millions)"],
+    header,
+    fmtRow("Revenue", data.revenue),
+    fmtRow("Net Income", data.netIncome),
+    fmtRow("EBITDA", data.ebitda),
+    fmtRow("Free Cash Flow", data.freeCashFlow),
+    [""],
+    ["GROWTH RATES (Period-over-Period)"],
+    header,
+    growthRow("Revenue Growth", data.revenue),
+    growthRow("Net Income Growth", data.netIncome),
+    growthRow("EBITDA Growth", data.ebitda),
+    growthRow("FCF Growth", data.freeCashFlow),
+    [""],
+    ["SUMMARY STATISTICS"],
+    ["Revenue CAGR", data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(2)}%` : "N/A"],
+    ["Latest Revenue", fmtMoney(data.revenue?.[lastIdx], sym)],
+    ["Latest Net Income", fmtMoney(data.netIncome?.[lastIdx], sym)],
+    ["Latest FCF", fmtMoney(data.freeCashFlow?.[lastIdx], sym)],
+  ];
+  const ws2 = XLSX.utils.aoa_to_sheet(s2Data);
+  const colWidths2 = [{ wch: 22 }];
+  (data.years || []).forEach(() => colWidths2.push({ wch: 16 }));
+  ws2['!cols'] = colWidths2;
+  XLSX.utils.book_append_sheet(wb, ws2, "Financial Performance");
+
+  // ═══════════════════════════════════════════════════════════
+  // SHEET 3: PROFITABILITY & RATIOS
+  // ═══════════════════════════════════════════════════════════
+  const s3Data = [
+    ["PROFITABILITY & RATIOS"],
+    [`${data.company || ""} | ${periodLabel}`],
+    [""],
+    ["MARGINS (%)"],
+    header,
+    fmtRow("Gross Margin", data.grossMargin),
+    fmtRow("Net Margin", data.netMargin),
+    [""],
+    ["EARNINGS PER SHARE"],
+    header,
+    fmtRow(`EPS (${sym})`, data.eps),
+    growthRow("EPS Growth", data.eps),
+    [""],
+    ["VALUATION METRICS"],
+    ["P/E Ratio", data.peRatio ? `${Number(data.peRatio).toFixed(2)}x` : "N/A"],
+    ["Market Cap", fmtMoney(data.marketCap, sym)],
+    [""],
+    ["COST STRUCTURE (% of Revenue)"],
+  ];
+
+  if (data.costStructure && data.costStructure.length) {
+    const csHeader = ["Category", ...(data.years || [])];
+    s3Data.push(csHeader);
+    const categories = [
+      { key: "cogsPct", label: "Cost of Goods Sold" },
+      { key: "opexPct", label: "Operating Expenses" },
+      { key: "taxPct", label: "Taxes" },
+      { key: "otherPct", label: "Other" },
+      { key: "netProfitPct", label: "Net Profit" },
+    ];
+    categories.forEach(cat => {
+      const row = [cat.label];
+      data.costStructure.forEach(cs => {
+        const v = cs?.[cat.key];
+        row.push(v != null ? `${Number(v).toFixed(1)}%` : "N/A");
+      });
+      s3Data.push(row);
+    });
+  } else {
+    s3Data.push(["Cost structure data not available for this analysis"]);
+  }
+
+  const ws3 = XLSX.utils.aoa_to_sheet(s3Data);
+  const colWidths3 = [{ wch: 28 }];
+  (data.years || []).forEach(() => colWidths3.push({ wch: 16 }));
+  ws3['!cols'] = colWidths3;
+  XLSX.utils.book_append_sheet(wb, ws3, "Profitability & Ratios");
+
+  // ═══════════════════════════════════════════════════════════
+  // SHEET 4: AI ANALYSIS
+  // ═══════════════════════════════════════════════════════════
+  const s4Data = [
+    ["AI FINANCIAL ANALYSIS"],
+    [`${data.company || ""} | Generated by FinSight AI`],
+    [""],
+  ];
+
+  // Use new segmented analysis if available, else fall back to legacy single analysis
+  const addSection = (icon, title, paragraphs) => {
+    if (!paragraphs) return;
+    s4Data.push([`${icon} ${title.toUpperCase()}`]);
+    s4Data.push([""]);
+    if (Array.isArray(paragraphs)) {
+      paragraphs.forEach((p, i) => {
+        s4Data.push([`${i + 1}.`, p]);
+        s4Data.push([""]);
+      });
+    } else if (typeof paragraphs === "string") {
+      s4Data.push(["", paragraphs]);
+      s4Data.push([""]);
+    }
+    s4Data.push([""]);
+  };
+
+  if (data.analysisRevenue || data.analysisProfitability || data.analysisCashFlow || data.analysisOutlook) {
+    addSection("📈", "Revenue & Growth Story", data.analysisRevenue);
+    addSection("💰", "Profitability Performance", data.analysisProfitability);
+    addSection("💵", "Cash Flow Analysis", data.analysisCashFlow);
+    addSection("🎯", "Competitive & Strategic Outlook", data.analysisOutlook);
+  } else if (data.analysis) {
+    // Legacy format fallback
+    s4Data.push(["DETAILED ANALYSIS"]);
+    s4Data.push([""]);
+    String(data.analysis).split(/\n+/).filter(Boolean).forEach((p, i) => {
+      s4Data.push([`${i + 1}.`, p]);
+      s4Data.push([""]);
+    });
+  } else {
+    s4Data.push(["Analysis content not available"]);
+  }
+
+  const ws4 = XLSX.utils.aoa_to_sheet(s4Data);
+  ws4['!cols'] = [{ wch: 5 }, { wch: 120 }];
+  XLSX.utils.book_append_sheet(wb, ws4, "AI Analysis");
+
+  // ═══════════════════════════════════════════════════════════
+  // SHEET 5: KEY INSIGHTS
+  // ═══════════════════════════════════════════════════════════
+  const s5Data = [
+    ["KEY INSIGHTS"],
+    [`${data.company || ""} | ${periodLabel}`],
+    [""],
+    ["✓ KEY STRENGTHS"],
+    [""],
+  ];
+  (data.keyStrengths || []).forEach((s, i) => {
+    s5Data.push([`${i + 1}.`, s]);
+  });
+  s5Data.push([""]);
+  s5Data.push([""]);
+  s5Data.push(["⚠ KEY RISKS"]);
+  s5Data.push([""]);
+  (data.keyRisks || []).forEach((r, i) => {
+    s5Data.push([`${i + 1}.`, r]);
+  });
+  s5Data.push([""]);
+  s5Data.push([""]);
+  s5Data.push(["◎ OUTLOOK"]);
+  s5Data.push([""]);
+  s5Data.push(["Rating", data.outlook || "N/A"]);
+  s5Data.push(["Reasoning", data.outlookReason || "N/A"]);
+
+  const ws5 = XLSX.utils.aoa_to_sheet(s5Data);
+  ws5['!cols'] = [{ wch: 12 }, { wch: 110 }];
+  XLSX.utils.book_append_sheet(wb, ws5, "Key Insights");
+
+  // ═══════════════════════════════════════════════════════════
+  // SHEET 6: ABOUT & SOURCES
+  // ═══════════════════════════════════════════════════════════
+  const s6Data = [
+    ["ABOUT THIS REPORT"],
+    [""],
+    ["Generated By", "FinSight AI"],
+    ["Platform Creator", "Pallav Shah"],
+    ["Website", "https://finsightai.org"],
+    ["Report Date", today],
+    [""],
+    ["METHODOLOGY"],
+    [""],
+    ["This report is generated using AI-powered financial research."],
+    ["Data is sourced from publicly available official filings and reports including:"],
+    ["  • Company Investor Relations pages"],
+    ["  • BSE/NSE filings (for Indian companies)"],
+    ["  • SEC filings (for US companies)"],
+    ["  • Annual and quarterly reports"],
+    ["  • Earnings call transcripts"],
+    ["  • Recent news and press releases"],
+    [""],
+    ["ABOUT FINSIGHT AI"],
+    [""],
+    ["FinSight AI is a source-grounded AI research copilot for public companies."],
+    ["Designed for MBA students, CA candidates, and retail investors."],
+    ["Built with a commitment to quality, transparency, and accessibility."],
+    [""],
+    ["DISCLAIMER"],
+    [""],
+    ["FinSight AI provides research and educational content only."],
+    ["This is NOT investment advice."],
+    ["We are NOT a SEBI-registered Investment Advisor."],
+    ["Always verify information with original sources."],
+    ["Consult a qualified financial advisor before making investment decisions."],
+    ["Past performance does not guarantee future results."],
+    ["Financial markets involve risk of loss."],
+    [""],
+    ["CONTACT & FEEDBACK"],
+    [""],
+    ["For feedback, partnership, or queries:"],
+    ["Website: https://finsightai.org"],
+    [""],
+    ["© 2026 FinSight AI. Built by Pallav Shah."],
+    [""],
+    ["Thank you for using FinSight AI."],
+  ];
+  const ws6 = XLSX.utils.aoa_to_sheet(s6Data);
+  ws6['!cols'] = [{ wch: 25 }, { wch: 80 }];
+  XLSX.utils.book_append_sheet(wb, ws6, "About & Sources");
+
+  // ═══════════════════════════════════════════════════════════
+  // GENERATE AND DOWNLOAD
+  // ═══════════════════════════════════════════════════════════
+  const cleanCompany = (data.company || "Company").replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
+  const cleanPeriod = periodLabel.replace(/\s+/g, '');
+  const filename = `FinSight_${cleanCompany}_${cleanPeriod}_${today}.xlsx`;
+  XLSX.writeFile(wb, filename);
+}
+
 const ChartTip = ({ active, payload, label, sym = "$", isPct = false }) => {
   if (!active || !payload?.length) return null;
   return (
@@ -110,10 +411,6 @@ const STEPS = [
   "Building your dashboard",
 ];
 
-/* ═════════════════════════════════════════════════════════════
-   SYSTEM PROMPT v3.4 — Returns SEGMENTED analysis (4 sections)
-   Each section: 3 paragraphs of 2-3 sentences
-════════════════════════════════════════════════════════════════ */
 function buildSystemPrompt(period) {
   const today = new Date().toISOString().split('T')[0];
   const currentYear = new Date().getFullYear();
@@ -190,9 +487,9 @@ Return this exact structure (monetary values in MILLIONS of local currency, perc
     "Third paragraph (2-3 sentences) about forward revenue trajectory, guidance, or growth catalysts. Include specific numbers."
   ],
   "analysisProfitability": [
-    "First paragraph (2-3 sentences) about margin performance (gross, operating, net). Include specific percentages and comparisons.",
+    "First paragraph (2-3 sentences) about margin performance. Include specific percentages and comparisons.",
     "Second paragraph (2-3 sentences) about cost dynamics, pricing power, or operating leverage. Include specific numbers.",
-    "Third paragraph (2-3 sentences) about profitability trajectory and what's driving expansion or compression. Include specific numbers."
+    "Third paragraph (2-3 sentences) about profitability trajectory. Include specific numbers."
   ],
   "analysisCashFlow": [
     "First paragraph (2-3 sentences) about free cash flow generation and cash conversion. Include specific numbers.",
@@ -259,32 +556,14 @@ const Byline = () => (
   </span>
 );
 
-/* ═════════════════════════════════════════════════════════════
-   CHART FRAME — Consistent wrapper with Quick Read
-════════════════════════════════════════════════════════════════ */
 function ChartFrame({ icon, title, subtitle, children, quickRead, quickReadColor }) {
   return (
     <div className="fs-chart-card" style={{
-      background: C.bgCard,
-      border: `1px solid ${C.border}`,
-      borderRadius: 16,
-      padding: 22,
-      boxShadow: C.shadow,
-      display: "flex",
-      flexDirection: "column",
-      gap: 14,
+      background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 22,
+      boxShadow: C.shadow, display: "flex", flexDirection: "column", gap: 14,
     }}>
       <div>
-        <div style={{
-          fontFamily: "'Plus Jakarta Sans', sans-serif",
-          fontWeight: 700,
-          fontSize: 15,
-          color: C.textPrimary,
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          marginBottom: 4,
-        }}>
+        <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, color: C.textPrimary, display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <span style={{ fontSize: 18 }}>{icon}</span>
           <span>{title}</span>
         </div>
@@ -292,24 +571,8 @@ function ChartFrame({ icon, title, subtitle, children, quickRead, quickReadColor
       </div>
       <div style={{ flex: 1 }}>{children}</div>
       {quickRead && (
-        <div style={{
-          background: quickReadColor || C.accentLight,
-          borderLeft: `3px solid ${quickReadColor ? C.green : C.accent}`,
-          borderRadius: 6,
-          padding: "10px 14px",
-          fontSize: 12.5,
-          lineHeight: 1.6,
-          color: C.textSec,
-        }}>
-          <span style={{
-            color: quickReadColor ? C.green : C.accent,
-            fontWeight: 700,
-            fontSize: 10,
-            textTransform: "uppercase",
-            letterSpacing: ".8px",
-            display: "block",
-            marginBottom: 3,
-          }}>💡 Quick Read</span>
+        <div style={{ background: quickReadColor || C.accentLight, borderLeft: `3px solid ${quickReadColor ? C.green : C.accent}`, borderRadius: 6, padding: "10px 14px", fontSize: 12.5, lineHeight: 1.6, color: C.textSec }}>
+          <span style={{ color: quickReadColor ? C.green : C.accent, fontWeight: 700, fontSize: 10, textTransform: "uppercase", letterSpacing: ".8px", display: "block", marginBottom: 3 }}>💡 Quick Read</span>
           {quickRead}
         </div>
       )}
@@ -317,17 +580,11 @@ function ChartFrame({ icon, title, subtitle, children, quickRead, quickReadColor
   );
 }
 
-/* ═════════════════════════════════════════════════════════════
-   CHART 1: GROWTH QUALITY
-════════════════════════════════════════════════════════════════ */
 function GrowthQualityChart({ data, sym }) {
   const hasData = data.revenue?.some(v => v != null);
   if (!hasData) return null;
   const chartData = data.years.map((y, i) => ({
-    year: String(y),
-    Revenue: data.revenue?.[i],
-    "Gross Margin": data.grossMargin?.[i],
-    "Net Margin": data.netMargin?.[i],
+    year: String(y), Revenue: data.revenue?.[i], "Gross Margin": data.grossMargin?.[i], "Net Margin": data.netMargin?.[i],
   }));
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
@@ -344,7 +601,7 @@ function GrowthQualityChart({ data, sym }) {
     else if (revenueTrend > 0 && marginTrend < -0.5) { quickRead = "Revenue growing BUT margins shrinking — growth may be coming at the cost of profitability. Watch this."; }
     else if (revenueTrend < 0) { quickRead = "Revenue declining. Check if margins are holding to understand if it's a temporary or structural issue."; }
     else { quickRead = "Stable performance. Look at both revenue trajectory and margin trend together to judge quality."; }
-  } else { quickRead = "Compare revenue bars with margin lines. Both rising = quality growth. Bars up but lines down = warning."; }
+  } else { quickRead = "Compare revenue bars with margin lines. Both rising = quality growth."; }
 
   return (
     <ChartFrame icon="📊" title="Growth Quality" subtitle="Revenue (bars) plotted against profit margins (lines). The best companies grow revenue WHILE maintaining or improving margins." quickRead={quickRead} quickReadColor={quickColor}>
@@ -371,16 +628,11 @@ function GrowthQualityChart({ data, sym }) {
   );
 }
 
-/* ═════════════════════════════════════════════════════════════
-   CHART 2: CASH QUALITY
-════════════════════════════════════════════════════════════════ */
 function CashQualityChart({ data, sym }) {
   const hasData = data.netIncome?.some(v => v != null) && data.freeCashFlow?.some(v => v != null);
   if (!hasData) return null;
   const chartData = data.years.map((y, i) => ({
-    year: String(y),
-    "Net Income": data.netIncome?.[i],
-    "Free Cash Flow": data.freeCashFlow?.[i],
+    year: String(y), "Net Income": data.netIncome?.[i], "Free Cash Flow": data.freeCashFlow?.[i],
   }));
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
@@ -394,7 +646,7 @@ function CashQualityChart({ data, sym }) {
     else if (ratio >= 0.6) { quickRead = "Cash flow is moderately lower than reported profits. Normal for some industries, but monitor the gap."; }
     else if (ratio >= 0.3) { quickRead = "Significant gap between profits and cash. Could indicate heavy reinvestment OR accounting-heavy earnings."; }
     else { quickRead = "Cash flow is much lower than profits. Understand where the gap is coming from — it's a potential red flag."; quickColor = C.redBg; }
-  } else { quickRead = "If cash flow bars are similar to net income bars, profits are real cash. Much lower = caution sign."; }
+  } else { quickRead = "If cash flow bars are similar to net income bars, profits are real cash."; }
 
   return (
     <ChartFrame icon="💰" title="Cash Quality Check" subtitle="Compares reported profits (Net Income) with actual cash generated (Free Cash Flow). Matching = real profits." quickRead={quickRead} quickReadColor={quickColor}>
@@ -421,9 +673,6 @@ function CashQualityChart({ data, sym }) {
   );
 }
 
-/* ═════════════════════════════════════════════════════════════
-   CHART 3: PROFIT STRUCTURE (pie for 1 period, stacked bars for multi)
-════════════════════════════════════════════════════════════════ */
 function ProfitStructureChart({ data, sym }) {
   const cs = data.costStructure;
   if (!cs || !cs.length || !cs.some(c => c && c.cogsPct != null)) return null;
@@ -444,7 +693,7 @@ function ProfitStructureChart({ data, sym }) {
     if (netProfitPct >= 20) { quickRead = `Very strong profitability — company keeps ${netProfitPct.toFixed(1)}% of every rupee as profit. Typical of premium brands or moats.`; quickColor = C.greenBg; }
     else if (netProfitPct >= 10) { quickRead = `Healthy profit margin of ${netProfitPct.toFixed(1)}%. Industry-average for most sectors.`; quickColor = C.greenBg; }
     else if (netProfitPct >= 5) { quickRead = `Modest profit margin of ${netProfitPct.toFixed(1)}%. Common in competitive or commodity industries.`; }
-    else { quickRead = `Thin profit margin of ${netProfitPct.toFixed(1)}%. Company keeps very little. Check if it's industry norm or a warning.`; }
+    else { quickRead = `Thin profit margin of ${netProfitPct.toFixed(1)}%. Company keeps very little.`; }
 
     return (
       <ChartFrame icon="🥧" title="Profit Structure" subtitle={`Where every ${sym}100 of revenue goes — costs, taxes, and what's left as profit (${data.years[0]}).`} quickRead={quickRead} quickReadColor={quickColor}>
@@ -465,11 +714,8 @@ function ProfitStructureChart({ data, sym }) {
     const c = cs[i] || {};
     return {
       year: String(y),
-      "Cost of Goods": c.cogsPct || 0,
-      "Operating Exp": c.opexPct || 0,
-      "Taxes": c.taxPct || 0,
-      "Net Profit": c.netProfitPct || 0,
-      "Other": c.otherPct || 0,
+      "Cost of Goods": c.cogsPct || 0, "Operating Exp": c.opexPct || 0,
+      "Taxes": c.taxPct || 0, "Net Profit": c.netProfitPct || 0, "Other": c.otherPct || 0,
     };
   });
   const axisStyle = { fontSize: 11, fill: C.textMuted };
@@ -480,9 +726,9 @@ function ProfitStructureChart({ data, sym }) {
   if (latestProfit != null && firstProfit != null) {
     const delta = latestProfit - firstProfit;
     if (delta > 1) { quickRead = `Net profit share grew from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margin expansion. Good sign.`; quickColor = C.greenBg; }
-    else if (delta < -1) { quickRead = `Net profit share shrank from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margins compressing. Investigate cause.`; quickColor = C.redBg; }
-    else { quickRead = `Profit share relatively stable around ${latestProfit.toFixed(1)}%. Watch cost structure for future trends.`; }
-  } else { quickRead = "Green (Net Profit) slice getting bigger over time = improving efficiency. Shrinking = margin pressure."; }
+    else if (delta < -1) { quickRead = `Net profit share shrank from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margins compressing.`; quickColor = C.redBg; }
+    else { quickRead = `Profit share relatively stable around ${latestProfit.toFixed(1)}%.`; }
+  } else { quickRead = "Green (Net Profit) slice getting bigger = improving efficiency. Shrinking = margin pressure."; }
 
   return (
     <ChartFrame icon="📊" title="Profit Structure Trend" subtitle="How every 100% of revenue splits across costs, taxes, and profit — tracked over time." quickRead={quickRead} quickReadColor={quickColor}>
@@ -504,16 +750,19 @@ function ProfitStructureChart({ data, sym }) {
   );
 }
 
-/* ═════════════════════════════════════════════════════════════
-   CHART 4: EPS with Growth Badges
-════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   ↓↓↓ PART 1 ENDS HERE ↓↓↓
+   Paste Part 2 below this line
+═══════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   ↑↑↑ PART 2 STARTS HERE ↑↑↑
+═══════════════════════════════════════════════════════════════ */
+
 function EPSChart({ data, sym }) {
   const hasData = data.eps?.some(v => v != null);
   if (!hasData) return null;
   const chartData = data.years.map((y, i) => ({
-    year: String(y),
-    EPS: data.eps?.[i],
-    growth: calcGrowth(data.eps, i),
+    year: String(y), EPS: data.eps?.[i], growth: calcGrowth(data.eps, i),
   }));
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
@@ -526,10 +775,10 @@ function EPSChart({ data, sym }) {
   } else if (firstEPS != null && latestEPS != null && firstEPS !== 0) {
     const totalGrowth = ((latestEPS - firstEPS) / Math.abs(firstEPS)) * 100;
     if (totalGrowth > 50) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% over this period — strong compounding shareholder wealth.`; quickColor = C.greenBg; }
-    else if (totalGrowth > 0) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% — steady value creation. Consistency matters more than magnitude.`; quickColor = C.greenBg; }
-    else if (totalGrowth > -10) { quickRead = "EPS broadly flat. Could indicate maturity or challenges — check revenue trend for context."; }
-    else { quickRead = `EPS declined ${Math.abs(totalGrowth).toFixed(0)}%. Understand cause — one-off impact vs structural erosion.`; quickColor = C.redBg; }
-  } else { quickRead = "Consistent EPS growth = compounding shareholder wealth. Check growth % badges between bars."; }
+    else if (totalGrowth > 0) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% — steady value creation.`; quickColor = C.greenBg; }
+    else if (totalGrowth > -10) { quickRead = "EPS broadly flat. Could indicate maturity or challenges."; }
+    else { quickRead = `EPS declined ${Math.abs(totalGrowth).toFixed(0)}%. Understand cause.`; quickColor = C.redBg; }
+  } else { quickRead = "Consistent EPS growth = compounding shareholder wealth."; }
 
   return (
     <ChartFrame icon="📈" title="Earnings Per Share (EPS)" subtitle="What each share earned in profits. Consistent growth = real value creation for shareholders." quickRead={quickRead} quickReadColor={quickColor}>
@@ -561,25 +810,21 @@ function EPSChart({ data, sym }) {
           />
           <Bar dataKey="EPS" fill="url(#epsGrad)" radius={[6, 6, 0, 0]} barSize={dataLen <= 2 ? 60 : dataLen <= 4 ? 45 : 35}>
             {dataLen <= 5 && (
-              <LabelList
-                dataKey="EPS"
-                position="top"
-                content={({ x, y, width, value, index }) => {
-                  const growth = chartData[index]?.growth;
-                  return (
-                    <g>
-                      <text x={x + width / 2} y={y - 18} textAnchor="middle" style={{ fill: C.textPrimary, fontSize: 11, fontWeight: 700, fontFamily: "'DM Mono', monospace" }}>
-                        {sym}{Number(value).toFixed(2)}
+              <LabelList dataKey="EPS" position="top" content={({ x, y, width, value, index }) => {
+                const growth = chartData[index]?.growth;
+                return (
+                  <g>
+                    <text x={x + width / 2} y={y - 18} textAnchor="middle" style={{ fill: C.textPrimary, fontSize: 11, fontWeight: 700, fontFamily: "'DM Mono', monospace" }}>
+                      {sym}{Number(value).toFixed(2)}
+                    </text>
+                    {growth != null && (
+                      <text x={x + width / 2} y={y - 4} textAnchor="middle" style={{ fill: growth >= 0 ? C.green : C.red, fontSize: 10, fontWeight: 600 }}>
+                        {growth >= 0 ? "↑" : "↓"} {Math.abs(growth).toFixed(1)}%
                       </text>
-                      {growth != null && (
-                        <text x={x + width / 2} y={y - 4} textAnchor="middle" style={{ fill: growth >= 0 ? C.green : C.red, fontSize: 10, fontWeight: 600 }}>
-                          {growth >= 0 ? "↑" : "↓"} {Math.abs(growth).toFixed(1)}%
-                        </text>
-                      )}
-                    </g>
-                  );
-                }}
-              />
+                    )}
+                  </g>
+                );
+              }} />
             )}
           </Bar>
         </BarChart>
@@ -588,80 +833,26 @@ function EPSChart({ data, sym }) {
   );
 }
 
-/* ═════════════════════════════════════════════════════════════
-   ANALYSIS SECTION — NEW: Segmented 4-part analysis display
-════════════════════════════════════════════════════════════════ */
 function AnalysisSection({ icon, title, accentColor, paragraphs }) {
   let parts = [];
-  if (Array.isArray(paragraphs)) {
-    parts = paragraphs.filter(Boolean);
-  } else if (typeof paragraphs === "string") {
+  if (Array.isArray(paragraphs)) parts = paragraphs.filter(Boolean);
+  else if (typeof paragraphs === "string") {
     parts = paragraphs.split(/\n\n+/).filter(Boolean);
     if (parts.length === 0) parts = [paragraphs];
   }
   if (parts.length === 0) return null;
 
   return (
-    <div style={{
-      background: C.bgCard,
-      border: `1px solid ${C.border}`,
-      borderRadius: 14,
-      padding: 22,
-      boxShadow: C.shadow,
-      transition: "all .2s",
-    }}>
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        marginBottom: 14,
-        paddingBottom: 12,
-        borderBottom: `1px solid ${C.border}`,
-      }}>
-        <div style={{
-          width: 34,
-          height: 34,
-          borderRadius: 8,
-          background: `${accentColor}15`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 18,
-          flexShrink: 0,
-        }}>{icon}</div>
-        <div style={{
-          fontFamily: "'Plus Jakarta Sans', sans-serif",
-          fontWeight: 700,
-          fontSize: 15.5,
-          color: C.textPrimary,
-        }}>{title}</div>
+    <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 22, boxShadow: C.shadow, transition: "all .2s" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ width: 34, height: 34, borderRadius: 8, background: `${accentColor}15`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{icon}</div>
+        <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15.5, color: C.textPrimary }}>{title}</div>
       </div>
-
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {parts.map((para, i) => (
           <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-            <div style={{
-              flexShrink: 0,
-              width: 24,
-              height: 24,
-              borderRadius: "50%",
-              background: `${accentColor}15`,
-              color: accentColor,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontFamily: "'DM Mono', monospace",
-              fontSize: 11,
-              fontWeight: 700,
-              marginTop: 2,
-            }}>{i + 1}</div>
-            <p style={{
-              color: C.textSec,
-              lineHeight: 1.75,
-              fontSize: 13.5,
-              flex: 1,
-              margin: 0,
-            }}>{para}</p>
+            <div style={{ flexShrink: 0, width: 24, height: 24, borderRadius: "50%", background: `${accentColor}15`, color: accentColor, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Mono', monospace", fontSize: 11, fontWeight: 700, marginTop: 2 }}>{i + 1}</div>
+            <p style={{ color: C.textSec, lineHeight: 1.75, fontSize: 13.5, flex: 1, margin: 0 }}>{para}</p>
           </div>
         ))}
       </div>
@@ -669,71 +860,18 @@ function AnalysisSection({ icon, title, accentColor, paragraphs }) {
   );
 }
 
-/* ═════════════════════════════════════════════════════════════
-   INSIGHT CARD — For Strengths/Risks with refined design
-════════════════════════════════════════════════════════════════ */
 function InsightCard({ title, items, color, icon, badgeColor }) {
   return (
-    <div style={{
-      background: C.bgCard,
-      border: `1px solid ${C.border}`,
-      borderRadius: 14,
-      padding: 22,
-      boxShadow: C.shadow,
-    }}>
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        marginBottom: 16,
-        paddingBottom: 12,
-        borderBottom: `1px solid ${C.border}`,
-      }}>
-        <div style={{
-          width: 32,
-          height: 32,
-          borderRadius: 8,
-          background: badgeColor,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 15,
-          color: color,
-          fontWeight: 700,
-          flexShrink: 0,
-        }}>{icon}</div>
-        <div style={{
-          fontFamily: "'Plus Jakarta Sans', sans-serif",
-          fontWeight: 700,
-          fontSize: 14.5,
-          color: color,
-        }}>{title}</div>
+    <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 22, boxShadow: C.shadow }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: badgeColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: color, fontWeight: 700, flexShrink: 0 }}>{icon}</div>
+        <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14.5, color: color }}>{title}</div>
       </div>
-
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {items.map((item, i) => (
           <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-            <div style={{
-              flexShrink: 0,
-              width: 20,
-              height: 20,
-              borderRadius: "50%",
-              background: badgeColor,
-              color: color,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontFamily: "'DM Mono', monospace",
-              fontSize: 10,
-              fontWeight: 700,
-              marginTop: 2,
-            }}>{i + 1}</div>
-            <div style={{
-              color: C.textSec,
-              fontSize: 13,
-              lineHeight: 1.65,
-              flex: 1,
-            }}>{item}</div>
+            <div style={{ flexShrink: 0, width: 20, height: 20, borderRadius: "50%", background: badgeColor, color: color, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Mono', monospace", fontSize: 10, fontWeight: 700, marginTop: 2 }}>{i + 1}</div>
+            <div style={{ color: C.textSec, fontSize: 13, lineHeight: 1.65, flex: 1 }}>{item}</div>
           </div>
         ))}
       </div>
@@ -741,9 +879,6 @@ function InsightCard({ title, items, color, icon, badgeColor }) {
   );
 }
 
-/* ═════════════════════════════════════════════════════════════
-   PERIOD DROPDOWN
-════════════════════════════════════════════════════════════════ */
 function PeriodDropdown({ value, onChange }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -798,15 +933,6 @@ function PeriodDropdown({ value, onChange }) {
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   ↓↓↓ PART 1 ENDS HERE ↓↓↓
-   Paste Part 2 below this line, starting with: const FONTS = `@import...
-═══════════════════════════════════════════════════════════════ */
-/* ═══════════════════════════════════════════════════════════════
-   ↑↑↑ PART 2 STARTS HERE ↑↑↑
-   This continues where Part 1 ended — do NOT create duplicates
-═══════════════════════════════════════════════════════════════ */
-
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');`;
 
 const GLOBAL_CSS = `
@@ -823,6 +949,7 @@ const GLOBAL_CSS = `
   .fs-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
   .fs-chart-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
   .fs-act:hover { opacity: .88 !important; transform: translateY(-1px); }
+  .fs-act:disabled { opacity: .55 !important; cursor: not-allowed !important; transform: none !important; }
   .fs-dropdown-btn:hover { border-color: ${C.accent} !important; }
   @keyframes fs-fade { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:none;} }
   @keyframes fs-spin { to { transform: rotate(360deg); } }
@@ -893,14 +1020,10 @@ const GLOBAL_CSS = `
   .fs-section-heading::before { content: ''; width: 4px; height: 20px; background: ${C.accent}; border-radius: 2px; }
 `;
 
-/* ═══════════════════════════════════════════════════════════════
-   LOGIN SCREEN
-═══════════════════════════════════════════════════════════════ */
 function LoginScreen() {
   return (
     <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <style>{FONTS + GLOBAL_CSS}</style>
-
       <div style={{ marginBottom: 24, textAlign: "center" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, marginBottom: 16 }}>
           <FinSightLogo size={56} />
@@ -912,52 +1035,33 @@ function LoginScreen() {
         <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 20, color: C.textPrimary, marginBottom: 6, padding: "0 10px" }}>Welcome to financial intelligence</h2>
         <p style={{ color: C.textSec, fontSize: 14, padding: "0 10px" }}>Sign in to analyze any company's financials</p>
       </div>
-
-      <SignIn
-        appearance={{
-          elements: {
-            rootBox: { width: "100%", maxWidth: 400 },
-            card: { background: C.bgCard, border: `1px solid ${C.border}`, boxShadow: C.shadow },
-            formButtonPrimary: { background: C.accent, "&:hover": { background: C.accentDark } },
-          }
-        }}
-      />
-
-      <div style={{ marginTop: 24, color: C.textMuted, fontSize: 12, textAlign: "center", padding: "0 20px" }}>
-        By continuing, you agree to our Terms & Privacy Policy
-      </div>
+      <SignIn appearance={{ elements: { rootBox: { width: "100%", maxWidth: 400 }, card: { background: C.bgCard, border: `1px solid ${C.border}`, boxShadow: C.shadow }, formButtonPrimary: { background: C.accent, "&:hover": { background: C.accentDark } } } }} />
+      <div style={{ marginTop: 24, color: C.textMuted, fontSize: 12, textAlign: "center", padding: "0 20px" }}>By continuing, you agree to our Terms & Privacy Policy</div>
     </div>
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   MAIN APP
-═══════════════════════════════════════════════════════════════ */
 function FinSightApp() {
   const { user } = useUser();
-  const [screen, setScreen]         = useState("landing");
-  const [q, setQ]                   = useState("");
-  const [period, setPeriod]         = useState(DEFAULT_PERIOD);
-  const [data, setData]             = useState(null);
-  const [err, setErr]               = useState("");
-  const [stepIdx, setStepIdx]       = useState(0);
-  const [modal, setModal]           = useState(null);
+  const [screen, setScreen] = useState("landing");
+  const [q, setQ] = useState("");
+  const [period, setPeriod] = useState(DEFAULT_PERIOD);
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+  const [stepIdx, setStepIdx] = useState(0);
+  const [modal, setModal] = useState(null);
   const [scriptText, setScriptText] = useState("");
   const [scriptLoading, setScriptLoading] = useState(false);
+  const [excelLoading, setExcelLoading] = useState(false);
 
   useEffect(() => {
     if (user) {
       fetch("/api/track-user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: user.id,
-          email: user.primaryEmailAddress?.emailAddress,
-          phone: user.primaryPhoneNumber?.phoneNumber,
-          name: user.fullName,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          signedUpAt: user.createdAt,
+          userId: user.id, email: user.primaryEmailAddress?.emailAddress,
+          phone: user.primaryPhoneNumber?.phoneNumber, name: user.fullName,
+          firstName: user.firstName, lastName: user.lastName, signedUpAt: user.createdAt,
           provider: user.externalAccounts?.[0]?.provider || "email",
         })
       }).catch(() => {});
@@ -973,27 +1077,20 @@ function FinSightApp() {
 
   const analyze = async (company) => {
     setScreen("loading"); setErr(""); setScriptText(""); setModal(null);
-
     if (user) {
       fetch("/api/track-activity", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: user.id,
-          email: user.primaryEmailAddress?.emailAddress,
-          action: "analyze",
-          company, period,
-          timestamp: new Date().toISOString(),
+          userId: user.id, email: user.primaryEmailAddress?.emailAddress,
+          action: "analyze", company, period, timestamp: new Date().toISOString(),
         })
       }).catch(() => {});
     }
-
     const periodLabel = PERIODS.find(p => p.id === period)?.label || "1 Year";
-
     try {
       const raw = await callClaude({
         system: buildSystemPrompt(period),
-        userMsg: `Find and analyze the LATEST available financial data for: ${company}. Analysis period requested: ${periodLabel} (${period}). Use web search to retrieve real, recent numbers (target Q3/Q4 FY26 or latest available). Include cost structure and EPS. Provide analysis in 4 segmented sections (analysisRevenue, analysisProfitability, analysisCashFlow, analysisOutlook), each with 3 paragraphs of 2-3 sentences. Return ONLY JSON matching the schema provided.`,
+        userMsg: `Find and analyze the LATEST available financial data for: ${company}. Analysis period requested: ${periodLabel} (${period}). Use web search to retrieve real, recent numbers. Include cost structure and EPS. Provide analysis in 4 segmented sections, each with 3 paragraphs of 2-3 sentences. Return ONLY JSON.`,
         tools: [{ type: "web_search_20250305", name: "web_search" }],
         maxTokens: 6000,
       });
@@ -1016,7 +1113,7 @@ function FinSightApp() {
       const niStr  = d.years.map((y, i) => `${y}: ${sym}${(d.netIncome[i] / 1000).toFixed(1)}B`).join(", ");
       const text = await callClaude({
         system: "You write engaging financial podcast scripts. Use real numbers. Be conversational but insightful.",
-        userMsg: `Write a 5-minute podcast between hosts ALEX and PRIYA analyzing ${d.company} (${d.ticker}). Revenue: ${revStr}. Net Income: ${niStr}. CAGR: ${d.revenueCAGR}%. Outlook: ${d.outlook} — ${d.outlookReason}. Strengths: ${d.keyStrengths.join("; ")}. Risks: ${d.keyRisks.join("; ")}. Format strictly as alternating ALEX: and PRIYA: turns, 2–3 sentences each.`,
+        userMsg: `Write a 5-minute podcast between hosts ALEX and PRIYA analyzing ${d.company} (${d.ticker}). Revenue: ${revStr}. Net Income: ${niStr}. CAGR: ${d.revenueCAGR}%. Outlook: ${d.outlook}. Strengths: ${d.keyStrengths.join("; ")}. Risks: ${d.keyRisks.join("; ")}. Format strictly as alternating ALEX: and PRIYA: turns, 2–3 sentences each.`,
         maxTokens: 1800,
       });
       setScriptText(text);
@@ -1033,10 +1130,30 @@ function FinSightApp() {
     setModal("ppt");
   };
 
+  const downloadExcel = async () => {
+    if (!data) return;
+    setExcelLoading(true);
+    try {
+      const periodLabel = PERIODS.find(p => p.id === (data.periodType || period))?.label || "1 Year";
+      await generateExcel(data, periodLabel);
+      if (user) {
+        fetch("/api/track-activity", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId: user.id, email: user.primaryEmailAddress?.emailAddress,
+            action: "download_excel", company: data.company, period, timestamp: new Date().toISOString(),
+          })
+        }).catch(() => {});
+      }
+    } catch (ex) {
+      alert("Excel download failed. Please try again. Error: " + (ex.message || "Unknown"));
+    }
+    setExcelLoading(false);
+  };
+
   if (screen === "landing") return (
     <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
       <style>{FONTS + GLOBAL_CSS}</style>
-
       <header className="fs-header-landing">
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <FinSightLogo size={28} />
@@ -1046,46 +1163,24 @@ function FinSightApp() {
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <UserButton afterSignOutUrl="/" />
-        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}><UserButton afterSignOutUrl="/" /></div>
       </header>
-
       <main className="fs-landing-main">
         <div style={{ marginBottom: 24 }}><FinSightLogo size={64} /></div>
-
         <h1 className="fs-landing-hero">
           Financial intelligence,<br />
           <span style={{ color: C.accent }}>one company at a time.</span>
         </h1>
-
         <p style={{ color: C.textSec, fontSize: 15, lineHeight: 1.7, textAlign: "center", maxWidth: 540, marginBottom: 32, padding: "0 8px" }}>
-          Type any company name. Get AI-powered financial analysis with interactive charts, PPT deck, and podcast script.
+          Type any company name. Get AI-powered financial analysis with interactive charts, Excel reports, PPT decks, and podcast scripts.
         </p>
-
         <div className="fs-search-row" style={{ marginBottom: 32 }}>
           <PeriodDropdown value={period} onChange={setPeriod} />
-
           <div className="fs-search-bar">
-            <input
-              className="fs-input"
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && q.trim() && analyze(q.trim())}
-              placeholder="e.g. Apple, Reliance, Tesla..."
-              style={{ flex: 1, background: "none", border: "none", outline: "none", color: C.textPrimary, fontSize: 15, fontFamily: "inherit", minWidth: 0 }}
-            />
-            <button
-              className="fs-btn-primary"
-              onClick={() => q.trim() && analyze(q.trim())}
-              disabled={!q.trim()}
-              style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 600, fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", whiteSpace: "nowrap", opacity: q.trim() ? 1 : .55 }}
-            >
-              Analyze →
-            </button>
+            <input className="fs-input" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && q.trim() && analyze(q.trim())} placeholder="e.g. Apple, Reliance, Tesla..." style={{ flex: 1, background: "none", border: "none", outline: "none", color: C.textPrimary, fontSize: 15, fontFamily: "inherit", minWidth: 0 }} />
+            <button className="fs-btn-primary" onClick={() => q.trim() && analyze(q.trim())} disabled={!q.trim()} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 600, fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", whiteSpace: "nowrap", opacity: q.trim() ? 1 : .55 }}>Analyze →</button>
           </div>
         </div>
-
         <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", marginBottom: 40, width: "100%" }}>
           {[{ flag: "🇺🇸", label: "US", items: US_EX }, { flag: "🇮🇳", label: "India", items: IN_EX }].map(row => (
             <div key={row.flag} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center", maxWidth: "100%" }}>
@@ -1096,13 +1191,12 @@ function FinSightApp() {
             </div>
           ))}
         </div>
-
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap", justifyContent: "center", padding: "0 16px" }}>
           {[
             { icon: "📈", text: "Flexible Periods" },
-            { icon: "📊", text: "Auto PPT via Gamma" },
-            { icon: "🎙️", text: "AI Podcast Script" },
-            { icon: "🌍", text: "US + India Markets" },
+            { icon: "📗", text: "Excel Reports" },
+            { icon: "📊", text: "PPT via Gamma" },
+            { icon: "🎙️", text: "AI Podcast" },
           ].map(f => (
             <div key={f.text} style={{ display: "flex", alignItems: "center", gap: 6, color: C.textSec, fontSize: 12.5 }}>
               <span style={{ fontSize: 14 }}>{f.icon}</span>
@@ -1111,7 +1205,6 @@ function FinSightApp() {
           ))}
         </div>
       </main>
-
       <footer style={{ padding: "18px 20px", textAlign: "center", borderTop: `1px solid ${C.border}`, background: C.bgCard }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ color: C.textMuted, fontSize: 11.5 }}>FinSight AI · Research & education only · Not investment advice</span>
@@ -1160,12 +1253,8 @@ function FinSightApp() {
   if (screen === "dashboard" && data) {
     const sym = data.currencySymbol || "$";
     const OUTLOOK = {
-      Positive: { color: C.green, bg: C.greenBg },
-      Mixed:    { color: C.amber, bg: C.amberBg },
-      Caution:  { color: C.red, bg: C.redBg },
-      Bullish:  { color: C.green, bg: C.greenBg },
-      Neutral:  { color: C.amber, bg: C.amberBg },
-      Bearish:  { color: C.red, bg: C.redBg },
+      Positive: { color: C.green, bg: C.greenBg }, Mixed: { color: C.amber, bg: C.amberBg }, Caution: { color: C.red, bg: C.redBg },
+      Bullish: { color: C.green, bg: C.greenBg }, Neutral: { color: C.amber, bg: C.amberBg }, Bearish: { color: C.red, bg: C.redBg },
     };
     const oc = OUTLOOK[data.outlook] || OUTLOOK.Mixed;
     const lastIdx = (data.years?.length || 1) - 1;
@@ -1174,7 +1263,6 @@ function FinSightApp() {
     const latestLabel = data.years?.[lastIdx] || "Latest";
     const periodLabel = PERIODS.find(p => p.id === data.periodType)?.label || "Analysis";
 
-    // Fallback: if old 'analysis' field exists but not the 4 new ones, split it
     const analysisRev = data.analysisRevenue || (data.analysis ? [data.analysis] : null);
     const analysisProf = data.analysisProfitability || null;
     const analysisCash = data.analysisCashFlow || null;
@@ -1183,7 +1271,6 @@ function FinSightApp() {
     return (
       <div style={{ minHeight: "100vh", background: C.bgPage, color: C.textPrimary, fontFamily: "'DM Sans', system-ui, sans-serif" }}>
         <style>{FONTS + GLOBAL_CSS}</style>
-
         <header className="fs-header-dashboard">
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <FinSightLogo size={24} />
@@ -1192,9 +1279,7 @@ function FinSightApp() {
               <span style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>Pallav Shah</span></span>
             </div>
           </div>
-
           <div className="fs-header-divider" />
-
           <div className="fs-dash-meta">
             <span className="fs-company-name">{data.company}</span>
             <span style={{ background: C.bgSidebar, color: C.textSec, fontSize: 10.5, fontFamily: "'DM Mono', monospace", padding: "2px 7px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.ticker}</span>
@@ -1202,7 +1287,6 @@ function FinSightApp() {
             <span style={{ background: C.accentLight, color: C.accent, fontSize: 10.5, fontWeight: 600, padding: "2px 9px", borderRadius: 5 }}>{periodLabel}</span>
             <span style={{ background: oc.bg, color: oc.color, fontSize: 10.5, fontWeight: 600, padding: "2px 9px", borderRadius: 5 }}>{data.outlook}</span>
           </div>
-
           <div className="fs-header-actions">
             <button onClick={() => setScreen("landing")} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap", fontFamily: "inherit" }}>← New</button>
             <UserButton afterSignOutUrl="/" />
@@ -1211,25 +1295,22 @@ function FinSightApp() {
 
         <div className="fs-main-container">
           <p className="fs-description">{data.description}</p>
-
           {data.dataAsOf && (
             <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 14 }}>
               📅 Data as of: <strong style={{ color: C.textSec }}>{data.dataAsOf}</strong> · Period: <strong style={{ color: C.accent }}>{periodLabel}</strong>
             </div>
           )}
-
           <div className="fs-metrics-grid" style={{ marginBottom: 24 }}>
             {[
-              { label: `${latestLabel} Revenue`,    value: fmtMoney(latestRev, sym), sub: data.revenueCAGR ? `CAGR ${Number(data.revenueCAGR).toFixed(1)}%` : "Latest" },
-              { label: `${latestLabel} Net Income`, value: fmtMoney(latestNI,  sym), sub: latestNM ? `Margin ${Number(latestNM).toFixed(1)}%` : "Latest" },
-              { label: "Market Cap",                value: fmtMoney(data.marketCap, sym), sub: data.exchange },
-              { label: "P/E Ratio",                 value: data.peRatio ? `${Number(data.peRatio).toFixed(1)}×` : "N/A", sub: "Current" },
-              { label: "Free Cash Flow",            value: fmtMoney(latestFCF, sym), sub: latestLabel },
-              { label: "Revenue Growth",            value: data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(1)}%` : "N/A", sub: periodLabel, accent: C.accent },
+              { label: `${latestLabel} Revenue`, value: fmtMoney(latestRev, sym), sub: data.revenueCAGR ? `CAGR ${Number(data.revenueCAGR).toFixed(1)}%` : "Latest" },
+              { label: `${latestLabel} Net Income`, value: fmtMoney(latestNI, sym), sub: latestNM ? `Margin ${Number(latestNM).toFixed(1)}%` : "Latest" },
+              { label: "Market Cap", value: fmtMoney(data.marketCap, sym), sub: data.exchange },
+              { label: "P/E Ratio", value: data.peRatio ? `${Number(data.peRatio).toFixed(1)}×` : "N/A", sub: "Current" },
+              { label: "Free Cash Flow", value: fmtMoney(latestFCF, sym), sub: latestLabel },
+              { label: "Revenue Growth", value: data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(1)}%` : "N/A", sub: periodLabel, accent: C.accent },
             ].map(m => <MetricCard key={m.label} {...m} />)}
           </div>
 
-          {/* ═══ 4 ANALYTICAL CHARTS ═══ */}
           <div className="fs-section-heading">Financial Analysis</div>
           <div className="fs-charts-grid" style={{ marginBottom: 24 }}>
             <GrowthQualityChart data={data} sym={sym} />
@@ -1238,60 +1319,18 @@ function FinSightApp() {
             <EPSChart data={data} sym={sym} />
           </div>
 
-          {/* ═══ SEGMENTED AI ANALYSIS (4 SECTIONS) ═══ */}
           <div className="fs-section-heading">AI Financial Analysis</div>
           <div className="fs-analysis-sections">
-            {analysisRev && (
-              <AnalysisSection
-                icon="📈"
-                title="Revenue & Growth Story"
-                accentColor={C.chartA}
-                paragraphs={analysisRev}
-              />
-            )}
-            {analysisProf && (
-              <AnalysisSection
-                icon="💰"
-                title="Profitability Performance"
-                accentColor={C.chartB}
-                paragraphs={analysisProf}
-              />
-            )}
-            {analysisCash && (
-              <AnalysisSection
-                icon="💵"
-                title="Cash Flow Analysis"
-                accentColor={C.chartC}
-                paragraphs={analysisCash}
-              />
-            )}
-            {analysisOut && (
-              <AnalysisSection
-                icon="🎯"
-                title="Competitive & Strategic Outlook"
-                accentColor={C.chartD}
-                paragraphs={analysisOut}
-              />
-            )}
+            {analysisRev && <AnalysisSection icon="📈" title="Revenue & Growth Story" accentColor={C.chartA} paragraphs={analysisRev} />}
+            {analysisProf && <AnalysisSection icon="💰" title="Profitability Performance" accentColor={C.chartB} paragraphs={analysisProf} />}
+            {analysisCash && <AnalysisSection icon="💵" title="Cash Flow Analysis" accentColor={C.chartC} paragraphs={analysisCash} />}
+            {analysisOut && <AnalysisSection icon="🎯" title="Competitive & Strategic Outlook" accentColor={C.chartD} paragraphs={analysisOut} />}
           </div>
 
-          {/* ═══ KEY STRENGTHS / KEY RISKS / OUTLOOK ═══ */}
           <div className="fs-section-heading">Key Insights</div>
           <div className="fs-insights-grid">
-            <InsightCard
-              title="Key Strengths"
-              icon="✓"
-              color={C.green}
-              badgeColor={C.greenBg}
-              items={data.keyStrengths || []}
-            />
-            <InsightCard
-              title="Key Risks"
-              icon="⚠"
-              color={C.red}
-              badgeColor={C.redBg}
-              items={data.keyRisks || []}
-            />
+            <InsightCard title="Key Strengths" icon="✓" color={C.green} badgeColor={C.greenBg} items={data.keyStrengths || []} />
+            <InsightCard title="Key Risks" icon="⚠" color={C.red} badgeColor={C.redBg} items={data.keyRisks || []} />
             <div style={{ background: oc.bg, border: `1px solid ${oc.color}33`, borderRadius: 14, padding: 22, display: "flex", flexDirection: "column", justifyContent: "center" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, paddingBottom: 12, borderBottom: `1px solid ${oc.color}22` }}>
                 <div style={{ width: 32, height: 32, borderRadius: 8, background: oc.color + "20", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, color: oc.color, fontWeight: 700 }}>◎</div>
@@ -1303,6 +1342,9 @@ function FinSightApp() {
 
           <div className="fs-action-row">
             <button className="fs-act fs-action-btn" onClick={openGamma} style={{ background: C.accent, color: "#fff", border: "none" }}>📊 Generate PPT</button>
+            <button className="fs-act fs-action-btn" onClick={downloadExcel} disabled={excelLoading} style={{ background: C.chartB, color: "#fff", border: "none" }}>
+              {excelLoading ? <><Spinner /> Generating…</> : <>📗 Download Excel</>}
+            </button>
             <button className="fs-act fs-action-btn" onClick={genScript} style={{ background: C.bgCard, color: C.textPrimary, border: `1px solid ${C.border}` }}>🎙️ Podcast Script</button>
             <button className="fs-act fs-action-btn" onClick={() => setScreen("landing")} style={{ background: "transparent", color: C.textSec, border: `1px solid ${C.border}` }}>← New search</button>
           </div>
@@ -1310,7 +1352,6 @@ function FinSightApp() {
           <div style={{ background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", marginBottom: 20, fontSize: 11.5, color: C.textMuted, lineHeight: 1.6 }}>
             <strong style={{ color: C.textSec }}>Disclaimer:</strong> FinSight AI provides research and educational content only. This is not investment advice. We are not a SEBI-registered Investment Advisor. Verify information with original sources and consult a qualified financial advisor before making any investment decisions.
           </div>
-
           <div style={{ textAlign: "center", paddingTop: 20, borderTop: `1px solid ${C.border}` }}><Byline /></div>
         </div>
 
@@ -1367,9 +1408,6 @@ function FinSightApp() {
   return null;
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   ROOT COMPONENT
-═══════════════════════════════════════════════════════════════ */
 export default function App() {
   if (!CLERK_PUB_KEY) {
     return (
@@ -1379,15 +1417,10 @@ export default function App() {
       </div>
     );
   }
-
   return (
     <ClerkProvider publishableKey={CLERK_PUB_KEY}>
-      <SignedOut>
-        <LoginScreen />
-      </SignedOut>
-      <SignedIn>
-        <FinSightApp />
-      </SignedIn>
+      <SignedOut><LoginScreen /></SignedOut>
+      <SignedIn><FinSightApp /></SignedIn>
     </ClerkProvider>
   );
 }
