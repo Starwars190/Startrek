@@ -1,15 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import {
-  AreaChart, Area, LineChart, Line, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+  AreaChart, Area, LineChart, Line, BarChart, Bar, ComposedChart,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList, Cell
 } from "recharts";
 import { ClerkProvider, SignedIn, SignedOut, SignIn, SignUp, UserButton, useUser } from "@clerk/clerk-react";
 
 /* ═════════════════════════════════════════════════════════════
    FinSight AI — by Pallav Shah
-   WITH LOGIN — Clerk authentication + user tracking
-   MOBILE RESPONSIVE — v3.1 (April 22, 2026)
-   NEW: Dropdown period selector (left of search bar)
+   v3.2 (April 22, 2026) — Better charts for all period types
 ════════════════════════════════════════════════════════════════ */
 
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -77,6 +75,13 @@ function fmtMoney(val, sym = "$") {
   return `${sign}${sym}${Math.round(abs)}M`;
 }
 
+function calcGrowth(arr, idx) {
+  if (!arr || idx <= 0 || arr[idx] == null || arr[idx - 1] == null) return null;
+  const prev = arr[idx - 1];
+  if (prev === 0) return null;
+  return ((arr[idx] - prev) / Math.abs(prev)) * 100;
+}
+
 const ChartTip = ({ active, payload, label, sym = "$", isPct = false }) => {
   if (!active || !payload?.length) return null;
   return (
@@ -110,7 +115,8 @@ function buildSystemPrompt(period) {
   const periodInstructions = {
     latest_quarter: `Return data for the MOST RECENT QUARTER only (target Q3 FY26 or Q4 FY26 if available).
 - "years" array: Use quarter labels like ["Q3 FY26"] — just 1 entry
-- All financial arrays: 1 value each (the latest quarter)`,
+- All financial arrays: 1 value each (the latest quarter)
+- For Latest Quarter, also return "prevQuarter" object with Q2 FY26 values for YoY/QoQ comparison`,
     half_yearly: `Return data for the LAST 2 QUARTERS.
 - "years" array: Quarter labels like ["Q2 FY26", "Q3 FY26"] — 2 entries
 - All financial arrays: 2 values each`,
@@ -173,6 +179,7 @@ Return this exact structure (monetary values in MILLIONS of local currency):
   "marketCap": number,
   "peRatio": number,
   "revenueCAGR": number,
+  ${period === "latest_quarter" ? '"prevQuarter": {"revenue": n, "netIncome": n, "ebitda": n, "freeCashFlow": n, "grossMargin": n, "netMargin": n, "label": "Q2 FY26"},' : ''}
   "analysis": "3-4 paragraphs with specific numbers: revenue trend, profitability, cash flow, competitive outlook",
   "keyStrengths": ["strength with data", "strength with data", "strength with data"],
   "keyRisks": ["risk with context", "risk with context", "risk with context"],
@@ -223,8 +230,99 @@ const Byline = () => (
 );
 
 /* ═════════════════════════════════════════════════════════════
-   PERIOD DROPDOWN COMPONENT — NEW
-   Matches search bar style: coral border, same height (52px)
+   GROWTH BADGE — NEW: shows ↑/↓ with % change
+════════════════════════════════════════════════════════════════ */
+function GrowthBadge({ value, size = "md" }) {
+  if (value == null || isNaN(value)) return null;
+  const positive = value >= 0;
+  const color = positive ? C.green : C.red;
+  const bg = positive ? C.greenBg : C.redBg;
+  const arrow = positive ? "↑" : "↓";
+  const fontSize = size === "lg" ? 14 : size === "sm" ? 10 : 11.5;
+  const padding = size === "lg" ? "4px 10px" : "2px 7px";
+
+  return (
+    <span style={{
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 3,
+      background: bg,
+      color,
+      fontSize,
+      fontWeight: 600,
+      padding,
+      borderRadius: 6,
+      fontFamily: "'DM Mono', monospace",
+    }}>
+      <span>{arrow}</span>
+      <span>{Math.abs(value).toFixed(1)}%</span>
+    </span>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════
+   BIG STAT CARD — NEW: for Latest Quarter view
+════════════════════════════════════════════════════════════════ */
+function BigStatCard({ label, value, prevValue, prevLabel, sym = "$", color, isPct = false }) {
+  const growth = prevValue != null && prevValue !== 0
+    ? ((value - prevValue) / Math.abs(prevValue)) * 100
+    : null;
+  const fmtValue = isPct ? `${Number(value).toFixed(1)}%` : fmtMoney(value, sym);
+  const fmtPrev = isPct && prevValue != null ? `${Number(prevValue).toFixed(1)}%`
+    : prevValue != null ? fmtMoney(prevValue, sym) : null;
+
+  return (
+    <div className="fs-big-stat" style={{
+      background: C.bgCard,
+      border: `1px solid ${C.border}`,
+      borderRadius: 16,
+      padding: 22,
+      boxShadow: C.shadow,
+      transition: "all .2s",
+      display: "flex",
+      flexDirection: "column",
+      gap: 10,
+      minHeight: 160,
+      position: "relative",
+      overflow: "hidden",
+    }}>
+      {/* Accent bar on top */}
+      <div style={{
+        position: "absolute",
+        top: 0, left: 0, right: 0,
+        height: 3,
+        background: color || C.accent,
+      }} />
+
+      <div style={{ color: C.textMuted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".8px", marginTop: 4 }}>
+        {label}
+      </div>
+
+      <div style={{
+        fontFamily: "'Plus Jakarta Sans', sans-serif",
+        fontSize: 28,
+        fontWeight: 800,
+        color: color || C.textPrimary,
+        letterSpacing: "-.5px",
+        lineHeight: 1,
+      }}>
+        {fmtValue}
+      </div>
+
+      {growth != null && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <GrowthBadge value={growth} size="lg" />
+          <span style={{ fontSize: 11.5, color: C.textMuted }}>
+            vs {prevLabel || "prev"}: {fmtPrev}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════
+   PERIOD DROPDOWN
 ════════════════════════════════════════════════════════════════ */
 function PeriodDropdown({ value, onChange }) {
   const [open, setOpen] = useState(false);
@@ -354,6 +452,7 @@ const GLOBAL_CSS = `
   .fs-btn-primary:hover { background: ${C.accentDark} !important; }
   .fs-btn-ghost:hover  { background: ${C.bgSidebar} !important; }
   .fs-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
+  .fs-big-stat:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; transform: translateY(-2px); }
   .fs-act:hover { opacity: .88 !important; transform: translateY(-1px); }
   .fs-dropdown-btn:hover { border-color: ${C.accent} !important; }
   @keyframes fs-fade { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:none;} }
@@ -364,16 +463,17 @@ const GLOBAL_CSS = `
   .cl-formButtonPrimary:hover { background-color: ${C.accentDark} !important; }
   .cl-card { box-shadow: ${C.shadowMd} !important; border: 1px solid ${C.border} !important; }
 
-  /* SEARCH ROW — Mobile: stacked / Desktop: side by side */
   .fs-search-row { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 580px; }
   @media (min-width: 640px) { .fs-search-row { flex-direction: row; align-items: stretch; max-width: 740px; } }
-
   .fs-search-bar { flex: 1; display: flex; gap: 8px; background: ${C.bgCard}; border: 1.5px solid ${C.border}; border-radius: 14px; padding: 6px 6px 6px 14px; box-shadow: ${C.shadow}; min-height: 52px; align-items: center; }
 
-  /* RESPONSIVE GRIDS */
   .fs-metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   @media (min-width: 640px) { .fs-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } }
   @media (min-width: 1024px) { .fs-metrics-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; } }
+
+  .fs-bigstats-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 640px) { .fs-bigstats-grid { grid-template-columns: 1fr 1fr; gap: 14px; } }
+  @media (min-width: 1024px) { .fs-bigstats-grid { grid-template-columns: repeat(4, 1fr); gap: 16px; } }
 
   .fs-charts-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
   @media (min-width: 1024px) { .fs-charts-grid { grid-template-columns: 1fr 1fr; gap: 16px; } }
@@ -381,7 +481,6 @@ const GLOBAL_CSS = `
   .fs-analysis-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
   @media (min-width: 1024px) { .fs-analysis-grid { grid-template-columns: 3fr 2fr; gap: 16px; } }
 
-  /* RESPONSIVE HEADERS */
   .fs-header-dashboard { position: sticky; top: 0; z-index: 100; min-height: 60px; background: ${C.bgCard}; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; gap: 10px; flex-wrap: wrap; }
   @media (min-width: 1024px) { .fs-header-dashboard { padding: 0 28px; gap: 16px; flex-wrap: nowrap; } }
 
@@ -399,7 +498,6 @@ const GLOBAL_CSS = `
 
   .fs-header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
-  /* RESPONSIVE PADDING */
   .fs-main-container { max-width: 1180px; margin: 0 auto; padding: 20px 14px; }
   @media (min-width: 640px) { .fs-main-container { padding: 28px 20px 22px; } }
   @media (min-width: 1024px) { .fs-main-container { padding: 32px 24px 24px; } }
@@ -428,6 +526,10 @@ const GLOBAL_CSS = `
 
   .fs-modal-bubble { max-width: 85%; }
   @media (min-width: 640px) { .fs-modal-bubble { max-width: 78%; } }
+
+  /* NEW: section heading for quarter view */
+  .fs-section-heading { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; font-size: 16px; color: ${C.textPrimary}; margin-bottom: 14px; display: flex; align-items: center; gap: 10px; }
+  .fs-section-heading::before { content: ''; width: 4px; height: 18px; background: ${C.accent}; border-radius: 2px; }
 `;
 
 /* ═══════════════════════════════════════════════════════════════
@@ -464,6 +566,285 @@ function LoginScreen() {
         By continuing, you agree to our Terms & Privacy Policy
       </div>
     </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CHART RENDERER — NEW: smart chart selection based on period
+════════════════════════════════════════════════════════════════ */
+function SmartCharts({ data, periodLabel, sym }) {
+  const cData = data.years.map((y, i) => ({
+    year: String(y),
+    Revenue: data.revenue?.[i],
+    "Net Income": data.netIncome?.[i],
+    EBITDA: data.ebitda?.[i],
+    FCF: data.freeCashFlow?.[i],
+    "Gross Margin": data.grossMargin?.[i],
+    "Net Margin": data.netMargin?.[i],
+    revGrowth: calcGrowth(data.revenue, i),
+    niGrowth: calcGrowth(data.netIncome, i),
+  }));
+
+  const axisStyle = { fontSize: 10.5, fill: C.textMuted };
+  const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
+  const dataLen = data.years?.length || 0;
+
+  // ═══ SINGLE POINT: Latest Quarter — use Big Stat Cards ═══
+  if (dataLen === 1) {
+    const p = data.prevQuarter || {};
+    const prevLabel = p.label || "Previous";
+
+    return (
+      <>
+        <div className="fs-section-heading">Key Metrics — {data.years[0]}</div>
+        <div className="fs-bigstats-grid" style={{ marginBottom: 24 }}>
+          <BigStatCard
+            label="Revenue"
+            value={data.revenue?.[0]}
+            prevValue={p.revenue}
+            prevLabel={prevLabel}
+            sym={sym}
+            color={C.chartA}
+          />
+          <BigStatCard
+            label="Net Income"
+            value={data.netIncome?.[0]}
+            prevValue={p.netIncome}
+            prevLabel={prevLabel}
+            sym={sym}
+            color={C.chartB}
+          />
+          <BigStatCard
+            label="EBITDA"
+            value={data.ebitda?.[0]}
+            prevValue={p.ebitda}
+            prevLabel={prevLabel}
+            sym={sym}
+            color={C.chartC}
+          />
+          <BigStatCard
+            label="Net Margin"
+            value={data.netMargin?.[0]}
+            prevValue={p.netMargin}
+            prevLabel={prevLabel}
+            sym={sym}
+            color={C.chartD}
+            isPct
+          />
+        </div>
+
+        <div className="fs-section-heading">Margin Breakdown</div>
+        <div className="fs-charts-grid" style={{ marginBottom: 20 }}>
+          <div className="fs-chart-card">
+            <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Profitability Profile</div>
+            <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>{data.years[0]} · Margin structure</div>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart
+                data={[
+                  { name: "Gross Margin", value: data.grossMargin?.[0] || 0, fill: C.chartC },
+                  { name: "Net Margin", value: data.netMargin?.[0] || 0, fill: C.chartD },
+                ]}
+                layout="vertical"
+                margin={{ left: 20, right: 40, top: 10, bottom: 10 }}
+              >
+                <CartesianGrid {...gridStyle} horizontal={false} />
+                <XAxis type="number" tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} />
+                <YAxis type="category" dataKey="name" tick={axisStyle} axisLine={false} tickLine={false} width={110} />
+                <Tooltip content={<ChartTip isPct />} />
+                <Bar dataKey="value" radius={[0, 8, 8, 0]} barSize={40}>
+                  {[C.chartC, C.chartD].map((c, i) => <Cell key={i} fill={c} />)}
+                  <LabelList dataKey="value" position="right" formatter={(v) => `${Number(v).toFixed(1)}%`} style={{ fill: C.textSec, fontSize: 12, fontWeight: 600 }} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="fs-chart-card">
+            <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Cash Flow Position</div>
+            <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>{data.years[0]} · {data.currency} millions</div>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart
+                data={[
+                  { name: "EBITDA", value: data.ebitda?.[0] || 0 },
+                  { name: "Free Cash Flow", value: data.freeCashFlow?.[0] || 0 },
+                  { name: "Net Income", value: data.netIncome?.[0] || 0 },
+                ]}
+                layout="vertical"
+                margin={{ left: 20, right: 60, top: 10, bottom: 10 }}
+              >
+                <CartesianGrid {...gridStyle} horizontal={false} />
+                <XAxis type="number" tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} />
+                <YAxis type="category" dataKey="name" tick={axisStyle} axisLine={false} tickLine={false} width={110} />
+                <Tooltip content={<ChartTip sym={sym} />} />
+                <Bar dataKey="value" radius={[0, 8, 8, 0]} barSize={28}>
+                  {[C.chartA, C.chartB, C.chartC].map((c, i) => <Cell key={i} fill={c} />)}
+                  <LabelList dataKey="value" position="right" formatter={(v) => fmtMoney(v, sym)} style={{ fill: C.textSec, fontSize: 11.5, fontWeight: 600 }} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // ═══ 2 POINTS: Half Yearly — Side-by-side bars with growth ═══
+  if (dataLen === 2) {
+    return (
+      <>
+        <div className="fs-section-heading">{periodLabel} Comparison</div>
+        <div className="fs-charts-grid" style={{ marginBottom: 20 }}>
+          <div className="fs-chart-card">
+            <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Revenue & Net Income</div>
+            <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>{periodLabel} · {data.currency} millions</div>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={cData} barGap={8} margin={{ top: 20 }}>
+                <CartesianGrid {...gridStyle} />
+                <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
+                <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={44} />
+                <Tooltip content={<ChartTip sym={sym} />} />
+                <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }} />
+                <Bar dataKey="Revenue" fill={C.chartA} radius={[6, 6, 0, 0]} barSize={60}>
+                  <LabelList dataKey="Revenue" position="top" formatter={(v) => fmtMoney(v, "")} style={{ fill: C.chartA, fontSize: 10.5, fontWeight: 600 }} />
+                </Bar>
+                <Bar dataKey="Net Income" fill={C.chartB} radius={[6, 6, 0, 0]} barSize={60}>
+                  <LabelList dataKey="Net Income" position="top" formatter={(v) => fmtMoney(v, "")} style={{ fill: C.chartB, fontSize: 10.5, fontWeight: 600 }} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="fs-chart-card">
+            <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Margins</div>
+            <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Gross & Net margin · %</div>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={cData} barGap={8} margin={{ top: 20 }}>
+                <CartesianGrid {...gridStyle} />
+                <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
+                <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} width={40} />
+                <Tooltip content={<ChartTip isPct />} />
+                <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }} />
+                <Bar dataKey="Gross Margin" fill={C.chartC} radius={[6, 6, 0, 0]} barSize={60}>
+                  <LabelList dataKey="Gross Margin" position="top" formatter={(v) => `${Number(v).toFixed(1)}%`} style={{ fill: C.chartC, fontSize: 10.5, fontWeight: 600 }} />
+                </Bar>
+                <Bar dataKey="Net Margin" fill={C.chartD} radius={[6, 6, 0, 0]} barSize={60}>
+                  <LabelList dataKey="Net Margin" position="top" formatter={(v) => `${Number(v).toFixed(1)}%`} style={{ fill: C.chartD, fontSize: 10.5, fontWeight: 600 }} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="fs-chart-card">
+            <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>EBITDA</div>
+            <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Operating earnings</div>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={cData} margin={{ top: 20 }}>
+                <CartesianGrid {...gridStyle} />
+                <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
+                <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={44} />
+                <Tooltip content={<ChartTip sym={sym} />} />
+                <Bar dataKey="EBITDA" fill={C.chartA} radius={[6, 6, 0, 0]} barSize={60} opacity={.9}>
+                  <LabelList dataKey="EBITDA" position="top" formatter={(v) => fmtMoney(v, "")} style={{ fill: C.chartA, fontSize: 10.5, fontWeight: 600 }} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="fs-chart-card">
+            <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Free Cash Flow</div>
+            <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>After capital expenditure</div>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={cData} margin={{ top: 20 }}>
+                <CartesianGrid {...gridStyle} />
+                <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
+                <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={44} />
+                <Tooltip content={<ChartTip sym={sym} />} />
+                <Bar dataKey="FCF" fill={C.chartB} radius={[6, 6, 0, 0]} barSize={60} opacity={.9}>
+                  <LabelList dataKey="FCF" position="top" formatter={(v) => fmtMoney(v, "")} style={{ fill: C.chartB, fontSize: 10.5, fontWeight: 600 }} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // ═══ 3-5 POINTS: Quarterly (4) or Yearly (2-5) — Combo charts ═══
+  return (
+    <>
+      <div className="fs-section-heading">Financial Trends — {periodLabel}</div>
+      <div className="fs-charts-grid" style={{ marginBottom: 20 }}>
+        <div className="fs-chart-card">
+          <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Revenue & Net Income</div>
+          <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>{periodLabel} · {data.currency} millions</div>
+          <ResponsiveContainer width="100%" height={240}>
+            <ComposedChart data={cData} margin={{ top: 15 }}>
+              <defs>
+                <linearGradient id="gA" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartA} stopOpacity={.85}/><stop offset="100%" stopColor={C.chartA} stopOpacity={.35}/></linearGradient>
+              </defs>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
+              <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={44} />
+              <Tooltip content={<ChartTip sym={sym} />} />
+              <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }} />
+              <Bar dataKey="Revenue" fill="url(#gA)" radius={[6, 6, 0, 0]} barSize={dataLen <= 4 ? 40 : 28} />
+              <Line type="monotone" dataKey="Net Income" stroke={C.chartB} strokeWidth={3} dot={{ fill: C.chartB, r: 5, strokeWidth: 2, stroke: "#fff" }} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="fs-chart-card">
+          <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Profit Margins</div>
+          <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Gross & Net margin trends · %</div>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={cData} margin={{ top: 15 }}>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
+              <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} width={40} />
+              <Tooltip content={<ChartTip isPct />} />
+              <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }} />
+              <Line type="monotone" dataKey="Gross Margin" stroke={C.chartC} strokeWidth={2.8} dot={{ fill: C.chartC, r: 4, strokeWidth: 2, stroke: "#fff" }} />
+              <Line type="monotone" dataKey="Net Margin" stroke={C.chartD} strokeWidth={2.8} dot={{ fill: C.chartD, r: 4, strokeWidth: 2, stroke: "#fff" }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="fs-chart-card">
+          <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>EBITDA</div>
+          <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Operating earnings before interest & taxes</div>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={cData} margin={{ top: 15 }}>
+              <defs>
+                <linearGradient id="gEb" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartA} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartA} stopOpacity={.5}/></linearGradient>
+              </defs>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
+              <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={44} />
+              <Tooltip content={<ChartTip sym={sym} />} />
+              <Bar dataKey="EBITDA" fill="url(#gEb)" radius={[6, 6, 0, 0]} barSize={dataLen <= 4 ? 40 : 28} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="fs-chart-card">
+          <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Free Cash Flow</div>
+          <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Cash after capital expenditure</div>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={cData} margin={{ top: 15 }}>
+              <defs>
+                <linearGradient id="gFcf" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartB} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartB} stopOpacity={.5}/></linearGradient>
+              </defs>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
+              <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={44} />
+              <Tooltip content={<ChartTip sym={sym} />} />
+              <Bar dataKey="FCF" fill="url(#gFcf)" radius={[6, 6, 0, 0]} barSize={dataLen <= 4 ? 40 : 28} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -570,16 +951,6 @@ function FinSightApp() {
     setModal("ppt");
   };
 
-  const cData = data ? data.years.map((y, i) => ({
-    year: String(y),
-    Revenue: data.revenue?.[i],
-    "Net Income": data.netIncome?.[i],
-    EBITDA: data.ebitda?.[i],
-    FCF: data.freeCashFlow?.[i],
-    "Gross Margin": data.grossMargin?.[i],
-    "Net Margin": data.netMargin?.[i],
-  })) : [];
-
   if (screen === "landing") return (
     <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
       <style>{FONTS + GLOBAL_CSS}</style>
@@ -610,7 +981,6 @@ function FinSightApp() {
           Type any company name. Get AI-powered financial analysis with interactive charts, PPT deck, and podcast script.
         </p>
 
-        {/* NEW: Dropdown (left) + Search bar (right) */}
         <div className="fs-search-row" style={{ marginBottom: 32 }}>
           <PeriodDropdown value={period} onChange={setPeriod} />
 
@@ -721,8 +1091,6 @@ function FinSightApp() {
     const latestFCF = data.freeCashFlow?.[lastIdx], latestNM = data.netMargin?.[lastIdx];
     const latestLabel = data.years?.[lastIdx] || "Latest";
     const periodLabel = PERIODS.find(p => p.id === data.periodType)?.label || "Analysis";
-    const axisStyle = { fontSize: 10.5, fill: C.textMuted };
-    const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
 
     return (
       <div style={{ minHeight: "100vh", background: C.bgPage, color: C.textPrimary, fontFamily: "'DM Sans', system-ui, sans-serif" }}>
@@ -773,71 +1141,8 @@ function FinSightApp() {
             ].map(m => <MetricCard key={m.label} {...m} />)}
           </div>
 
-          <div className="fs-charts-grid" style={{ marginBottom: 20 }}>
-            <div className="fs-chart-card">
-              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Revenue & Net Income</div>
-              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>{periodLabel} · {data.currency} millions</div>
-              <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={cData}>
-                  <defs>
-                    <linearGradient id="gA" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartA} stopOpacity={.22}/><stop offset="100%" stopColor={C.chartA} stopOpacity={0}/></linearGradient>
-                    <linearGradient id="gB" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartB} stopOpacity={.22}/><stop offset="100%" stopColor={C.chartB} stopOpacity={0}/></linearGradient>
-                  </defs>
-                  <CartesianGrid {...gridStyle} />
-                  <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={40} />
-                  <Tooltip content={<ChartTip sym={sym} />} />
-                  <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec }} />
-                  <Area type="monotone" dataKey="Revenue"    stroke={C.chartA} fill="url(#gA)" strokeWidth={2.2} dot={{ fill: C.chartA, r: 3, strokeWidth: 0 }} />
-                  <Area type="monotone" dataKey="Net Income" stroke={C.chartB} fill="url(#gB)" strokeWidth={2.2} dot={{ fill: C.chartB, r: 3, strokeWidth: 0 }} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-
-            <div className="fs-chart-card">
-              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Profit Margins</div>
-              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Gross & Net margin trends · %</div>
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={cData}>
-                  <CartesianGrid {...gridStyle} />
-                  <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} width={35} />
-                  <Tooltip content={<ChartTip isPct />} />
-                  <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec }} />
-                  <Line type="monotone" dataKey="Gross Margin" stroke={C.chartC} strokeWidth={2.4} dot={{ fill: C.chartC, r: 4, strokeWidth: 0 }} />
-                  <Line type="monotone" dataKey="Net Margin"   stroke={C.chartD} strokeWidth={2.4} dot={{ fill: C.chartD, r: 4, strokeWidth: 0 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-
-            <div className="fs-chart-card">
-              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>EBITDA</div>
-              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Operating earnings before interest & taxes</div>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={cData}>
-                  <CartesianGrid {...gridStyle} />
-                  <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={40} />
-                  <Tooltip content={<ChartTip sym={sym} />} />
-                  <Bar dataKey="EBITDA" fill={C.chartA} radius={[5, 5, 0, 0]} opacity={.9} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-
-            <div className="fs-chart-card">
-              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, marginBottom: 3 }}>Free Cash Flow</div>
-              <div style={{ color: C.textMuted, fontSize: 11.5, marginBottom: 14 }}>Cash after capital expenditure</div>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={cData}>
-                  <CartesianGrid {...gridStyle} />
-                  <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={40} />
-                  <Tooltip content={<ChartTip sym={sym} />} />
-                  <Bar dataKey="FCF" fill={C.chartB} radius={[5, 5, 0, 0]} opacity={.9} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
+          {/* ═══ NEW: Smart charts that adapt to period ═══ */}
+          <SmartCharts data={data} periodLabel={periodLabel} sym={sym} />
 
           <div className="fs-analysis-grid" style={{ marginBottom: 24 }}>
             <div className="fs-analysis-card">
