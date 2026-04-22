@@ -7,8 +7,7 @@ import { ClerkProvider, SignedIn, SignedOut, SignIn, SignUp, UserButton, useUser
 
 /* ═════════════════════════════════════════════════════════════
    FinSight AI — by Pallav Shah
-   v3.3 (April 22, 2026) — 4 analytical charts with Quick Read
-   Charts: Growth Quality, Cash Quality, Profit Structure, EPS
+   v3.4 (April 22, 2026) — Segmented AI Analysis (4 sections)
 ════════════════════════════════════════════════════════════════ */
 
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -32,12 +31,12 @@ const C = {
   amber:       "#A8761F",
   amberBg:     "#FEF7E6",
   blueBg:      "#F0F6FC",
-  chartA:      "#CF6B4E",  // Revenue / Primary
-  chartB:      "#2D7D5C",  // Profit / Green
-  chartC:      "#3B82B0",  // Secondary blue
-  chartD:      "#7C5CB8",  // Tertiary purple
-  chartE:      "#D9A441",  // Gold (for pie accents)
-  chartF:      "#8B6F47",  // Earth tone
+  chartA:      "#CF6B4E",
+  chartB:      "#2D7D5C",
+  chartC:      "#3B82B0",
+  chartD:      "#7C5CB8",
+  chartE:      "#D9A441",
+  chartF:      "#8B6F47",
   shadow:      "0 1px 3px rgba(0,0,0,.05), 0 2px 8px rgba(0,0,0,.03)",
   shadowMd:    "0 2px 12px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.04)",
 };
@@ -112,7 +111,8 @@ const STEPS = [
 ];
 
 /* ═════════════════════════════════════════════════════════════
-   SYSTEM PROMPT v3.3 — Now requests cost structure + EPS
+   SYSTEM PROMPT v3.4 — Returns SEGMENTED analysis (4 sections)
+   Each section: 3 paragraphs of 2-3 sentences
 ════════════════════════════════════════════════════════════════ */
 function buildSystemPrompt(period) {
   const today = new Date().toISOString().split('T')[0];
@@ -183,15 +183,40 @@ Return this exact structure (monetary values in MILLIONS of local currency, perc
   "peRatio": number,
   "revenueCAGR": number,
   ${period === "latest_quarter" ? '"prevQuarter": {"revenue": n, "netIncome": n, "ebitda": n, "freeCashFlow": n, "grossMargin": n, "netMargin": n, "label": "Q2 FY26"},' : ''}
-  "analysis": "3-4 paragraphs with specific numbers",
-  "keyStrengths": ["...", "...", "..."],
-  "keyRisks": ["...", "...", "..."],
+
+  "analysisRevenue": [
+    "First paragraph (2-3 sentences) about revenue trends, growth rates, and key drivers. Include specific numbers.",
+    "Second paragraph (2-3 sentences) about segment/geographic breakdown or major revenue influences. Include specific numbers.",
+    "Third paragraph (2-3 sentences) about forward revenue trajectory, guidance, or growth catalysts. Include specific numbers."
+  ],
+  "analysisProfitability": [
+    "First paragraph (2-3 sentences) about margin performance (gross, operating, net). Include specific percentages and comparisons.",
+    "Second paragraph (2-3 sentences) about cost dynamics, pricing power, or operating leverage. Include specific numbers.",
+    "Third paragraph (2-3 sentences) about profitability trajectory and what's driving expansion or compression. Include specific numbers."
+  ],
+  "analysisCashFlow": [
+    "First paragraph (2-3 sentences) about free cash flow generation and cash conversion. Include specific numbers.",
+    "Second paragraph (2-3 sentences) about capex intensity, working capital, or cash deployment. Include specific numbers.",
+    "Third paragraph (2-3 sentences) about balance sheet strength, liquidity, or financial flexibility. Include specific numbers."
+  ],
+  "analysisOutlook": [
+    "First paragraph (2-3 sentences) about competitive position and market share dynamics. Include specific context.",
+    "Second paragraph (2-3 sentences) about strategic initiatives, moats, or structural advantages. Include specific details.",
+    "Third paragraph (2-3 sentences) about forward-looking risks, opportunities, or key monitorables. Include specific catalysts."
+  ],
+
+  "analysis": "Combined summary of all 4 sections in 2-3 paragraphs for backward compatibility",
+
+  "keyStrengths": ["strength with data", "strength with data", "strength with data"],
+  "keyRisks": ["risk with context", "risk with context", "risk with context"],
   "outlook": "Positive or Mixed or Caution",
   "outlookReason": "One concise sentence"
 }
 
 IMPORTANT NOTES:
 - ALL financial arrays must have the SAME NUMBER of entries as "years"
+- Each analysis section must contain EXACTLY 3 strings, each being 2-3 sentences
+- Analysis strings must be substantive with specific numbers, percentages, comparisons
 - costStructure: One object per period matching years array length
 - cogsPct + opexPct + taxPct + netProfitPct + otherPct should total ~100
 - If a metric is unavailable, use null (not 0)
@@ -235,8 +260,7 @@ const Byline = () => (
 );
 
 /* ═════════════════════════════════════════════════════════════
-   CHART FRAME — Consistent wrapper for all charts
-   Includes header, subtitle, chart body, and Quick Read footer
+   CHART FRAME — Consistent wrapper with Quick Read
 ════════════════════════════════════════════════════════════════ */
 function ChartFrame({ icon, title, subtitle, children, quickRead, quickReadColor }) {
   return (
@@ -264,13 +288,9 @@ function ChartFrame({ icon, title, subtitle, children, quickRead, quickReadColor
           <span style={{ fontSize: 18 }}>{icon}</span>
           <span>{title}</span>
         </div>
-        <div style={{ color: C.textMuted, fontSize: 12, lineHeight: 1.5 }}>
-          {subtitle}
-        </div>
+        <div style={{ color: C.textMuted, fontSize: 12, lineHeight: 1.5 }}>{subtitle}</div>
       </div>
-
       <div style={{ flex: 1 }}>{children}</div>
-
       {quickRead && (
         <div style={{
           background: quickReadColor || C.accentLight,
@@ -298,62 +318,36 @@ function ChartFrame({ icon, title, subtitle, children, quickRead, quickReadColor
 }
 
 /* ═════════════════════════════════════════════════════════════
-   CHART 1: GROWTH QUALITY (Revenue + Margins Combo)
+   CHART 1: GROWTH QUALITY
 ════════════════════════════════════════════════════════════════ */
-function GrowthQualityChart({ data, sym, periodLabel }) {
+function GrowthQualityChart({ data, sym }) {
   const hasData = data.revenue?.some(v => v != null);
   if (!hasData) return null;
-
   const chartData = data.years.map((y, i) => ({
     year: String(y),
     Revenue: data.revenue?.[i],
     "Gross Margin": data.grossMargin?.[i],
     "Net Margin": data.netMargin?.[i],
   }));
-
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
   const dataLen = chartData.length;
-
-  // Determine quick read
   const firstMargin = data.netMargin?.[0];
   const lastMargin = data.netMargin?.[dataLen - 1];
-  const marginTrend = lastMargin != null && firstMargin != null
-    ? lastMargin - firstMargin
-    : null;
+  const marginTrend = lastMargin != null && firstMargin != null ? lastMargin - firstMargin : null;
   const revenueTrend = calcGrowth(data.revenue, dataLen - 1);
-
   let quickRead, quickColor;
   if (dataLen === 1) {
     quickRead = `Revenue ${fmtMoney(data.revenue[0], sym)} with net margin of ${data.netMargin?.[0]?.toFixed(1) || "N/A"}%. Compare with industry peers to judge quality.`;
-    quickColor = null;
   } else if (marginTrend != null && revenueTrend != null) {
-    if (revenueTrend > 0 && marginTrend >= -0.5) {
-      quickRead = `Revenue is growing AND margins are stable/expanding — this is high-quality growth.`;
-      quickColor = C.greenBg;
-    } else if (revenueTrend > 0 && marginTrend < -0.5) {
-      quickRead = `Revenue growing BUT margins shrinking — growth may be coming at the cost of profitability. Watch this.`;
-      quickColor = null;
-    } else if (revenueTrend < 0) {
-      quickRead = `Revenue declining. Check if margins are holding to understand if it's a temporary or structural issue.`;
-      quickColor = null;
-    } else {
-      quickRead = `Stable performance. Look at both revenue trajectory and margin trend together to judge quality.`;
-      quickColor = null;
-    }
-  } else {
-    quickRead = `Compare revenue bars with margin lines. Both rising = quality growth. Bars up but lines down = warning.`;
-    quickColor = null;
-  }
+    if (revenueTrend > 0 && marginTrend >= -0.5) { quickRead = "Revenue is growing AND margins are stable/expanding — this is high-quality growth."; quickColor = C.greenBg; }
+    else if (revenueTrend > 0 && marginTrend < -0.5) { quickRead = "Revenue growing BUT margins shrinking — growth may be coming at the cost of profitability. Watch this."; }
+    else if (revenueTrend < 0) { quickRead = "Revenue declining. Check if margins are holding to understand if it's a temporary or structural issue."; }
+    else { quickRead = "Stable performance. Look at both revenue trajectory and margin trend together to judge quality."; }
+  } else { quickRead = "Compare revenue bars with margin lines. Both rising = quality growth. Bars up but lines down = warning."; }
 
   return (
-    <ChartFrame
-      icon="📊"
-      title="Growth Quality"
-      subtitle="Revenue (bars) plotted against profit margins (lines). The best companies grow revenue WHILE maintaining or improving margins."
-      quickRead={quickRead}
-      quickReadColor={quickColor}
-    >
+    <ChartFrame icon="📊" title="Growth Quality" subtitle="Revenue (bars) plotted against profit margins (lines). The best companies grow revenue WHILE maintaining or improving margins." quickRead={quickRead} quickReadColor={quickColor}>
       <ResponsiveContainer width="100%" height={260}>
         <ComposedChart data={chartData} margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
           <defs>
@@ -378,66 +372,37 @@ function GrowthQualityChart({ data, sym, periodLabel }) {
 }
 
 /* ═════════════════════════════════════════════════════════════
-   CHART 2: CASH QUALITY (Net Income vs Free Cash Flow)
+   CHART 2: CASH QUALITY
 ════════════════════════════════════════════════════════════════ */
 function CashQualityChart({ data, sym }) {
   const hasData = data.netIncome?.some(v => v != null) && data.freeCashFlow?.some(v => v != null);
   if (!hasData) return null;
-
   const chartData = data.years.map((y, i) => ({
     year: String(y),
     "Net Income": data.netIncome?.[i],
     "Free Cash Flow": data.freeCashFlow?.[i],
   }));
-
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
   const dataLen = chartData.length;
-
-  // Quick read logic — compare latest NI vs FCF
   const latestNI = data.netIncome?.[dataLen - 1];
   const latestFCF = data.freeCashFlow?.[dataLen - 1];
   let quickRead, quickColor;
-
   if (latestNI != null && latestFCF != null && latestNI !== 0) {
     const ratio = latestFCF / latestNI;
-    if (ratio >= 0.9) {
-      quickRead = `Free Cash Flow matches Net Income — profits are converting to real cash. This is a healthy sign.`;
-      quickColor = C.greenBg;
-    } else if (ratio >= 0.6) {
-      quickRead = `Cash flow is moderately lower than reported profits. Normal for some industries, but monitor the gap.`;
-      quickColor = null;
-    } else if (ratio >= 0.3) {
-      quickRead = `Significant gap between profits and cash. Could indicate heavy reinvestment OR accounting-heavy earnings.`;
-      quickColor = null;
-    } else {
-      quickRead = `Cash flow is much lower than profits. Understand where the gap is coming from — it's a potential red flag.`;
-      quickColor = C.redBg;
-    }
-  } else {
-    quickRead = `If cash flow bars are similar to net income bars, profits are real cash. Much lower = caution sign.`;
-    quickColor = null;
-  }
+    if (ratio >= 0.9) { quickRead = "Free Cash Flow matches Net Income — profits are converting to real cash. This is a healthy sign."; quickColor = C.greenBg; }
+    else if (ratio >= 0.6) { quickRead = "Cash flow is moderately lower than reported profits. Normal for some industries, but monitor the gap."; }
+    else if (ratio >= 0.3) { quickRead = "Significant gap between profits and cash. Could indicate heavy reinvestment OR accounting-heavy earnings."; }
+    else { quickRead = "Cash flow is much lower than profits. Understand where the gap is coming from — it's a potential red flag."; quickColor = C.redBg; }
+  } else { quickRead = "If cash flow bars are similar to net income bars, profits are real cash. Much lower = caution sign."; }
 
   return (
-    <ChartFrame
-      icon="💰"
-      title="Cash Quality Check"
-      subtitle="Compares reported profits (Net Income) with actual cash generated (Free Cash Flow). Matching = real profits."
-      quickRead={quickRead}
-      quickReadColor={quickColor}
-    >
+    <ChartFrame icon="💰" title="Cash Quality Check" subtitle="Compares reported profits (Net Income) with actual cash generated (Free Cash Flow). Matching = real profits." quickRead={quickRead} quickReadColor={quickColor}>
       <ResponsiveContainer width="100%" height={260}>
         <BarChart data={chartData} barGap={6} margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
           <defs>
-            <linearGradient id="cqNI" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={C.chartB} stopOpacity={.9}/>
-              <stop offset="100%" stopColor={C.chartB} stopOpacity={.5}/>
-            </linearGradient>
-            <linearGradient id="cqFCF" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={C.chartC} stopOpacity={.9}/>
-              <stop offset="100%" stopColor={C.chartC} stopOpacity={.5}/>
-            </linearGradient>
+            <linearGradient id="cqNI" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartB} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartB} stopOpacity={.5}/></linearGradient>
+            <linearGradient id="cqFCF" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartC} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartC} stopOpacity={.5}/></linearGradient>
           </defs>
           <CartesianGrid {...gridStyle} />
           <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
@@ -457,23 +422,14 @@ function CashQualityChart({ data, sym }) {
 }
 
 /* ═════════════════════════════════════════════════════════════
-   CHART 3: PROFIT STRUCTURE (Pie for single period, Stacked bars for multi)
+   CHART 3: PROFIT STRUCTURE (pie for 1 period, stacked bars for multi)
 ════════════════════════════════════════════════════════════════ */
 function ProfitStructureChart({ data, sym }) {
   const cs = data.costStructure;
   if (!cs || !cs.length || !cs.some(c => c && c.cogsPct != null)) return null;
-
   const dataLen = data.years.length;
+  const COLORS = { cogs: C.chartF, opex: C.chartD, tax: C.chartE, netProfit: C.chartB, other: C.textMuted };
 
-  const COLORS = {
-    cogs: C.chartF,       // earth tone
-    opex: C.chartD,       // purple
-    tax: C.chartE,        // gold
-    netProfit: C.chartB,  // green
-    other: C.textMuted,   // grey
-  };
-
-  // Single period → DONUT CHART
   if (dataLen === 1) {
     const c = cs[0];
     const pieData = [
@@ -483,64 +439,28 @@ function ProfitStructureChart({ data, sym }) {
       { name: "Net Profit", value: c.netProfitPct || 0, fill: COLORS.netProfit },
     ].filter(d => d.value > 0);
     if (c.otherPct > 0) pieData.push({ name: "Other", value: c.otherPct, fill: COLORS.other });
-
     const netProfitPct = c.netProfitPct || 0;
     let quickRead, quickColor;
-    if (netProfitPct >= 20) {
-      quickRead = `Very strong profitability — company keeps ${netProfitPct.toFixed(1)}% of every rupee as profit. Typical of premium brands or moats.`;
-      quickColor = C.greenBg;
-    } else if (netProfitPct >= 10) {
-      quickRead = `Healthy profit margin of ${netProfitPct.toFixed(1)}%. Industry-average for most sectors.`;
-      quickColor = C.greenBg;
-    } else if (netProfitPct >= 5) {
-      quickRead = `Modest profit margin of ${netProfitPct.toFixed(1)}%. Common in competitive or commodity industries.`;
-      quickColor = null;
-    } else {
-      quickRead = `Thin profit margin of ${netProfitPct.toFixed(1)}%. Company keeps very little. Check if it's industry norm or a warning.`;
-      quickColor = null;
-    }
+    if (netProfitPct >= 20) { quickRead = `Very strong profitability — company keeps ${netProfitPct.toFixed(1)}% of every rupee as profit. Typical of premium brands or moats.`; quickColor = C.greenBg; }
+    else if (netProfitPct >= 10) { quickRead = `Healthy profit margin of ${netProfitPct.toFixed(1)}%. Industry-average for most sectors.`; quickColor = C.greenBg; }
+    else if (netProfitPct >= 5) { quickRead = `Modest profit margin of ${netProfitPct.toFixed(1)}%. Common in competitive or commodity industries.`; }
+    else { quickRead = `Thin profit margin of ${netProfitPct.toFixed(1)}%. Company keeps very little. Check if it's industry norm or a warning.`; }
 
     return (
-      <ChartFrame
-        icon="🥧"
-        title="Profit Structure"
-        subtitle={`Where every ${sym}100 of revenue goes — costs, taxes, and what's left as profit (${data.years[0]}).`}
-        quickRead={quickRead}
-        quickReadColor={quickColor}
-      >
+      <ChartFrame icon="🥧" title="Profit Structure" subtitle={`Where every ${sym}100 of revenue goes — costs, taxes, and what's left as profit (${data.years[0]}).`} quickRead={quickRead} quickReadColor={quickColor}>
         <ResponsiveContainer width="100%" height={280}>
           <PieChart>
-            <Pie
-              data={pieData}
-              dataKey="value"
-              nameKey="name"
-              cx="50%"
-              cy="50%"
-              innerRadius={60}
-              outerRadius={100}
-              paddingAngle={2}
-              label={({ name, value }) => `${value.toFixed(1)}%`}
-              labelLine={false}
-              style={{ fontSize: 11, fontWeight: 600 }}
-            >
-              {pieData.map((entry, i) => (
-                <Cell key={i} fill={entry.fill} />
-              ))}
+            <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} label={({ value }) => `${value.toFixed(1)}%`} labelLine={false} style={{ fontSize: 11, fontWeight: 600 }}>
+              {pieData.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
             </Pie>
             <Tooltip content={<ChartTip isPct />} />
-            <Legend
-              verticalAlign="bottom"
-              height={36}
-              iconType="circle"
-              wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }}
-            />
+            <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }} />
           </PieChart>
         </ResponsiveContainer>
       </ChartFrame>
     );
   }
 
-  // Multi-period → STACKED BARS
   const chartData = data.years.map((y, i) => {
     const c = cs[i] || {};
     return {
@@ -552,38 +472,20 @@ function ProfitStructureChart({ data, sym }) {
       "Other": c.otherPct || 0,
     };
   });
-
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
-
   const latestProfit = cs[cs.length - 1]?.netProfitPct;
   const firstProfit = cs[0]?.netProfitPct;
   let quickRead, quickColor;
   if (latestProfit != null && firstProfit != null) {
     const delta = latestProfit - firstProfit;
-    if (delta > 1) {
-      quickRead = `Net profit share grew from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margin expansion. Good sign.`;
-      quickColor = C.greenBg;
-    } else if (delta < -1) {
-      quickRead = `Net profit share shrank from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margins compressing. Investigate cause.`;
-      quickColor = C.redBg;
-    } else {
-      quickRead = `Profit share relatively stable around ${latestProfit.toFixed(1)}%. Watch cost structure for future trends.`;
-      quickColor = null;
-    }
-  } else {
-    quickRead = `Green (Net Profit) slice getting bigger over time = improving efficiency. Shrinking = margin pressure.`;
-    quickColor = null;
-  }
+    if (delta > 1) { quickRead = `Net profit share grew from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margin expansion. Good sign.`; quickColor = C.greenBg; }
+    else if (delta < -1) { quickRead = `Net profit share shrank from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margins compressing. Investigate cause.`; quickColor = C.redBg; }
+    else { quickRead = `Profit share relatively stable around ${latestProfit.toFixed(1)}%. Watch cost structure for future trends.`; }
+  } else { quickRead = "Green (Net Profit) slice getting bigger over time = improving efficiency. Shrinking = margin pressure."; }
 
   return (
-    <ChartFrame
-      icon="📊"
-      title="Profit Structure Trend"
-      subtitle="How every 100% of revenue splits across costs, taxes, and profit — tracked over time."
-      quickRead={quickRead}
-      quickReadColor={quickColor}
-    >
+    <ChartFrame icon="📊" title="Profit Structure Trend" subtitle="How every 100% of revenue splits across costs, taxes, and profit — tracked over time." quickRead={quickRead} quickReadColor={quickColor}>
       <ResponsiveContainer width="100%" height={280}>
         <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
           <CartesianGrid {...gridStyle} />
@@ -608,59 +510,33 @@ function ProfitStructureChart({ data, sym }) {
 function EPSChart({ data, sym }) {
   const hasData = data.eps?.some(v => v != null);
   if (!hasData) return null;
-
   const chartData = data.years.map((y, i) => ({
     year: String(y),
     EPS: data.eps?.[i],
     growth: calcGrowth(data.eps, i),
   }));
-
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
   const dataLen = chartData.length;
-
   const latestEPS = data.eps?.[dataLen - 1];
   const firstEPS = data.eps?.[0];
   let quickRead, quickColor;
-
   if (dataLen === 1) {
     quickRead = `EPS of ${sym}${Number(latestEPS || 0).toFixed(2)} in ${data.years[0]}. Compare with industry peers and historical trend.`;
-    quickColor = null;
   } else if (firstEPS != null && latestEPS != null && firstEPS !== 0) {
     const totalGrowth = ((latestEPS - firstEPS) / Math.abs(firstEPS)) * 100;
-    if (totalGrowth > 50) {
-      quickRead = `EPS grew ${totalGrowth.toFixed(0)}% over this period — strong compounding shareholder wealth.`;
-      quickColor = C.greenBg;
-    } else if (totalGrowth > 0) {
-      quickRead = `EPS grew ${totalGrowth.toFixed(0)}% — steady value creation. Consistency matters more than magnitude.`;
-      quickColor = C.greenBg;
-    } else if (totalGrowth > -10) {
-      quickRead = `EPS broadly flat. Could indicate maturity or challenges — check revenue trend for context.`;
-      quickColor = null;
-    } else {
-      quickRead = `EPS declined ${Math.abs(totalGrowth).toFixed(0)}%. Understand cause — one-off impact vs structural erosion.`;
-      quickColor = C.redBg;
-    }
-  } else {
-    quickRead = `Consistent EPS growth = compounding shareholder wealth. Check growth % badges between bars.`;
-    quickColor = null;
-  }
+    if (totalGrowth > 50) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% over this period — strong compounding shareholder wealth.`; quickColor = C.greenBg; }
+    else if (totalGrowth > 0) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% — steady value creation. Consistency matters more than magnitude.`; quickColor = C.greenBg; }
+    else if (totalGrowth > -10) { quickRead = "EPS broadly flat. Could indicate maturity or challenges — check revenue trend for context."; }
+    else { quickRead = `EPS declined ${Math.abs(totalGrowth).toFixed(0)}%. Understand cause — one-off impact vs structural erosion.`; quickColor = C.redBg; }
+  } else { quickRead = "Consistent EPS growth = compounding shareholder wealth. Check growth % badges between bars."; }
 
   return (
-    <ChartFrame
-      icon="📈"
-      title="Earnings Per Share (EPS)"
-      subtitle={`What each share earned in profits. Consistent growth = real value creation for shareholders.`}
-      quickRead={quickRead}
-      quickReadColor={quickColor}
-    >
+    <ChartFrame icon="📈" title="Earnings Per Share (EPS)" subtitle="What each share earned in profits. Consistent growth = real value creation for shareholders." quickRead={quickRead} quickReadColor={quickColor}>
       <ResponsiveContainer width="100%" height={260}>
         <BarChart data={chartData} margin={{ top: 30, right: 10, left: 0, bottom: 5 }}>
           <defs>
-            <linearGradient id="epsGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={C.chartD} stopOpacity={.9}/>
-              <stop offset="100%" stopColor={C.chartD} stopOpacity={.55}/>
-            </linearGradient>
+            <linearGradient id="epsGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartD} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartD} stopOpacity={.55}/></linearGradient>
           </defs>
           <CartesianGrid {...gridStyle} />
           <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
@@ -713,109 +589,202 @@ function EPSChart({ data, sym }) {
 }
 
 /* ═════════════════════════════════════════════════════════════
+   ANALYSIS SECTION — NEW: Segmented 4-part analysis display
+════════════════════════════════════════════════════════════════ */
+function AnalysisSection({ icon, title, accentColor, paragraphs }) {
+  let parts = [];
+  if (Array.isArray(paragraphs)) {
+    parts = paragraphs.filter(Boolean);
+  } else if (typeof paragraphs === "string") {
+    parts = paragraphs.split(/\n\n+/).filter(Boolean);
+    if (parts.length === 0) parts = [paragraphs];
+  }
+  if (parts.length === 0) return null;
+
+  return (
+    <div style={{
+      background: C.bgCard,
+      border: `1px solid ${C.border}`,
+      borderRadius: 14,
+      padding: 22,
+      boxShadow: C.shadow,
+      transition: "all .2s",
+    }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        marginBottom: 14,
+        paddingBottom: 12,
+        borderBottom: `1px solid ${C.border}`,
+      }}>
+        <div style={{
+          width: 34,
+          height: 34,
+          borderRadius: 8,
+          background: `${accentColor}15`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 18,
+          flexShrink: 0,
+        }}>{icon}</div>
+        <div style={{
+          fontFamily: "'Plus Jakarta Sans', sans-serif",
+          fontWeight: 700,
+          fontSize: 15.5,
+          color: C.textPrimary,
+        }}>{title}</div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {parts.map((para, i) => (
+          <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+            <div style={{
+              flexShrink: 0,
+              width: 24,
+              height: 24,
+              borderRadius: "50%",
+              background: `${accentColor}15`,
+              color: accentColor,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontFamily: "'DM Mono', monospace",
+              fontSize: 11,
+              fontWeight: 700,
+              marginTop: 2,
+            }}>{i + 1}</div>
+            <p style={{
+              color: C.textSec,
+              lineHeight: 1.75,
+              fontSize: 13.5,
+              flex: 1,
+              margin: 0,
+            }}>{para}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════
+   INSIGHT CARD — For Strengths/Risks with refined design
+════════════════════════════════════════════════════════════════ */
+function InsightCard({ title, items, color, icon, badgeColor }) {
+  return (
+    <div style={{
+      background: C.bgCard,
+      border: `1px solid ${C.border}`,
+      borderRadius: 14,
+      padding: 22,
+      boxShadow: C.shadow,
+    }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        marginBottom: 16,
+        paddingBottom: 12,
+        borderBottom: `1px solid ${C.border}`,
+      }}>
+        <div style={{
+          width: 32,
+          height: 32,
+          borderRadius: 8,
+          background: badgeColor,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 15,
+          color: color,
+          fontWeight: 700,
+          flexShrink: 0,
+        }}>{icon}</div>
+        <div style={{
+          fontFamily: "'Plus Jakarta Sans', sans-serif",
+          fontWeight: 700,
+          fontSize: 14.5,
+          color: color,
+        }}>{title}</div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {items.map((item, i) => (
+          <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <div style={{
+              flexShrink: 0,
+              width: 20,
+              height: 20,
+              borderRadius: "50%",
+              background: badgeColor,
+              color: color,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontFamily: "'DM Mono', monospace",
+              fontSize: 10,
+              fontWeight: 700,
+              marginTop: 2,
+            }}>{i + 1}</div>
+            <div style={{
+              color: C.textSec,
+              fontSize: 13,
+              lineHeight: 1.65,
+              flex: 1,
+            }}>{item}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════
    PERIOD DROPDOWN
 ════════════════════════════════════════════════════════════════ */
 function PeriodDropdown({ value, onChange }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-
   useEffect(() => {
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
-
   const selected = PERIODS.find(p => p.id === value) || PERIODS[2];
 
   return (
     <div ref={ref} className="fs-dropdown" style={{ position: "relative" }}>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="fs-dropdown-btn"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          background: C.bgCard,
-          border: `1.5px solid ${open ? C.accent : C.border}`,
-          borderRadius: 14,
-          padding: "0 16px",
-          height: 52,
-          minWidth: 150,
-          fontSize: 14,
-          fontWeight: 600,
-          color: C.textPrimary,
-          fontFamily: "'Plus Jakarta Sans', sans-serif",
-          cursor: "pointer",
-          boxShadow: C.shadow,
-          transition: "border-color .15s, box-shadow .15s",
-          whiteSpace: "nowrap",
-          justifyContent: "space-between",
-          width: "100%",
-        }}
-      >
+      <button type="button" onClick={() => setOpen(!open)} className="fs-dropdown-btn" style={{
+        display: "flex", alignItems: "center", gap: 10, background: C.bgCard,
+        border: `1.5px solid ${open ? C.accent : C.border}`, borderRadius: 14, padding: "0 16px",
+        height: 52, minWidth: 150, fontSize: 14, fontWeight: 600, color: C.textPrimary,
+        fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", boxShadow: C.shadow,
+        transition: "border-color .15s, box-shadow .15s", whiteSpace: "nowrap",
+        justifyContent: "space-between", width: "100%",
+      }}>
         <span>{selected.short}</span>
-        <span style={{
-          fontSize: 10,
-          color: C.textMuted,
-          transform: open ? "rotate(180deg)" : "rotate(0)",
-          transition: "transform .2s",
-          marginLeft: 4,
-        }}>▼</span>
+        <span style={{ fontSize: 10, color: C.textMuted, transform: open ? "rotate(180deg)" : "rotate(0)", transition: "transform .2s", marginLeft: 4 }}>▼</span>
       </button>
-
       {open && (
-        <div
-          className="fs-dropdown-menu"
-          style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            left: 0,
-            width: "max(100%, 220px)",
-            background: C.bgCard,
-            border: `1px solid ${C.border}`,
-            borderRadius: 12,
-            boxShadow: C.shadowMd,
-            zIndex: 50,
-            overflow: "hidden",
-            animation: "fs-dropdown-in .15s ease",
-          }}
-        >
+        <div className="fs-dropdown-menu" style={{
+          position: "absolute", top: "calc(100% + 6px)", left: 0, width: "max(100%, 220px)",
+          background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: C.shadowMd,
+          zIndex: 50, overflow: "hidden", animation: "fs-dropdown-in .15s ease",
+        }}>
           {PERIODS.map(p => {
             const isActive = p.id === value;
             return (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => { onChange(p.id); setOpen(false); }}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "flex-start",
-                  gap: 2,
-                  width: "100%",
-                  background: isActive ? C.accentLight : "transparent",
-                  border: "none",
-                  padding: "10px 14px",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  textAlign: "left",
-                  transition: "background .12s",
-                }}
+              <button key={p.id} type="button" onClick={() => { onChange(p.id); setOpen(false); }} style={{
+                display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, width: "100%",
+                background: isActive ? C.accentLight : "transparent", border: "none", padding: "10px 14px",
+                cursor: "pointer", fontFamily: "inherit", textAlign: "left", transition: "background .12s",
+              }}
                 onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = C.bgSidebar; }}
                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
               >
-                <span style={{
-                  fontSize: 13.5,
-                  fontWeight: 600,
-                  color: isActive ? C.accent : C.textPrimary,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}>
+                <span style={{ fontSize: 13.5, fontWeight: 600, color: isActive ? C.accent : C.textPrimary, display: "flex", alignItems: "center", gap: 6 }}>
                   {p.label}
                   {isActive && <span style={{ fontSize: 11, color: C.accent }}>✓</span>}
                 </span>
@@ -828,6 +797,15 @@ function PeriodDropdown({ value, onChange }) {
     </div>
   );
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   ↓↓↓ PART 1 ENDS HERE ↓↓↓
+   Paste Part 2 below this line, starting with: const FONTS = `@import...
+═══════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   ↑↑↑ PART 2 STARTS HERE ↑↑↑
+   This continues where Part 1 ended — do NOT create duplicates
+═══════════════════════════════════════════════════════════════ */
 
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');`;
 
@@ -865,8 +843,12 @@ const GLOBAL_CSS = `
   .fs-charts-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
   @media (min-width: 1024px) { .fs-charts-grid { grid-template-columns: 1fr 1fr; gap: 18px; } }
 
-  .fs-analysis-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
-  @media (min-width: 1024px) { .fs-analysis-grid { grid-template-columns: 3fr 2fr; gap: 16px; } }
+  .fs-analysis-sections { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 20px; }
+  @media (min-width: 1024px) { .fs-analysis-sections { grid-template-columns: 1fr 1fr; gap: 16px; } }
+
+  .fs-insights-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 24px; }
+  @media (min-width: 768px) { .fs-insights-grid { grid-template-columns: 1fr 1fr; gap: 16px; } }
+  @media (min-width: 1024px) { .fs-insights-grid { grid-template-columns: 1fr 1fr 1fr; gap: 16px; } }
 
   .fs-header-dashboard { position: sticky; top: 0; z-index: 100; min-height: 60px; background: ${C.bgCard}; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; gap: 10px; flex-wrap: wrap; }
   @media (min-width: 1024px) { .fs-header-dashboard { padding: 0 28px; gap: 16px; flex-wrap: nowrap; } }
@@ -892,9 +874,6 @@ const GLOBAL_CSS = `
   .fs-description { color: ${C.textSec}; font-size: 14px; line-height: 1.7; max-width: 680px; margin-bottom: 20px; }
   @media (min-width: 640px) { .fs-description { font-size: 14.5px; line-height: 1.75; margin-bottom: 28px; } }
 
-  .fs-analysis-card { background: ${C.bgCard}; border: 1px solid ${C.border}; border-radius: 14px; padding: 20px; box-shadow: ${C.shadow}; }
-  @media (min-width: 1024px) { .fs-analysis-card { padding: 28px; } }
-
   .fs-action-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
   .fs-action-btn { padding: 12px 20px; font-size: 14px; font-weight: 600; border-radius: 12px; font-family: 'Plus Jakarta Sans', sans-serif; cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
   @media (min-width: 640px) { .fs-action-btn { padding: 13px 28px; font-size: 14.5px; } }
@@ -910,8 +889,8 @@ const GLOBAL_CSS = `
   .fs-modal-bubble { max-width: 85%; }
   @media (min-width: 640px) { .fs-modal-bubble { max-width: 78%; } }
 
-  .fs-section-heading { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; font-size: 16px; color: ${C.textPrimary}; margin-bottom: 14px; display: flex; align-items: center; gap: 10px; }
-  .fs-section-heading::before { content: ''; width: 4px; height: 18px; background: ${C.accent}; border-radius: 2px; }
+  .fs-section-heading { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; font-size: 17px; color: ${C.textPrimary}; margin-bottom: 14px; display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .fs-section-heading::before { content: ''; width: 4px; height: 20px; background: ${C.accent}; border-radius: 2px; }
 `;
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1003,8 +982,7 @@ function FinSightApp() {
           userId: user.id,
           email: user.primaryEmailAddress?.emailAddress,
           action: "analyze",
-          company,
-          period,
+          company, period,
           timestamp: new Date().toISOString(),
         })
       }).catch(() => {});
@@ -1015,8 +993,9 @@ function FinSightApp() {
     try {
       const raw = await callClaude({
         system: buildSystemPrompt(period),
-        userMsg: `Find and analyze the LATEST available financial data for: ${company}. Analysis period requested: ${periodLabel} (${period}). Use web search to retrieve real, recent numbers (target Q3/Q4 FY26 or latest available). Include cost structure (COGS%, OpEx%, Tax%, Net Profit%) and EPS. Return ONLY JSON matching the schema provided.`,
+        userMsg: `Find and analyze the LATEST available financial data for: ${company}. Analysis period requested: ${periodLabel} (${period}). Use web search to retrieve real, recent numbers (target Q3/Q4 FY26 or latest available). Include cost structure and EPS. Provide analysis in 4 segmented sections (analysisRevenue, analysisProfitability, analysisCashFlow, analysisOutlook), each with 3 paragraphs of 2-3 sentences. Return ONLY JSON matching the schema provided.`,
         tools: [{ type: "web_search_20250305", name: "web_search" }],
+        maxTokens: 6000,
       });
       let json = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
       const s = json.indexOf("{"), e = json.lastIndexOf("}");
@@ -1195,6 +1174,12 @@ function FinSightApp() {
     const latestLabel = data.years?.[lastIdx] || "Latest";
     const periodLabel = PERIODS.find(p => p.id === data.periodType)?.label || "Analysis";
 
+    // Fallback: if old 'analysis' field exists but not the 4 new ones, split it
+    const analysisRev = data.analysisRevenue || (data.analysis ? [data.analysis] : null);
+    const analysisProf = data.analysisProfitability || null;
+    const analysisCash = data.analysisCashFlow || null;
+    const analysisOut = data.analysisOutlook || null;
+
     return (
       <div style={{ minHeight: "100vh", background: C.bgPage, color: C.textPrimary, fontFamily: "'DM Sans', system-ui, sans-serif" }}>
         <style>{FONTS + GLOBAL_CSS}</style>
@@ -1247,42 +1232,72 @@ function FinSightApp() {
           {/* ═══ 4 ANALYTICAL CHARTS ═══ */}
           <div className="fs-section-heading">Financial Analysis</div>
           <div className="fs-charts-grid" style={{ marginBottom: 24 }}>
-            <GrowthQualityChart data={data} sym={sym} periodLabel={periodLabel} />
+            <GrowthQualityChart data={data} sym={sym} />
             <CashQualityChart data={data} sym={sym} />
             <ProfitStructureChart data={data} sym={sym} />
             <EPSChart data={data} sym={sym} />
           </div>
 
-          <div className="fs-analysis-grid" style={{ marginBottom: 24 }}>
-            <div className="fs-analysis-card">
-              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ width: 24, height: 24, borderRadius: 6, background: C.accentLight, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 14, color: C.accent }}>✦</span>
-                AI Financial Analysis
-              </div>
-              {String(data.analysis).split(/\n+/).filter(Boolean).map((p, i) => (
-                <p key={i} style={{ color: C.textSec, lineHeight: 1.8, fontSize: 14, marginBottom: 11 }}>{p}</p>
-              ))}
-            </div>
+          {/* ═══ SEGMENTED AI ANALYSIS (4 SECTIONS) ═══ */}
+          <div className="fs-section-heading">AI Financial Analysis</div>
+          <div className="fs-analysis-sections">
+            {analysisRev && (
+              <AnalysisSection
+                icon="📈"
+                title="Revenue & Growth Story"
+                accentColor={C.chartA}
+                paragraphs={analysisRev}
+              />
+            )}
+            {analysisProf && (
+              <AnalysisSection
+                icon="💰"
+                title="Profitability Performance"
+                accentColor={C.chartB}
+                paragraphs={analysisProf}
+              />
+            )}
+            {analysisCash && (
+              <AnalysisSection
+                icon="💵"
+                title="Cash Flow Analysis"
+                accentColor={C.chartC}
+                paragraphs={analysisCash}
+              />
+            )}
+            {analysisOut && (
+              <AnalysisSection
+                icon="🎯"
+                title="Competitive & Strategic Outlook"
+                accentColor={C.chartD}
+                paragraphs={analysisOut}
+              />
+            )}
+          </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 20, boxShadow: C.shadow }}>
-                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, color: C.green, marginBottom: 12, fontSize: 14 }}>✓ Key Strengths</div>
-                {data.keyStrengths.map((s, i) => (
-                  <div key={i} style={{ color: C.textSec, fontSize: 13, lineHeight: 1.7, marginBottom: 10, paddingLeft: 12, borderLeft: `2px solid ${C.green}33` }}>{s}</div>
-                ))}
+          {/* ═══ KEY STRENGTHS / KEY RISKS / OUTLOOK ═══ */}
+          <div className="fs-section-heading">Key Insights</div>
+          <div className="fs-insights-grid">
+            <InsightCard
+              title="Key Strengths"
+              icon="✓"
+              color={C.green}
+              badgeColor={C.greenBg}
+              items={data.keyStrengths || []}
+            />
+            <InsightCard
+              title="Key Risks"
+              icon="⚠"
+              color={C.red}
+              badgeColor={C.redBg}
+              items={data.keyRisks || []}
+            />
+            <div style={{ background: oc.bg, border: `1px solid ${oc.color}33`, borderRadius: 14, padding: 22, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, paddingBottom: 12, borderBottom: `1px solid ${oc.color}22` }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: oc.color + "20", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, color: oc.color, fontWeight: 700 }}>◎</div>
+                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14.5, color: oc.color }}>{data.outlook} Outlook</div>
               </div>
-
-              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 20, boxShadow: C.shadow }}>
-                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, color: C.red, marginBottom: 12, fontSize: 14 }}>⚠ Key Risks</div>
-                {data.keyRisks.map((r, i) => (
-                  <div key={i} style={{ color: C.textSec, fontSize: 13, lineHeight: 1.7, marginBottom: 10, paddingLeft: 12, borderLeft: `2px solid ${C.red}33` }}>{r}</div>
-                ))}
-              </div>
-
-              <div style={{ background: oc.bg, border: `1px solid ${oc.color}33`, borderRadius: 14, padding: 16 }}>
-                <div style={{ color: oc.color, fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 6 }}>{data.outlook} Outlook</div>
-                <div style={{ color: C.textSec, fontSize: 13, lineHeight: 1.7 }}>{data.outlookReason}</div>
-              </div>
+              <div style={{ color: C.textSec, fontSize: 13, lineHeight: 1.7 }}>{data.outlookReason}</div>
             </div>
           </div>
 
