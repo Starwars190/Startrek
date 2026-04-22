@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   AreaChart, Area, LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
@@ -8,8 +8,8 @@ import { ClerkProvider, SignedIn, SignedOut, SignIn, SignUp, UserButton, useUser
 /* ═════════════════════════════════════════════════════════════
    FinSight AI — by Pallav Shah
    WITH LOGIN — Clerk authentication + user tracking
-   MOBILE RESPONSIVE — v3 (April 22, 2026)
-   NEW: Period selector (6 options) + updated system prompt
+   MOBILE RESPONSIVE — v3.1 (April 22, 2026)
+   NEW: Dropdown period selector (left of search bar)
 ════════════════════════════════════════════════════════════════ */
 
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -44,16 +44,13 @@ const C = {
 const API_URL = "/api/claude";
 const MODEL   = "claude-sonnet-4-5";
 
-/* ═════════════════════════════════════════════════════════════
-   PERIOD OPTIONS — NEW (April 22, 2026)
-════════════════════════════════════════════════════════════════ */
 const PERIODS = [
-  { id: "latest_quarter", label: "Latest Quarter", short: "Q",   desc: "Most recent quarter" },
-  { id: "half_yearly",    label: "Half Yearly",    short: "H1",  desc: "Last 2 quarters" },
-  { id: "1_year",         label: "1 Year",         short: "1Y",  desc: "Full fiscal year" },
-  { id: "2_year",         label: "2 Years",        short: "2Y",  desc: "YoY comparison" },
-  { id: "3_year",         label: "3 Years",        short: "3Y",  desc: "Medium-term trend" },
-  { id: "5_year",         label: "5 Years",        short: "5Y",  desc: "Long-term history" },
+  { id: "latest_quarter", label: "Latest Quarter", short: "Latest Q",  desc: "Most recent quarter" },
+  { id: "half_yearly",    label: "Half Yearly",    short: "Half Year", desc: "Last 2 quarters" },
+  { id: "1_year",         label: "1 Year",         short: "1 Year",    desc: "Full fiscal year" },
+  { id: "2_year",         label: "2 Years",        short: "2 Years",   desc: "YoY comparison" },
+  { id: "3_year",         label: "3 Years",        short: "3 Years",   desc: "Medium-term trend" },
+  { id: "5_year",         label: "5 Years",        short: "5 Years",   desc: "Long-term history" },
 ];
 
 const DEFAULT_PERIOD = "1_year";
@@ -106,17 +103,9 @@ const STEPS = [
   "Building your dashboard",
 ];
 
-/* ═════════════════════════════════════════════════════════════
-   SYSTEM PROMPT v3 — UPDATED April 22, 2026
-   - Targets latest available data (Q3/Q4 FY26)
-   - Dynamic period handling
-   - Explicit current date context
-════════════════════════════════════════════════════════════════ */
 function buildSystemPrompt(period) {
   const today = new Date().toISOString().split('T')[0];
   const currentYear = new Date().getFullYear();
-  const prevYear = currentYear - 1;
-  const startYear = currentYear - 5;
 
   const periodInstructions = {
     latest_quarter: `Return data for the MOST RECENT QUARTER only (target Q3 FY26 or Q4 FY26 if available).
@@ -233,6 +222,124 @@ const Byline = () => (
   </span>
 );
 
+/* ═════════════════════════════════════════════════════════════
+   PERIOD DROPDOWN COMPONENT — NEW
+   Matches search bar style: coral border, same height (52px)
+════════════════════════════════════════════════════════════════ */
+function PeriodDropdown({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const selected = PERIODS.find(p => p.id === value) || PERIODS[2];
+
+  return (
+    <div ref={ref} className="fs-dropdown" style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="fs-dropdown-btn"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          background: C.bgCard,
+          border: `1.5px solid ${open ? C.accent : C.border}`,
+          borderRadius: 14,
+          padding: "0 16px",
+          height: 52,
+          minWidth: 150,
+          fontSize: 14,
+          fontWeight: 600,
+          color: C.textPrimary,
+          fontFamily: "'Plus Jakarta Sans', sans-serif",
+          cursor: "pointer",
+          boxShadow: C.shadow,
+          transition: "border-color .15s, box-shadow .15s",
+          whiteSpace: "nowrap",
+          justifyContent: "space-between",
+          width: "100%",
+        }}
+      >
+        <span>{selected.short}</span>
+        <span style={{
+          fontSize: 10,
+          color: C.textMuted,
+          transform: open ? "rotate(180deg)" : "rotate(0)",
+          transition: "transform .2s",
+          marginLeft: 4,
+        }}>▼</span>
+      </button>
+
+      {open && (
+        <div
+          className="fs-dropdown-menu"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            width: "max(100%, 220px)",
+            background: C.bgCard,
+            border: `1px solid ${C.border}`,
+            borderRadius: 12,
+            boxShadow: C.shadowMd,
+            zIndex: 50,
+            overflow: "hidden",
+            animation: "fs-dropdown-in .15s ease",
+          }}
+        >
+          {PERIODS.map(p => {
+            const isActive = p.id === value;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => { onChange(p.id); setOpen(false); }}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "flex-start",
+                  gap: 2,
+                  width: "100%",
+                  background: isActive ? C.accentLight : "transparent",
+                  border: "none",
+                  padding: "10px 14px",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  textAlign: "left",
+                  transition: "background .12s",
+                }}
+                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = C.bgSidebar; }}
+                onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
+              >
+                <span style={{
+                  fontSize: 13.5,
+                  fontWeight: 600,
+                  color: isActive ? C.accent : C.textPrimary,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}>
+                  {p.label}
+                  {isActive && <span style={{ fontSize: 11, color: C.accent }}>✓</span>}
+                </span>
+                <span style={{ fontSize: 11, color: C.textMuted }}>{p.desc}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');`;
 
 const GLOBAL_CSS = `
@@ -248,17 +355,22 @@ const GLOBAL_CSS = `
   .fs-btn-ghost:hover  { background: ${C.bgSidebar} !important; }
   .fs-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
   .fs-act:hover { opacity: .88 !important; transform: translateY(-1px); }
-  .fs-period-btn { transition: all .18s; }
-  .fs-period-btn:hover { background: ${C.accentLight} !important; border-color: ${C.accent} !important; color: ${C.accent} !important; }
-  .fs-period-btn.active { background: ${C.accent} !important; color: #fff !important; border-color: ${C.accent} !important; }
+  .fs-dropdown-btn:hover { border-color: ${C.accent} !important; }
   @keyframes fs-fade { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:none;} }
   @keyframes fs-spin { to { transform: rotate(360deg); } }
   @keyframes fs-step { from{opacity:0;transform:translateX(-8px);} to{opacity:1;transform:none;} }
+  @keyframes fs-dropdown-in { from{opacity:0;transform:translateY(-4px);} to{opacity:1;transform:none;} }
   .cl-internal-b3fm6y, .cl-formButtonPrimary { background-color: ${C.accent} !important; }
   .cl-formButtonPrimary:hover { background-color: ${C.accentDark} !important; }
   .cl-card { box-shadow: ${C.shadowMd} !important; border: 1px solid ${C.border} !important; }
 
-  /* RESPONSIVE GRIDS — Mobile First */
+  /* SEARCH ROW — Mobile: stacked / Desktop: side by side */
+  .fs-search-row { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 580px; }
+  @media (min-width: 640px) { .fs-search-row { flex-direction: row; align-items: stretch; max-width: 740px; } }
+
+  .fs-search-bar { flex: 1; display: flex; gap: 8px; background: ${C.bgCard}; border: 1.5px solid ${C.border}; border-radius: 14px; padding: 6px 6px 6px 14px; box-shadow: ${C.shadow}; min-height: 52px; align-items: center; }
+
+  /* RESPONSIVE GRIDS */
   .fs-metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   @media (min-width: 640px) { .fs-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } }
   @media (min-width: 1024px) { .fs-metrics-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; } }
@@ -268,11 +380,6 @@ const GLOBAL_CSS = `
 
   .fs-analysis-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
   @media (min-width: 1024px) { .fs-analysis-grid { grid-template-columns: 3fr 2fr; gap: 16px; } }
-
-  /* PERIOD SELECTOR — NEW */
-  .fs-period-row { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-bottom: 16px; padding: 0 8px; }
-  .fs-period-btn { background: ${C.bgCard}; border: 1px solid ${C.border}; color: ${C.textSec}; border-radius: 20px; padding: 6px 12px; font-size: 12.5px; font-weight: 500; cursor: pointer; font-family: inherit; white-space: nowrap; }
-  @media (min-width: 640px) { .fs-period-btn { padding: 7px 14px; font-size: 13px; } }
 
   /* RESPONSIVE HEADERS */
   .fs-header-dashboard { position: sticky; top: 0; z-index: 100; min-height: 60px; background: ${C.bgCard}; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; gap: 10px; flex-wrap: wrap; }
@@ -324,7 +431,7 @@ const GLOBAL_CSS = `
 `;
 
 /* ═══════════════════════════════════════════════════════════════
-   LOGIN SCREEN — shown to logged-out users
+   LOGIN SCREEN
 ═══════════════════════════════════════════════════════════════ */
 function LoginScreen() {
   return (
@@ -361,7 +468,7 @@ function LoginScreen() {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   MAIN APP — shown to logged-in users
+   MAIN APP
 ═══════════════════════════════════════════════════════════════ */
 function FinSightApp() {
   const { user } = useUser();
@@ -503,8 +610,11 @@ function FinSightApp() {
           Type any company name. Get AI-powered financial analysis with interactive charts, PPT deck, and podcast script.
         </p>
 
-        <div style={{ width: "100%", maxWidth: 580, marginBottom: 12 }}>
-          <div style={{ display: "flex", gap: 8, background: C.bgCard, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: "6px 6px 6px 14px", boxShadow: C.shadow }}>
+        {/* NEW: Dropdown (left) + Search bar (right) */}
+        <div className="fs-search-row" style={{ marginBottom: 32 }}>
+          <PeriodDropdown value={period} onChange={setPeriod} />
+
+          <div className="fs-search-bar">
             <input
               className="fs-input"
               value={q}
@@ -524,24 +634,7 @@ function FinSightApp() {
           </div>
         </div>
 
-        {/* NEW: Period Selector */}
-        <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 500, letterSpacing: ".5px", textTransform: "uppercase", marginBottom: 8 }}>
-          Analysis Period
-        </div>
-        <div className="fs-period-row">
-          {PERIODS.map(p => (
-            <button
-              key={p.id}
-              className={`fs-period-btn ${period === p.id ? 'active' : ''}`}
-              onClick={() => setPeriod(p.id)}
-              title={p.desc}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", marginBottom: 40, marginTop: 24, width: "100%" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", marginBottom: 40, width: "100%" }}>
           {[{ flag: "🇺🇸", label: "US", items: US_EX }, { flag: "🇮🇳", label: "India", items: IN_EX }].map(row => (
             <div key={row.flag} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center", maxWidth: "100%" }}>
               <span className="fs-chip-row-label">{row.flag} {row.label}</span>
@@ -618,7 +711,6 @@ function FinSightApp() {
       Positive: { color: C.green, bg: C.greenBg },
       Mixed:    { color: C.amber, bg: C.amberBg },
       Caution:  { color: C.red, bg: C.redBg },
-      // Legacy support
       Bullish: { color: C.green, bg: C.greenBg },
       Neutral: { color: C.amber, bg: C.amberBg },
       Bearish: { color: C.red, bg: C.redBg },
@@ -847,7 +939,7 @@ function FinSightApp() {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   ROOT COMPONENT — wraps everything with Clerk authentication
+   ROOT COMPONENT
 ═══════════════════════════════════════════════════════════════ */
 export default function App() {
   if (!CLERK_PUB_KEY) {
