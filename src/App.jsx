@@ -7,7 +7,7 @@ import { ClerkProvider, SignedIn, SignedOut, SignIn, SignUp, UserButton, useUser
 
 /* ═════════════════════════════════════════════════════════════
    FinSight AI — by Pallav Shah
-   v3.5.1 (April 22, 2026) — Fixed: strip citation tags from analysis
+   v3.6 (April 23, 2026) — Gorgeous Direct PPT Generation
 ════════════════════════════════════════════════════════════════ */
 
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -69,11 +69,6 @@ async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
   return json.content.filter(b => b.type === "text").map(b => b.text).join("");
 }
 
-/* ═════════════════════════════════════════════════════════════
-   CLEAN TEXT — NEW v3.5.1
-   Strips <cite index="..."></cite> tags from Claude's web search output
-   Recursively handles arrays and strings
-════════════════════════════════════════════════════════════════ */
 function cleanText(text) {
   if (!text) return text;
   if (Array.isArray(text)) return text.map(cleanText);
@@ -101,7 +96,7 @@ function calcGrowth(arr, idx) {
 }
 
 /* ═════════════════════════════════════════════════════════════
-   EXCEL EXPORT — lazy-loaded SheetJS
+   LAZY LIBRARY LOADERS — SheetJS + PptxGenJS + html2canvas
 ════════════════════════════════════════════════════════════════ */
 async function loadSheetJS() {
   if (window.XLSX) return window.XLSX;
@@ -114,6 +109,609 @@ async function loadSheetJS() {
   });
 }
 
+async function loadPptxGenJS() {
+  if (window.PptxGenJS) return window.PptxGenJS;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
+    script.onload = () => resolve(window.PptxGenJS);
+    script.onerror = () => reject(new Error('Failed to load PPT library'));
+    document.head.appendChild(script);
+  });
+}
+
+async function loadHtml2Canvas() {
+  if (window.html2canvas) return window.html2canvas;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+    script.onload = () => resolve(window.html2canvas);
+    script.onerror = () => reject(new Error('Failed to load capture library'));
+    document.head.appendChild(script);
+  });
+}
+
+async function captureChartAsImage(selector) {
+  try {
+    const html2canvas = await loadHtml2Canvas();
+    const element = document.querySelector(selector);
+    if (!element) return null;
+    const canvas = await html2canvas(element, {
+      backgroundColor: '#FFFFFF',
+      scale: 2,
+      logging: false,
+      useCORS: true,
+    });
+    return canvas.toDataURL('image/png');
+  } catch (e) {
+    console.error('Chart capture failed:', e);
+    return null;
+  }
+}
+
+/* ═════════════════════════════════════════════════════════════
+   PPT GENERATOR — 10-slide professional presentation
+════════════════════════════════════════════════════════════════ */
+async function generatePPT(data, periodLabel) {
+  const PptxGenJS = await loadPptxGenJS();
+  const pptx = new PptxGenJS();
+
+  const PPT_COLORS = {
+    accent:      "CF6B4E",
+    accentDark:  "A8553C",
+    accentLight: "FDF0EC",
+    bgPage:      "F9F7F4",
+    bgSidebar:   "EFEBE4",
+    bgCard:      "FFFFFF",
+    textPrimary: "1F1B18",
+    textSec:     "6B6158",
+    textMuted:   "9E9890",
+    green:       "2D7D5C",
+    greenBg:     "F0FAF5",
+    red:         "C04040",
+    redBg:       "FDF2F2",
+    border:      "E8E1D8",
+  };
+
+  pptx.layout = 'LAYOUT_WIDE';
+  pptx.author = 'Pallav Shah';
+  pptx.company = 'FinSight AI';
+  pptx.title = `${data.company} - Financial Analysis`;
+  pptx.subject = 'AI-Generated Financial Analysis Report';
+
+  const sym = data.currencySymbol || "$";
+  const cur = data.currency || "USD";
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const lastIdx = (data.years?.length || 1) - 1;
+
+  const chartImg1 = await captureChartAsImage('.fs-charts-grid > div:nth-child(1)');
+  const chartImg2 = await captureChartAsImage('.fs-charts-grid > div:nth-child(2)');
+  const chartImg3 = await captureChartAsImage('.fs-charts-grid > div:nth-child(3)');
+  const chartImg4 = await captureChartAsImage('.fs-charts-grid > div:nth-child(4)');
+
+  // SLIDE 1: TITLE
+  const s1 = pptx.addSlide();
+  s1.background = { color: PPT_COLORS.bgPage };
+  s1.addShape(pptx.ShapeType.rect, {
+    x: 0, y: 0, w: 13.33, h: 0.4,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+  });
+  s1.addShape(pptx.ShapeType.rect, {
+    x: 0.8, y: 1.2, w: 0.8, h: 0.8,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+    rectRadius: 0.1,
+  });
+  s1.addText('📊', { x: 0.8, y: 1.2, w: 0.8, h: 0.8, align: 'center', valign: 'middle', fontSize: 36 });
+  s1.addText('FINSIGHT AI', {
+    x: 0.8, y: 2.2, w: 12, h: 0.5,
+    fontSize: 20, fontFace: 'Calibri', bold: true, color: PPT_COLORS.accent, charSpacing: 3,
+  });
+  s1.addShape(pptx.ShapeType.rect, {
+    x: 0.8, y: 2.85, w: 1.5, h: 0.04,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+  });
+  s1.addText(data.company || 'Company Analysis', {
+    x: 0.8, y: 3.1, w: 12, h: 1.2,
+    fontSize: 48, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, valign: 'top',
+  });
+  s1.addText(`Financial Analysis Report  •  ${periodLabel}`, {
+    x: 0.8, y: 4.4, w: 12, h: 0.5,
+    fontSize: 18, fontFace: 'Calibri', color: PPT_COLORS.textSec,
+  });
+  s1.addShape(pptx.ShapeType.rect, {
+    x: 0.8, y: 5.1, w: 3.5, h: 0.5,
+    fill: { color: PPT_COLORS.accentLight },
+    line: { color: PPT_COLORS.accentLight, width: 0 },
+    rectRadius: 0.08,
+  });
+  s1.addText(`${data.ticker || ''}  •  ${data.exchange || ''}  •  ${data.sector || ''}`, {
+    x: 0.8, y: 5.1, w: 3.5, h: 0.5,
+    fontSize: 12, fontFace: 'Calibri', bold: true, color: PPT_COLORS.accent,
+    align: 'center', valign: 'middle',
+  });
+  s1.addText(`Generated ${today}  •  by Pallav Shah  •  finsightai.org`, {
+    x: 0.8, y: 6.8, w: 12, h: 0.3,
+    fontSize: 10, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+  });
+
+  // SLIDE 2: COMPANY OVERVIEW
+  const s2 = pptx.addSlide();
+  s2.background = { color: PPT_COLORS.bgCard };
+  s2.addShape(pptx.ShapeType.rect, {
+    x: 0, y: 0, w: 13.33, h: 0.15,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+  });
+  s2.addText('COMPANY OVERVIEW', {
+    x: 0.6, y: 0.5, w: 12, h: 0.5,
+    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
+  });
+  s2.addShape(pptx.ShapeType.rect, {
+    x: 0.6, y: 1.1, w: 1.2, h: 0.04,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+  });
+  s2.addText(cleanText(data.description) || 'Company description not available.', {
+    x: 0.6, y: 1.4, w: 12, h: 1.2,
+    fontSize: 16, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
+  });
+
+  const infoItems = [
+    { label: 'Company', value: data.company || 'N/A' },
+    { label: 'Ticker', value: data.ticker || 'N/A' },
+    { label: 'Exchange', value: data.exchange || 'N/A' },
+    { label: 'Sector', value: data.sector || 'N/A' },
+    { label: 'Market', value: data.market || 'N/A' },
+    { label: 'Currency', value: `${cur} (${sym})` },
+  ];
+  infoItems.forEach((item, i) => {
+    const col = i % 3;
+    const row = Math.floor(i / 3);
+    const x = 0.6 + col * 4.1;
+    const y = 3.1 + row * 1.0;
+    s2.addShape(pptx.ShapeType.rect, {
+      x, y, w: 3.9, h: 0.85,
+      fill: { color: PPT_COLORS.bgPage },
+      line: { color: PPT_COLORS.border, width: 1 },
+      rectRadius: 0.1,
+    });
+    s2.addText(item.label.toUpperCase(), {
+      x: x + 0.2, y: y + 0.1, w: 3.5, h: 0.25,
+      fontSize: 9, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textMuted, charSpacing: 2,
+    });
+    s2.addText(item.value, {
+      x: x + 0.2, y: y + 0.35, w: 3.5, h: 0.45,
+      fontSize: 15, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary,
+    });
+  });
+
+  const outlookColor = data.outlook === 'Positive' || data.outlook === 'Bullish' ? PPT_COLORS.green
+    : data.outlook === 'Caution' || data.outlook === 'Bearish' ? PPT_COLORS.red : 'A8761F';
+  const outlookBg = data.outlook === 'Positive' || data.outlook === 'Bullish' ? PPT_COLORS.greenBg
+    : data.outlook === 'Caution' || data.outlook === 'Bearish' ? PPT_COLORS.redBg : 'FEF7E6';
+  s2.addShape(pptx.ShapeType.rect, {
+    x: 0.6, y: 5.4, w: 12.1, h: 1.3,
+    fill: { color: outlookBg }, line: { color: outlookColor, width: 2 }, rectRadius: 0.1,
+  });
+  s2.addText(`◎ ${(data.outlook || 'Mixed').toUpperCase()} OUTLOOK`, {
+    x: 1.0, y: 5.55, w: 11, h: 0.4,
+    fontSize: 14, fontFace: 'Calibri', bold: true, color: outlookColor, charSpacing: 2,
+  });
+  s2.addText(cleanText(data.outlookReason) || 'Outlook reasoning not available.', {
+    x: 1.0, y: 6.0, w: 11, h: 0.6,
+    fontSize: 13, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
+  });
+  s2.addText('FinSight AI  •  by Pallav Shah', {
+    x: 0.6, y: 7.1, w: 12, h: 0.3,
+    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+  });
+
+  // SLIDE 3: KEY METRICS DASHBOARD
+  const s3 = pptx.addSlide();
+  s3.background = { color: PPT_COLORS.bgCard };
+  s3.addShape(pptx.ShapeType.rect, {
+    x: 0, y: 0, w: 13.33, h: 0.15,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+  });
+  s3.addText('KEY FINANCIAL METRICS', {
+    x: 0.6, y: 0.5, w: 12, h: 0.5,
+    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
+  });
+  s3.addText(`${data.years?.[lastIdx] || 'Latest Period'}  •  Values in ${cur}`, {
+    x: 0.6, y: 1.0, w: 12, h: 0.3,
+    fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+  });
+
+  const metrics = [
+    { label: 'Revenue', value: fmtMoney(data.revenue?.[lastIdx], sym), sub: data.revenueCAGR ? `CAGR ${Number(data.revenueCAGR).toFixed(1)}%` : 'Latest period', color: PPT_COLORS.accent },
+    { label: 'Net Income', value: fmtMoney(data.netIncome?.[lastIdx], sym), sub: data.netMargin?.[lastIdx] ? `Margin ${Number(data.netMargin[lastIdx]).toFixed(1)}%` : 'Latest', color: PPT_COLORS.green },
+    { label: 'EBITDA', value: fmtMoney(data.ebitda?.[lastIdx], sym), sub: 'Operating earnings', color: '3B82B0' },
+    { label: 'Free Cash Flow', value: fmtMoney(data.freeCashFlow?.[lastIdx], sym), sub: 'After capex', color: '7C5CB8' },
+    { label: 'Market Cap', value: fmtMoney(data.marketCap, sym), sub: data.exchange, color: PPT_COLORS.accentDark },
+    { label: 'P/E Ratio', value: data.peRatio ? `${Number(data.peRatio).toFixed(1)}×` : 'N/A', sub: 'Current valuation', color: 'D9A441' },
+  ];
+  metrics.forEach((m, i) => {
+    const col = i % 3;
+    const row = Math.floor(i / 3);
+    const x = 0.6 + col * 4.15;
+    const y = 1.7 + row * 2.4;
+    s3.addShape(pptx.ShapeType.rect, {
+      x, y, w: 3.95, h: 2.2,
+      fill: { color: PPT_COLORS.bgPage }, line: { color: PPT_COLORS.border, width: 1 }, rectRadius: 0.15,
+    });
+    s3.addShape(pptx.ShapeType.rect, {
+      x, y, w: 3.95, h: 0.08,
+      fill: { color: m.color }, line: { color: m.color, width: 0 },
+    });
+    s3.addText(m.label.toUpperCase(), {
+      x: x + 0.25, y: y + 0.25, w: 3.5, h: 0.3,
+      fontSize: 10, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textMuted, charSpacing: 2,
+    });
+    s3.addText(m.value, {
+      x: x + 0.25, y: y + 0.7, w: 3.5, h: 0.9,
+      fontSize: 32, fontFace: 'Calibri', bold: true, color: m.color,
+    });
+    s3.addText(m.sub, {
+      x: x + 0.25, y: y + 1.7, w: 3.5, h: 0.4,
+      fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec,
+    });
+  });
+  s3.addText('FinSight AI  •  by Pallav Shah', {
+    x: 0.6, y: 7.1, w: 12, h: 0.3,
+    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+  });
+
+  // Helper for chart slides
+  const addChartSlide = (title, subtitle, chartImg, insight, insightColor = PPT_COLORS.accentLight, insightBorder = PPT_COLORS.accent) => {
+    const s = pptx.addSlide();
+    s.background = { color: PPT_COLORS.bgCard };
+    s.addShape(pptx.ShapeType.rect, {
+      x: 0, y: 0, w: 13.33, h: 0.15,
+      fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+    });
+    s.addText(title.toUpperCase(), {
+      x: 0.6, y: 0.5, w: 12, h: 0.5,
+      fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
+    });
+    s.addText(subtitle, {
+      x: 0.6, y: 1.0, w: 12, h: 0.3,
+      fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+    });
+    if (chartImg) {
+      s.addImage({ data: chartImg, x: 1.0, y: 1.6, w: 11.3, h: 4.2 });
+    } else {
+      s.addShape(pptx.ShapeType.rect, {
+        x: 1.0, y: 1.6, w: 11.3, h: 4.2,
+        fill: { color: PPT_COLORS.bgPage }, line: { color: PPT_COLORS.border, width: 1 }, rectRadius: 0.1,
+      });
+      s.addText('Chart visualization available in the dashboard', {
+        x: 1.0, y: 3.4, w: 11.3, h: 0.6,
+        fontSize: 14, fontFace: 'Calibri', color: PPT_COLORS.textMuted, align: 'center',
+      });
+    }
+    s.addShape(pptx.ShapeType.rect, {
+      x: 0.6, y: 6.0, w: 12.1, h: 1.0,
+      fill: { color: insightColor }, line: { color: insightBorder, width: 0 }, rectRadius: 0.1,
+    });
+    s.addShape(pptx.ShapeType.rect, {
+      x: 0.6, y: 6.0, w: 0.1, h: 1.0,
+      fill: { color: insightBorder }, line: { color: insightBorder, width: 0 },
+    });
+    s.addText('💡 QUICK READ', {
+      x: 0.9, y: 6.1, w: 12, h: 0.25,
+      fontSize: 10, fontFace: 'Calibri', bold: true, color: insightBorder, charSpacing: 2,
+    });
+    s.addText(insight, {
+      x: 0.9, y: 6.35, w: 11.7, h: 0.6,
+      fontSize: 13, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
+    });
+    s.addText('FinSight AI  •  by Pallav Shah', {
+      x: 0.6, y: 7.1, w: 12, h: 0.3,
+      fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+    });
+  };
+
+  // SLIDE 4: GROWTH QUALITY
+  const dataLen = data.years?.length || 0;
+  const firstMargin = data.netMargin?.[0];
+  const lastMargin = data.netMargin?.[dataLen - 1];
+  const marginTrend = lastMargin != null && firstMargin != null ? lastMargin - firstMargin : null;
+  const revenueTrend = calcGrowth(data.revenue, dataLen - 1);
+  let growthInsight = "Compare revenue trajectory with margin trend. Both rising = quality growth.";
+  let growthBorder = PPT_COLORS.accent;
+  let growthBg = PPT_COLORS.accentLight;
+  if (marginTrend != null && revenueTrend != null) {
+    if (revenueTrend > 0 && marginTrend >= -0.5) {
+      growthInsight = "Revenue is growing AND margins are stable/expanding — this is high-quality growth.";
+      growthBorder = PPT_COLORS.green; growthBg = PPT_COLORS.greenBg;
+    } else if (revenueTrend > 0 && marginTrend < -0.5) {
+      growthInsight = "Revenue growing BUT margins shrinking — growth may be coming at the cost of profitability.";
+    } else if (revenueTrend < 0) {
+      growthInsight = "Revenue declining. Check if margins are holding to understand if it's temporary or structural.";
+    }
+  }
+  addChartSlide('Growth Quality', 'Revenue vs Profitability Margins — the best companies grow revenue while maintaining margins', chartImg1, growthInsight, growthBg, growthBorder);
+
+  // SLIDE 5: CASH QUALITY
+  const latestNI = data.netIncome?.[dataLen - 1];
+  const latestFCF = data.freeCashFlow?.[dataLen - 1];
+  let cashInsight = "If cash flow bars are similar to net income bars, profits are real cash.";
+  let cashBorder = PPT_COLORS.accent;
+  let cashBg = PPT_COLORS.accentLight;
+  if (latestNI != null && latestFCF != null && latestNI !== 0) {
+    const ratio = latestFCF / latestNI;
+    if (ratio >= 0.9) {
+      cashInsight = "Free Cash Flow matches Net Income — profits are converting to real cash. Healthy sign.";
+      cashBorder = PPT_COLORS.green; cashBg = PPT_COLORS.greenBg;
+    } else if (ratio >= 0.3) {
+      cashInsight = "Gap between profits and cash. Could indicate heavy reinvestment or accounting-heavy earnings.";
+    } else {
+      cashInsight = "Cash flow is much lower than profits. Understand the cause — potential red flag.";
+      cashBorder = PPT_COLORS.red; cashBg = PPT_COLORS.redBg;
+    }
+  }
+  addChartSlide('Cash Quality Check', 'Net Income vs Free Cash Flow — matching bars = real profits', chartImg2, cashInsight, cashBg, cashBorder);
+
+  // SLIDE 6: PROFIT STRUCTURE
+  let profitInsight = "Net Profit slice shows how much of each rupee of revenue ends up as profit.";
+  let profitBorder = PPT_COLORS.accent;
+  let profitBg = PPT_COLORS.accentLight;
+  const csLatest = data.costStructure?.[data.costStructure.length - 1];
+  if (csLatest?.netProfitPct != null) {
+    const np = csLatest.netProfitPct;
+    if (np >= 15) {
+      profitInsight = `Strong profitability — company keeps ${np.toFixed(1)}% of every rupee as profit.`;
+      profitBorder = PPT_COLORS.green; profitBg = PPT_COLORS.greenBg;
+    } else if (np >= 8) {
+      profitInsight = `Healthy profit margin of ${np.toFixed(1)}% — industry-average for most sectors.`;
+      profitBorder = PPT_COLORS.green; profitBg = PPT_COLORS.greenBg;
+    } else {
+      profitInsight = `Modest profit margin of ${np.toFixed(1)}%. Check if it's industry norm or competitive pressure.`;
+    }
+  }
+  addChartSlide('Profit Structure', `Where every ${sym}100 of revenue goes — costs, taxes, and what's left as profit`, chartImg3, profitInsight, profitBg, profitBorder);
+
+  // SLIDE 7: EPS
+  const firstEPS = data.eps?.[0];
+  const latestEPS = data.eps?.[dataLen - 1];
+  let epsInsight = "Consistent EPS growth = compounding shareholder wealth over time.";
+  let epsBorder = PPT_COLORS.accent;
+  let epsBg = PPT_COLORS.accentLight;
+  if (firstEPS != null && latestEPS != null && firstEPS !== 0) {
+    const totalGrowth = ((latestEPS - firstEPS) / Math.abs(firstEPS)) * 100;
+    if (totalGrowth > 30) {
+      epsInsight = `EPS grew ${totalGrowth.toFixed(0)}% — strong compounding shareholder wealth.`;
+      epsBorder = PPT_COLORS.green; epsBg = PPT_COLORS.greenBg;
+    } else if (totalGrowth > 0) {
+      epsInsight = `EPS grew ${totalGrowth.toFixed(0)}% — steady value creation.`;
+      epsBorder = PPT_COLORS.green; epsBg = PPT_COLORS.greenBg;
+    } else {
+      epsInsight = `EPS declined ${Math.abs(totalGrowth).toFixed(0)}%. Investigate cause.`;
+      epsBorder = PPT_COLORS.red; epsBg = PPT_COLORS.redBg;
+    }
+  }
+  addChartSlide('Earnings Per Share', 'What each share earned in profits — consistent growth drives long-term value', chartImg4, epsInsight, epsBg, epsBorder);
+
+  return { pptx, data, PPT_COLORS, sym, cur, today, lastIdx };
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ↓↓↓ PART 1 ENDS HERE ↓↓↓
+   Paste Part 2 below this line
+═══════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   ↑↑↑ PART 2 STARTS HERE ↑↑↑
+═══════════════════════════════════════════════════════════════ */
+
+async function finishPPT(partial) {
+  const { pptx, data, PPT_COLORS, sym, cur, today, lastIdx } = partial;
+
+  // SLIDE 8: AI ANALYSIS (2x2 grid)
+  const s8 = pptx.addSlide();
+  s8.background = { color: PPT_COLORS.bgCard };
+  s8.addShape(pptx.ShapeType.rect, {
+    x: 0, y: 0, w: 13.33, h: 0.15,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+  });
+  s8.addText('AI FINANCIAL ANALYSIS', {
+    x: 0.6, y: 0.5, w: 12, h: 0.5,
+    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
+  });
+  s8.addText('Key insights across four dimensions of company performance', {
+    x: 0.6, y: 1.0, w: 12, h: 0.3,
+    fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+  });
+
+  const getFirstSentence = (arr) => {
+    if (!arr) return 'Analysis not available';
+    if (Array.isArray(arr) && arr.length > 0) return cleanText(arr[0]) || 'No insight available';
+    if (typeof arr === 'string') return cleanText(arr.split('.')[0] + '.') || 'No insight available';
+    return 'Analysis not available';
+  };
+
+  const sections = [
+    { icon: '📈', title: 'Revenue & Growth', text: getFirstSentence(data.analysisRevenue), color: PPT_COLORS.accent },
+    { icon: '💰', title: 'Profitability', text: getFirstSentence(data.analysisProfitability), color: PPT_COLORS.green },
+    { icon: '💵', title: 'Cash Flow', text: getFirstSentence(data.analysisCashFlow), color: '3B82B0' },
+    { icon: '🎯', title: 'Strategic Outlook', text: getFirstSentence(data.analysisOutlook), color: '7C5CB8' },
+  ];
+
+  sections.forEach((sec, i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const x = 0.6 + col * 6.2;
+    const y = 1.7 + row * 2.8;
+    s8.addShape(pptx.ShapeType.rect, {
+      x, y, w: 6.0, h: 2.5,
+      fill: { color: PPT_COLORS.bgPage }, line: { color: PPT_COLORS.border, width: 1 }, rectRadius: 0.15,
+    });
+    s8.addShape(pptx.ShapeType.rect, {
+      x, y, w: 6.0, h: 0.08,
+      fill: { color: sec.color }, line: { color: sec.color, width: 0 },
+    });
+    s8.addText(sec.icon, {
+      x: x + 0.3, y: y + 0.25, w: 0.6, h: 0.6, fontSize: 28,
+    });
+    s8.addText(sec.title.toUpperCase(), {
+      x: x + 1.0, y: y + 0.3, w: 4.8, h: 0.35,
+      fontSize: 13, fontFace: 'Calibri', bold: true, color: sec.color, charSpacing: 2,
+    });
+    s8.addText(sec.text, {
+      x: x + 0.3, y: y + 1.0, w: 5.5, h: 1.4,
+      fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
+    });
+  });
+  s8.addText('FinSight AI  •  by Pallav Shah', {
+    x: 0.6, y: 7.1, w: 12, h: 0.3,
+    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+  });
+
+  // SLIDE 9: STRENGTHS vs RISKS
+  const s9 = pptx.addSlide();
+  s9.background = { color: PPT_COLORS.bgCard };
+  s9.addShape(pptx.ShapeType.rect, {
+    x: 0, y: 0, w: 13.33, h: 0.15,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+  });
+  s9.addText('KEY STRENGTHS & RISKS', {
+    x: 0.6, y: 0.5, w: 12, h: 0.5,
+    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
+  });
+  s9.addText('What this company does well and what to watch carefully', {
+    x: 0.6, y: 1.0, w: 12, h: 0.3,
+    fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+  });
+
+  s9.addShape(pptx.ShapeType.rect, {
+    x: 0.6, y: 1.6, w: 6.0, h: 5.3,
+    fill: { color: PPT_COLORS.greenBg }, line: { color: PPT_COLORS.green, width: 2 }, rectRadius: 0.15,
+  });
+  s9.addText('✓  KEY STRENGTHS', {
+    x: 0.9, y: 1.85, w: 5.5, h: 0.4,
+    fontSize: 16, fontFace: 'Calibri', bold: true, color: PPT_COLORS.green, charSpacing: 2,
+  });
+  (data.keyStrengths || []).slice(0, 5).forEach((s, i) => {
+    const y = 2.5 + i * 0.85;
+    s9.addShape(pptx.ShapeType.ellipse, {
+      x: 0.95, y: y + 0.05, w: 0.35, h: 0.35,
+      fill: { color: PPT_COLORS.green }, line: { color: PPT_COLORS.green, width: 0 },
+    });
+    s9.addText(`${i + 1}`, {
+      x: 0.95, y: y + 0.05, w: 0.35, h: 0.35,
+      fontSize: 11, fontFace: 'Calibri', bold: true, color: 'FFFFFF', align: 'center', valign: 'middle',
+    });
+    s9.addText(cleanText(s) || '', {
+      x: 1.45, y, w: 5.0, h: 0.8,
+      fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
+    });
+  });
+
+  s9.addShape(pptx.ShapeType.rect, {
+    x: 6.8, y: 1.6, w: 6.0, h: 5.3,
+    fill: { color: PPT_COLORS.redBg }, line: { color: PPT_COLORS.red, width: 2 }, rectRadius: 0.15,
+  });
+  s9.addText('⚠  KEY RISKS', {
+    x: 7.1, y: 1.85, w: 5.5, h: 0.4,
+    fontSize: 16, fontFace: 'Calibri', bold: true, color: PPT_COLORS.red, charSpacing: 2,
+  });
+  (data.keyRisks || []).slice(0, 5).forEach((r, i) => {
+    const y = 2.5 + i * 0.85;
+    s9.addShape(pptx.ShapeType.ellipse, {
+      x: 7.15, y: y + 0.05, w: 0.35, h: 0.35,
+      fill: { color: PPT_COLORS.red }, line: { color: PPT_COLORS.red, width: 0 },
+    });
+    s9.addText(`${i + 1}`, {
+      x: 7.15, y: y + 0.05, w: 0.35, h: 0.35,
+      fontSize: 11, fontFace: 'Calibri', bold: true, color: 'FFFFFF', align: 'center', valign: 'middle',
+    });
+    s9.addText(cleanText(r) || '', {
+      x: 7.65, y, w: 5.0, h: 0.8,
+      fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
+    });
+  });
+  s9.addText('FinSight AI  •  by Pallav Shah', {
+    x: 0.6, y: 7.1, w: 12, h: 0.3,
+    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
+  });
+
+  // SLIDE 10: FINAL VERDICT
+  const s10 = pptx.addSlide();
+  s10.background = { color: PPT_COLORS.bgPage };
+  s10.addShape(pptx.ShapeType.rect, {
+    x: 0, y: 0, w: 13.33, h: 0.4,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+  });
+  const outlookColor10 = data.outlook === 'Positive' || data.outlook === 'Bullish' ? PPT_COLORS.green
+    : data.outlook === 'Caution' || data.outlook === 'Bearish' ? PPT_COLORS.red : 'A8761F';
+  const outlookBg10 = data.outlook === 'Positive' || data.outlook === 'Bullish' ? PPT_COLORS.greenBg
+    : data.outlook === 'Caution' || data.outlook === 'Bearish' ? PPT_COLORS.redBg : 'FEF7E6';
+
+  s10.addText('FINAL VERDICT', {
+    x: 0.6, y: 0.8, w: 12, h: 0.5,
+    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
+  });
+  s10.addShape(pptx.ShapeType.rect, {
+    x: 0.6, y: 1.5, w: 12.1, h: 2.5,
+    fill: { color: outlookBg10 }, line: { color: outlookColor10, width: 3 }, rectRadius: 0.2,
+  });
+  s10.addText(`◎  ${(data.outlook || 'Mixed').toUpperCase()} OUTLOOK`, {
+    x: 0.6, y: 1.8, w: 12.1, h: 0.6,
+    fontSize: 28, fontFace: 'Calibri', bold: true, color: outlookColor10, align: 'center', charSpacing: 3,
+  });
+  s10.addText(cleanText(data.outlookReason) || 'Outlook reasoning not available.', {
+    x: 1.5, y: 2.6, w: 10.3, h: 1.2,
+    fontSize: 15, fontFace: 'Calibri', color: PPT_COLORS.textSec, align: 'center', valign: 'top',
+  });
+  s10.addText('REPORT INFORMATION', {
+    x: 0.6, y: 4.3, w: 12, h: 0.3,
+    fontSize: 11, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textMuted, charSpacing: 2,
+  });
+  s10.addShape(pptx.ShapeType.rect, {
+    x: 0.6, y: 4.65, w: 1.0, h: 0.03,
+    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
+  });
+  s10.addText(`Company: ${data.company}  •  Ticker: ${data.ticker}  •  Exchange: ${data.exchange}`, {
+    x: 0.6, y: 4.8, w: 12, h: 0.3,
+    fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec,
+  });
+  s10.addText(`Data as of: ${data.dataAsOf || 'Latest available'}  •  Generated: ${today}`, {
+    x: 0.6, y: 5.1, w: 12, h: 0.3,
+    fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec,
+  });
+  s10.addShape(pptx.ShapeType.rect, {
+    x: 0.6, y: 5.7, w: 12.1, h: 1.1,
+    fill: { color: PPT_COLORS.bgSidebar }, line: { color: PPT_COLORS.border, width: 1 }, rectRadius: 0.1,
+  });
+  s10.addText('DISCLAIMER', {
+    x: 0.9, y: 5.8, w: 11.5, h: 0.25,
+    fontSize: 9, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textSec, charSpacing: 2,
+  });
+  s10.addText('FinSight AI provides research and educational content only. This is NOT investment advice. We are NOT a SEBI-registered Investment Advisor. Always verify information with original sources and consult a qualified financial advisor before making investment decisions.', {
+    x: 0.9, y: 6.05, w: 11.5, h: 0.7,
+    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted, valign: 'top',
+  });
+  s10.addText('FINSIGHT AI', {
+    x: 0.6, y: 6.95, w: 12, h: 0.25,
+    fontSize: 14, fontFace: 'Calibri', bold: true, color: PPT_COLORS.accent, align: 'center', charSpacing: 4,
+  });
+  s10.addText('Financial intelligence, one company at a time  •  by Pallav Shah  •  finsightai.org', {
+    x: 0.6, y: 7.2, w: 12, h: 0.25,
+    fontSize: 10, fontFace: 'Calibri', color: PPT_COLORS.textMuted, align: 'center',
+  });
+
+  const cleanCompany = (data.company || "Company").replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
+  const cleanPeriodName = (partial.periodLabel || "Analysis").replace(/\s+/g, '');
+  const filename = `FinSight_${cleanCompany}_${cleanPeriodName}_${new Date().toISOString().split('T')[0]}.pptx`;
+  await pptx.writeFile({ fileName: filename });
+}
+
+async function generatePPTFull(data, periodLabel) {
+  const partial = await generatePPT(data, periodLabel);
+  partial.periodLabel = periodLabel;
+  await finishPPT(partial);
+}
+
+/* ═════════════════════════════════════════════════════════════
+   EXCEL EXPORT
+════════════════════════════════════════════════════════════════ */
 async function generateExcel(data, periodLabel) {
   const XLSX = await loadSheetJS();
   const wb = XLSX.utils.book_new();
@@ -122,27 +720,16 @@ async function generateExcel(data, periodLabel) {
   const today = new Date().toISOString().split('T')[0];
   const lastIdx = (data.years?.length || 1) - 1;
 
-  // SHEET 1: EXECUTIVE SUMMARY
   const s1Data = [
-    ["FINSIGHT AI — FINANCIAL ANALYSIS REPORT"],
-    ["by Pallav Shah"],
-    [""],
+    ["FINSIGHT AI — FINANCIAL ANALYSIS REPORT"], ["by Pallav Shah"], [""],
     ["COMPANY OVERVIEW"],
-    ["Company Name", data.company || "N/A"],
-    ["Ticker", data.ticker || "N/A"],
-    ["Exchange", data.exchange || "N/A"],
-    ["Market", data.market || "N/A"],
-    ["Sector", data.sector || "N/A"],
-    ["Currency", `${cur} (${sym})`],
-    ["Analysis Period", periodLabel],
-    ["Data As Of", data.dataAsOf || "N/A"],
-    ["Report Generated", today],
-    [""],
-    ["DESCRIPTION"],
-    [data.description || "N/A"],
-    [""],
-    ["KEY METRICS (LATEST PERIOD)"],
-    ["Metric", "Value", "Context"],
+    ["Company Name", data.company || "N/A"], ["Ticker", data.ticker || "N/A"],
+    ["Exchange", data.exchange || "N/A"], ["Market", data.market || "N/A"],
+    ["Sector", data.sector || "N/A"], ["Currency", `${cur} (${sym})`],
+    ["Analysis Period", periodLabel], ["Data As Of", data.dataAsOf || "N/A"],
+    ["Report Generated", today], [""],
+    ["DESCRIPTION"], [data.description || "N/A"], [""],
+    ["KEY METRICS (LATEST PERIOD)"], ["Metric", "Value", "Context"],
     ["Revenue", fmtMoney(data.revenue?.[lastIdx], sym), `Period: ${data.years?.[lastIdx] || "N/A"}`],
     ["Net Income", fmtMoney(data.netIncome?.[lastIdx], sym), data.netMargin?.[lastIdx] ? `Margin: ${Number(data.netMargin[lastIdx]).toFixed(1)}%` : ""],
     ["EBITDA", fmtMoney(data.ebitda?.[lastIdx], sym), "Operating earnings"],
@@ -151,22 +738,14 @@ async function generateExcel(data, periodLabel) {
     ["Market Cap", fmtMoney(data.marketCap, sym), "Total value"],
     ["P/E Ratio", data.peRatio ? `${Number(data.peRatio).toFixed(1)}x` : "N/A", "Current"],
     ["Revenue CAGR", data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(1)}%` : "N/A", periodLabel],
-    [""],
-    ["OUTLOOK"],
-    ["Rating", data.outlook || "N/A"],
-    ["Reasoning", data.outlookReason || "N/A"],
+    [""], ["OUTLOOK"], ["Rating", data.outlook || "N/A"], ["Reasoning", data.outlookReason || "N/A"],
   ];
   const ws1 = XLSX.utils.aoa_to_sheet(s1Data);
   ws1['!cols'] = [{ wch: 25 }, { wch: 35 }, { wch: 30 }];
   XLSX.utils.book_append_sheet(wb, ws1, "Executive Summary");
 
-  // SHEET 2: FINANCIAL PERFORMANCE
   const header = ["Metric", ...(data.years || [])];
-  const fmtRow = (label, arr) => {
-    const row = [label];
-    (arr || []).forEach(v => row.push(v != null ? v : "N/A"));
-    return row;
-  };
+  const fmtRow = (label, arr) => { const row = [label]; (arr || []).forEach(v => row.push(v != null ? v : "N/A")); return row; };
   const growthRow = (label, arr) => {
     const row = [label];
     (arr || []).forEach((v, i) => {
@@ -177,23 +756,13 @@ async function generateExcel(data, periodLabel) {
   };
 
   const s2Data = [
-    ["FINANCIAL PERFORMANCE"],
-    [`${data.company || ""} | ${periodLabel} | Values in ${cur} millions unless noted`],
-    [""],
-    ["ABSOLUTE VALUES (Millions)"],
-    header,
-    fmtRow("Revenue", data.revenue),
-    fmtRow("Net Income", data.netIncome),
-    fmtRow("EBITDA", data.ebitda),
-    fmtRow("Free Cash Flow", data.freeCashFlow),
-    [""],
-    ["GROWTH RATES (Period-over-Period)"],
-    header,
-    growthRow("Revenue Growth", data.revenue),
-    growthRow("Net Income Growth", data.netIncome),
-    growthRow("EBITDA Growth", data.ebitda),
-    growthRow("FCF Growth", data.freeCashFlow),
-    [""],
+    ["FINANCIAL PERFORMANCE"], [`${data.company || ""} | ${periodLabel} | Values in ${cur} millions`], [""],
+    ["ABSOLUTE VALUES (Millions)"], header,
+    fmtRow("Revenue", data.revenue), fmtRow("Net Income", data.netIncome),
+    fmtRow("EBITDA", data.ebitda), fmtRow("Free Cash Flow", data.freeCashFlow), [""],
+    ["GROWTH RATES (Period-over-Period)"], header,
+    growthRow("Revenue Growth", data.revenue), growthRow("Net Income Growth", data.netIncome),
+    growthRow("EBITDA Growth", data.ebitda), growthRow("FCF Growth", data.freeCashFlow), [""],
     ["SUMMARY STATISTICS"],
     ["Revenue CAGR", data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(2)}%` : "N/A"],
     ["Latest Revenue", fmtMoney(data.revenue?.[lastIdx], sym)],
@@ -206,36 +775,23 @@ async function generateExcel(data, periodLabel) {
   ws2['!cols'] = colWidths2;
   XLSX.utils.book_append_sheet(wb, ws2, "Financial Performance");
 
-  // SHEET 3: PROFITABILITY & RATIOS
   const s3Data = [
-    ["PROFITABILITY & RATIOS"],
-    [`${data.company || ""} | ${periodLabel}`],
-    [""],
-    ["MARGINS (%)"],
-    header,
-    fmtRow("Gross Margin", data.grossMargin),
-    fmtRow("Net Margin", data.netMargin),
-    [""],
-    ["EARNINGS PER SHARE"],
-    header,
-    fmtRow(`EPS (${sym})`, data.eps),
-    growthRow("EPS Growth", data.eps),
-    [""],
+    ["PROFITABILITY & RATIOS"], [`${data.company || ""} | ${periodLabel}`], [""],
+    ["MARGINS (%)"], header,
+    fmtRow("Gross Margin", data.grossMargin), fmtRow("Net Margin", data.netMargin), [""],
+    ["EARNINGS PER SHARE"], header,
+    fmtRow(`EPS (${sym})`, data.eps), growthRow("EPS Growth", data.eps), [""],
     ["VALUATION METRICS"],
     ["P/E Ratio", data.peRatio ? `${Number(data.peRatio).toFixed(2)}x` : "N/A"],
-    ["Market Cap", fmtMoney(data.marketCap, sym)],
-    [""],
+    ["Market Cap", fmtMoney(data.marketCap, sym)], [""],
     ["COST STRUCTURE (% of Revenue)"],
   ];
-
   if (data.costStructure && data.costStructure.length) {
-    const csHeader = ["Category", ...(data.years || [])];
-    s3Data.push(csHeader);
+    s3Data.push(["Category", ...(data.years || [])]);
     const categories = [
       { key: "cogsPct", label: "Cost of Goods Sold" },
       { key: "opexPct", label: "Operating Expenses" },
-      { key: "taxPct", label: "Taxes" },
-      { key: "otherPct", label: "Other" },
+      { key: "taxPct", label: "Taxes" }, { key: "otherPct", label: "Other" },
       { key: "netProfitPct", label: "Net Profit" },
     ];
     categories.forEach(cat => {
@@ -246,132 +802,67 @@ async function generateExcel(data, periodLabel) {
       });
       s3Data.push(row);
     });
-  } else {
-    s3Data.push(["Cost structure data not available for this analysis"]);
   }
-
   const ws3 = XLSX.utils.aoa_to_sheet(s3Data);
   const colWidths3 = [{ wch: 28 }];
   (data.years || []).forEach(() => colWidths3.push({ wch: 16 }));
   ws3['!cols'] = colWidths3;
   XLSX.utils.book_append_sheet(wb, ws3, "Profitability & Ratios");
 
-  // SHEET 4: AI ANALYSIS (data already cleaned before reaching here)
-  const s4Data = [
-    ["AI FINANCIAL ANALYSIS"],
-    [`${data.company || ""} | Generated by FinSight AI`],
-    [""],
-  ];
-
+  const s4Data = [["AI FINANCIAL ANALYSIS"], [`${data.company || ""} | Generated by FinSight AI`], [""]];
   const addSection = (icon, title, paragraphs) => {
     if (!paragraphs) return;
-    s4Data.push([`${icon} ${title.toUpperCase()}`]);
-    s4Data.push([""]);
+    s4Data.push([`${icon} ${title.toUpperCase()}`]); s4Data.push([""]);
     if (Array.isArray(paragraphs)) {
-      paragraphs.forEach((p, i) => {
-        s4Data.push([`${i + 1}.`, p]);
-        s4Data.push([""]);
-      });
+      paragraphs.forEach((p, i) => { s4Data.push([`${i + 1}.`, p]); s4Data.push([""]); });
     } else if (typeof paragraphs === "string") {
-      s4Data.push(["", paragraphs]);
-      s4Data.push([""]);
+      s4Data.push(["", paragraphs]); s4Data.push([""]);
     }
     s4Data.push([""]);
   };
-
   if (data.analysisRevenue || data.analysisProfitability || data.analysisCashFlow || data.analysisOutlook) {
     addSection("📈", "Revenue & Growth Story", data.analysisRevenue);
     addSection("💰", "Profitability Performance", data.analysisProfitability);
     addSection("💵", "Cash Flow Analysis", data.analysisCashFlow);
     addSection("🎯", "Competitive & Strategic Outlook", data.analysisOutlook);
   } else if (data.analysis) {
-    s4Data.push(["DETAILED ANALYSIS"]);
-    s4Data.push([""]);
-    String(data.analysis).split(/\n+/).filter(Boolean).forEach((p, i) => {
-      s4Data.push([`${i + 1}.`, p]);
-      s4Data.push([""]);
-    });
-  } else {
-    s4Data.push(["Analysis content not available"]);
+    s4Data.push(["DETAILED ANALYSIS"]); s4Data.push([""]);
+    String(data.analysis).split(/\n+/).filter(Boolean).forEach((p, i) => { s4Data.push([`${i + 1}.`, p]); s4Data.push([""]); });
   }
-
   const ws4 = XLSX.utils.aoa_to_sheet(s4Data);
   ws4['!cols'] = [{ wch: 5 }, { wch: 120 }];
   XLSX.utils.book_append_sheet(wb, ws4, "AI Analysis");
 
-  // SHEET 5: KEY INSIGHTS
-  const s5Data = [
-    ["KEY INSIGHTS"],
-    [`${data.company || ""} | ${periodLabel}`],
-    [""],
-    ["✓ KEY STRENGTHS"],
-    [""],
-  ];
-  (data.keyStrengths || []).forEach((s, i) => {
-    s5Data.push([`${i + 1}.`, s]);
-  });
-  s5Data.push([""]);
-  s5Data.push([""]);
-  s5Data.push(["⚠ KEY RISKS"]);
-  s5Data.push([""]);
-  (data.keyRisks || []).forEach((r, i) => {
-    s5Data.push([`${i + 1}.`, r]);
-  });
-  s5Data.push([""]);
-  s5Data.push([""]);
-  s5Data.push(["◎ OUTLOOK"]);
-  s5Data.push([""]);
+  const s5Data = [["KEY INSIGHTS"], [`${data.company || ""} | ${periodLabel}`], [""], ["✓ KEY STRENGTHS"], [""]];
+  (data.keyStrengths || []).forEach((s, i) => s5Data.push([`${i + 1}.`, s]));
+  s5Data.push([""], [""], ["⚠ KEY RISKS"], [""]);
+  (data.keyRisks || []).forEach((r, i) => s5Data.push([`${i + 1}.`, r]));
+  s5Data.push([""], [""], ["◎ OUTLOOK"], [""]);
   s5Data.push(["Rating", data.outlook || "N/A"]);
   s5Data.push(["Reasoning", data.outlookReason || "N/A"]);
-
   const ws5 = XLSX.utils.aoa_to_sheet(s5Data);
   ws5['!cols'] = [{ wch: 12 }, { wch: 110 }];
   XLSX.utils.book_append_sheet(wb, ws5, "Key Insights");
 
-  // SHEET 6: ABOUT & SOURCES
   const s6Data = [
-    ["ABOUT THIS REPORT"],
-    [""],
-    ["Generated By", "FinSight AI"],
-    ["Platform Creator", "Pallav Shah"],
-    ["Website", "https://finsightai.org"],
-    ["Report Date", today],
-    [""],
-    ["METHODOLOGY"],
-    [""],
+    ["ABOUT THIS REPORT"], [""],
+    ["Generated By", "FinSight AI"], ["Platform Creator", "Pallav Shah"],
+    ["Website", "https://finsightai.org"], ["Report Date", today], [""],
+    ["METHODOLOGY"], [""],
     ["This report is generated using AI-powered financial research."],
     ["Data is sourced from publicly available official filings and reports including:"],
-    ["  • Company Investor Relations pages"],
-    ["  • BSE/NSE filings (for Indian companies)"],
-    ["  • SEC filings (for US companies)"],
-    ["  • Annual and quarterly reports"],
-    ["  • Earnings call transcripts"],
-    ["  • Recent news and press releases"],
-    [""],
-    ["ABOUT FINSIGHT AI"],
-    [""],
+    ["  • Company Investor Relations pages"], ["  • BSE/NSE filings (for Indian companies)"],
+    ["  • SEC filings (for US companies)"], ["  • Annual and quarterly reports"],
+    ["  • Earnings call transcripts"], ["  • Recent news and press releases"], [""],
+    ["ABOUT FINSIGHT AI"], [""],
     ["FinSight AI is a source-grounded AI research copilot for public companies."],
-    ["Designed for MBA students, CA candidates, and retail investors."],
-    ["Built with a commitment to quality, transparency, and accessibility."],
-    [""],
-    ["DISCLAIMER"],
-    [""],
+    ["Designed for MBA students, CA candidates, and retail investors."], [""],
+    ["DISCLAIMER"], [""],
     ["FinSight AI provides research and educational content only."],
-    ["This is NOT investment advice."],
-    ["We are NOT a SEBI-registered Investment Advisor."],
+    ["This is NOT investment advice."], ["We are NOT a SEBI-registered Investment Advisor."],
     ["Always verify information with original sources."],
-    ["Consult a qualified financial advisor before making investment decisions."],
-    ["Past performance does not guarantee future results."],
-    ["Financial markets involve risk of loss."],
-    [""],
-    ["CONTACT & FEEDBACK"],
-    [""],
-    ["For feedback, partnership, or queries:"],
-    ["Website: https://finsightai.org"],
-    [""],
+    ["Consult a qualified financial advisor before making investment decisions."], [""],
     ["© 2026 FinSight AI. Built by Pallav Shah."],
-    [""],
-    ["Thank you for using FinSight AI."],
   ];
   const ws6 = XLSX.utils.aoa_to_sheet(s6Data);
   ws6['!cols'] = [{ wch: 25 }, { wch: 80 }];
@@ -399,149 +890,70 @@ const ChartTip = ({ active, payload, label, sym = "$", isPct = false }) => {
 
 const US_EX = ["Apple", "Microsoft", "Tesla", "Amazon", "Nvidia", "Meta"];
 const IN_EX = ["Reliance Industries", "Infosys", "TCS", "HDFC Bank", "Wipro", "Bajaj Finance"];
-
-const STEPS = [
-  "Searching financial databases",
-  "Fetching latest financial data",
-  "Analyzing profitability trends",
-  "Computing key financial ratios",
-  "Generating AI insights",
-  "Building your dashboard",
-];
+const STEPS = ["Searching financial databases", "Fetching latest financial data", "Analyzing profitability trends", "Computing key financial ratios", "Generating AI insights", "Building your dashboard"];
 
 function buildSystemPrompt(period) {
   const today = new Date().toISOString().split('T')[0];
   const currentYear = new Date().getFullYear();
-
   const periodInstructions = {
-    latest_quarter: `Return data for the MOST RECENT QUARTER only (target Q3 FY26 or Q4 FY26 if available).
-- "years" array: Use quarter labels like ["Q3 FY26"] — just 1 entry
-- All financial arrays: 1 value each (the latest quarter)
-- Include "prevQuarter" object with previous quarter values for YoY/QoQ comparison`,
-    half_yearly: `Return data for the LAST 2 QUARTERS.
-- "years" array: Quarter labels like ["Q2 FY26", "Q3 FY26"] — 2 entries
-- All financial arrays: 2 values each`,
-    "1_year": `Return data for the LAST 4 QUARTERS (full fiscal year).
-- "years" array: Quarter labels like ["Q4 FY25", "Q1 FY26", "Q2 FY26", "Q3 FY26"] — 4 entries
-- All financial arrays: 4 values each`,
-    "2_year": `Return data for the LAST 2 FISCAL YEARS.
-- "years" array: ["FY25", "FY26"] — 2 entries
-- All financial arrays: 2 values each (annual totals)`,
-    "3_year": `Return data for the LAST 3 FISCAL YEARS.
-- "years" array: ["FY24", "FY25", "FY26"] — 3 entries
-- All financial arrays: 3 values each (annual totals)`,
-    "5_year": `Return data for the LAST 5 FISCAL YEARS.
-- "years" array: ["FY22", "FY23", "FY24", "FY25", "FY26"] — 5 entries
-- All financial arrays: 5 values each (annual totals)`,
+    latest_quarter: `Return data for the MOST RECENT QUARTER only.\n- "years" array: Quarter labels like ["Q3 FY26"]\n- All financial arrays: 1 value each\n- Include "prevQuarter" object with previous quarter values`,
+    half_yearly: `Return data for LAST 2 QUARTERS.\n- "years" array: Quarter labels like ["Q2 FY26", "Q3 FY26"]\n- All financial arrays: 2 values each`,
+    "1_year": `Return data for LAST 4 QUARTERS.\n- "years" array: ["Q4 FY25", "Q1 FY26", "Q2 FY26", "Q3 FY26"]\n- All financial arrays: 4 values each`,
+    "2_year": `Return data for LAST 2 FISCAL YEARS.\n- "years" array: ["FY25", "FY26"]\n- All financial arrays: 2 values each`,
+    "3_year": `Return data for LAST 3 FISCAL YEARS.\n- "years" array: ["FY24", "FY25", "FY26"]\n- All financial arrays: 3 values each`,
+    "5_year": `Return data for LAST 5 FISCAL YEARS.\n- "years" array: ["FY22", "FY23", "FY24", "FY25", "FY26"]\n- All financial arrays: 5 values each`,
   };
 
   return `You are FinSight AI, a financial research assistant for public companies. Today's date is ${today}.
 
-CRITICAL: You must retrieve the MOST RECENT available data. Current fiscal context:
-- Indian companies: FY26 = April 2025 to March 2026 (latest expected: Q3/Q4 FY26)
-- US companies: Use calendar year quarters (latest expected: Q3/Q4 ${currentYear})
+CRITICAL: Retrieve MOST RECENT data. Indian: FY26 = April 2025 to March 2026. US: calendar year quarters (${currentYear}).
 
-ANALYSIS PERIOD REQUESTED: ${period.toUpperCase()}
+ANALYSIS PERIOD: ${period.toUpperCase()}
 ${periodInstructions[period] || periodInstructions["1_year"]}
 
-RESEARCH APPROACH:
-1. Perform web searches for latest data from official sources (company IR, BSE/NSE/SEC filings, earnings transcripts)
-2. For cost structure: derive from income statement (COGS %, Operating Expenses %, Tax %, Net Profit %)
-3. For EPS: use diluted EPS when available
+OUTPUT: Return ONLY raw JSON. No markdown. No <cite> tags. Clean plain English.
 
-OUTPUT: Return ONLY raw JSON. No markdown, no backticks.
-
-IMPORTANT: Do NOT include any citation tags, reference marks, or <cite> tags in your text. Write in clean plain English. Just state the facts and numbers naturally.
-
-Return this exact structure (monetary values in MILLIONS of local currency, percentages as numbers like 23.5 not 0.235):
+Return this structure (monetary values in MILLIONS, percentages as numbers like 23.5):
 {
-  "company": "Full Official Company Name",
-  "ticker": "SYMBOL",
-  "market": "US or India or other",
-  "exchange": "NYSE/NASDAQ/NSE/BSE/LSE etc",
-  "currency": "USD or INR etc",
-  "currencySymbol": "$ or ₹ etc",
-  "sector": "sector name",
+  "company": "Full Name", "ticker": "SYMBOL", "market": "US or India", "exchange": "NSE/NYSE etc",
+  "currency": "USD or INR", "currencySymbol": "$ or ₹", "sector": "sector",
   "description": "2 sentences about what the company does",
-  "periodType": "${period}",
-  "dataAsOf": "YYYY-MM-DD",
+  "periodType": "${period}", "dataAsOf": "YYYY-MM-DD",
   "years": [label, label, ...],
-  "revenue": [n, n, ...],
-  "netIncome": [n, n, ...],
-  "ebitda": [n, n, ...],
-  "freeCashFlow": [n, n, ...],
-  "grossMargin": [n, n, ...],
-  "netMargin": [n, n, ...],
-  "eps": [n, n, ...],
-  "costStructure": [
-    { "cogsPct": n, "opexPct": n, "taxPct": n, "netProfitPct": n, "otherPct": n }
-  ],
-  "marketCap": number,
-  "peRatio": number,
-  "revenueCAGR": number,
+  "revenue": [n, ...], "netIncome": [n, ...], "ebitda": [n, ...], "freeCashFlow": [n, ...],
+  "grossMargin": [n, ...], "netMargin": [n, ...], "eps": [n, ...],
+  "costStructure": [{ "cogsPct": n, "opexPct": n, "taxPct": n, "netProfitPct": n, "otherPct": n }],
+  "marketCap": number, "peRatio": number, "revenueCAGR": number,
   ${period === "latest_quarter" ? '"prevQuarter": {"revenue": n, "netIncome": n, "ebitda": n, "freeCashFlow": n, "grossMargin": n, "netMargin": n, "label": "Q2 FY26"},' : ''}
-
-  "analysisRevenue": [
-    "First paragraph (2-3 sentences) about revenue trends, growth rates, and key drivers. Include specific numbers. NO citation tags.",
-    "Second paragraph (2-3 sentences) about segment/geographic breakdown or major revenue influences. Include specific numbers. NO citation tags.",
-    "Third paragraph (2-3 sentences) about forward revenue trajectory, guidance, or growth catalysts. Include specific numbers. NO citation tags."
-  ],
-  "analysisProfitability": [
-    "First paragraph (2-3 sentences) about margin performance. Include specific percentages and comparisons. NO citation tags.",
-    "Second paragraph (2-3 sentences) about cost dynamics, pricing power, or operating leverage. Include specific numbers. NO citation tags.",
-    "Third paragraph (2-3 sentences) about profitability trajectory. Include specific numbers. NO citation tags."
-  ],
-  "analysisCashFlow": [
-    "First paragraph (2-3 sentences) about free cash flow generation and cash conversion. Include specific numbers. NO citation tags.",
-    "Second paragraph (2-3 sentences) about capex intensity, working capital, or cash deployment. Include specific numbers. NO citation tags.",
-    "Third paragraph (2-3 sentences) about balance sheet strength, liquidity, or financial flexibility. Include specific numbers. NO citation tags."
-  ],
-  "analysisOutlook": [
-    "First paragraph (2-3 sentences) about competitive position and market share dynamics. Include specific context. NO citation tags.",
-    "Second paragraph (2-3 sentences) about strategic initiatives, moats, or structural advantages. Include specific details. NO citation tags.",
-    "Third paragraph (2-3 sentences) about forward-looking risks, opportunities, or key monitorables. Include specific catalysts. NO citation tags."
-  ],
-
-  "analysis": "Combined summary of all 4 sections in 2-3 paragraphs for backward compatibility. NO citation tags.",
-
-  "keyStrengths": ["strength with data and no citation tags", "strength with data and no citation tags", "strength with data and no citation tags"],
-  "keyRisks": ["risk with context and no citation tags", "risk with context and no citation tags", "risk with context and no citation tags"],
-  "outlook": "Positive or Mixed or Caution",
-  "outlookReason": "One concise sentence with no citation tags"
+  "analysisRevenue": ["Para 1 (2-3 sentences, specific numbers, NO citation tags)", "Para 2", "Para 3"],
+  "analysisProfitability": ["Para 1", "Para 2", "Para 3"],
+  "analysisCashFlow": ["Para 1", "Para 2", "Para 3"],
+  "analysisOutlook": ["Para 1", "Para 2", "Para 3"],
+  "analysis": "Combined 2-3 paragraph summary",
+  "keyStrengths": ["strength 1", "strength 2", "strength 3"],
+  "keyRisks": ["risk 1", "risk 2", "risk 3"],
+  "outlook": "Positive or Mixed or Caution", "outlookReason": "One concise sentence"
 }
 
-IMPORTANT NOTES:
-- ALL financial arrays must have the SAME NUMBER of entries as "years"
-- Each analysis section must contain EXACTLY 3 strings, each being 2-3 sentences
-- Analysis strings must be substantive with specific numbers, percentages, comparisons
-- CRITICAL: Do NOT include <cite> tags, citation marks, or any HTML/XML tags in any text field
-- costStructure: One object per period matching years array length
-- cogsPct + opexPct + taxPct + netProfitPct + otherPct should total ~100
-- If a metric is unavailable, use null (not 0)
-- EPS: in rupees/dollars per share (not millions)`;
+CRITICAL: NO <cite> tags. Clean text only. All arrays must match years length. Percentages as numbers.`;
 }
 
 const FinSightLogo = ({ size = 32 }) => (
   <svg width={size} height={size} viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="fs-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%"  stopColor="#E48164"/>
-        <stop offset="100%" stopColor="#B85A3A"/>
+        <stop offset="0%" stopColor="#E48164"/><stop offset="100%" stopColor="#B85A3A"/>
       </linearGradient>
     </defs>
     <rect width="40" height="40" rx="10" fill="url(#fs-grad)"/>
     <path d="M9 28 L16 22 L23 25 L31 13" stroke="white" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-    <circle cx="9"  cy="28" r="1.8" fill="white"/>
-    <circle cx="16" cy="22" r="1.8" fill="white"/>
-    <circle cx="23" cy="25" r="1.8" fill="white"/>
-    <circle cx="31" cy="13" r="4.5" fill="white" fillOpacity=".22"/>
+    <circle cx="9" cy="28" r="1.8" fill="white"/><circle cx="16" cy="22" r="1.8" fill="white"/>
+    <circle cx="23" cy="25" r="1.8" fill="white"/><circle cx="31" cy="13" r="4.5" fill="white" fillOpacity=".22"/>
     <circle cx="31" cy="13" r="2.4" fill="white"/>
   </svg>
 );
 
-const Spinner = () => (
-  <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${C.accentLight}`, borderTopColor: C.accent, animation: "fs-spin .8s linear infinite" }} />
-);
+const Spinner = () => <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${C.accentLight}`, borderTopColor: C.accent, animation: "fs-spin .8s linear infinite" }} />;
 
 const MetricCard = ({ label, value, sub, accent }) => (
   <div className="fs-card fs-metric" style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 12px", boxShadow: C.shadow, transition: "all .2s", minWidth: 0 }}>
@@ -551,22 +963,14 @@ const MetricCard = ({ label, value, sub, accent }) => (
   </div>
 );
 
-const Byline = () => (
-  <span style={{ color: C.textMuted, fontSize: 11.5, letterSpacing: ".3px" }}>
-    by <span style={{ fontWeight: 600, color: C.accent }}>Pallav Shah</span>
-  </span>
-);
+const Byline = () => <span style={{ color: C.textMuted, fontSize: 11.5, letterSpacing: ".3px" }}>by <span style={{ fontWeight: 600, color: C.accent }}>Pallav Shah</span></span>;
 
 function ChartFrame({ icon, title, subtitle, children, quickRead, quickReadColor }) {
   return (
-    <div className="fs-chart-card" style={{
-      background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 22,
-      boxShadow: C.shadow, display: "flex", flexDirection: "column", gap: 14,
-    }}>
+    <div className="fs-chart-card" style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 22, boxShadow: C.shadow, display: "flex", flexDirection: "column", gap: 14 }}>
       <div>
         <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, color: C.textPrimary, display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-          <span style={{ fontSize: 18 }}>{icon}</span>
-          <span>{title}</span>
+          <span style={{ fontSize: 18 }}>{icon}</span><span>{title}</span>
         </div>
         <div style={{ color: C.textMuted, fontSize: 12, lineHeight: 1.5 }}>{subtitle}</div>
       </div>
@@ -584,36 +988,27 @@ function ChartFrame({ icon, title, subtitle, children, quickRead, quickReadColor
 function GrowthQualityChart({ data, sym }) {
   const hasData = data.revenue?.some(v => v != null);
   if (!hasData) return null;
-  const chartData = data.years.map((y, i) => ({
-    year: String(y), Revenue: data.revenue?.[i], "Gross Margin": data.grossMargin?.[i], "Net Margin": data.netMargin?.[i],
-  }));
+  const chartData = data.years.map((y, i) => ({ year: String(y), Revenue: data.revenue?.[i], "Gross Margin": data.grossMargin?.[i], "Net Margin": data.netMargin?.[i] }));
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
   const dataLen = chartData.length;
-  const firstMargin = data.netMargin?.[0];
-  const lastMargin = data.netMargin?.[dataLen - 1];
+  const firstMargin = data.netMargin?.[0], lastMargin = data.netMargin?.[dataLen - 1];
   const marginTrend = lastMargin != null && firstMargin != null ? lastMargin - firstMargin : null;
   const revenueTrend = calcGrowth(data.revenue, dataLen - 1);
   let quickRead, quickColor;
-  if (dataLen === 1) {
-    quickRead = `Revenue ${fmtMoney(data.revenue[0], sym)} with net margin of ${data.netMargin?.[0]?.toFixed(1) || "N/A"}%. Compare with industry peers to judge quality.`;
-  } else if (marginTrend != null && revenueTrend != null) {
+  if (dataLen === 1) quickRead = `Revenue ${fmtMoney(data.revenue[0], sym)} with net margin of ${data.netMargin?.[0]?.toFixed(1) || "N/A"}%.`;
+  else if (marginTrend != null && revenueTrend != null) {
     if (revenueTrend > 0 && marginTrend >= -0.5) { quickRead = "Revenue is growing AND margins are stable/expanding — this is high-quality growth."; quickColor = C.greenBg; }
-    else if (revenueTrend > 0 && marginTrend < -0.5) { quickRead = "Revenue growing BUT margins shrinking — growth may be coming at the cost of profitability. Watch this."; }
-    else if (revenueTrend < 0) { quickRead = "Revenue declining. Check if margins are holding to understand if it's a temporary or structural issue."; }
-    else { quickRead = "Stable performance. Look at both revenue trajectory and margin trend together to judge quality."; }
-  } else { quickRead = "Compare revenue bars with margin lines. Both rising = quality growth."; }
+    else if (revenueTrend > 0 && marginTrend < -0.5) quickRead = "Revenue growing BUT margins shrinking — growth may be coming at the cost of profitability.";
+    else if (revenueTrend < 0) quickRead = "Revenue declining. Check if margins are holding.";
+    else quickRead = "Stable performance. Look at both revenue trajectory and margins.";
+  } else quickRead = "Compare revenue bars with margin lines. Both rising = quality growth.";
 
   return (
     <ChartFrame icon="📊" title="Growth Quality" subtitle="Revenue (bars) plotted against profit margins (lines). The best companies grow revenue WHILE maintaining or improving margins." quickRead={quickRead} quickReadColor={quickColor}>
       <ResponsiveContainer width="100%" height={260}>
         <ComposedChart data={chartData} margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
-          <defs>
-            <linearGradient id="gqBar" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={C.chartA} stopOpacity={.9}/>
-              <stop offset="100%" stopColor={C.chartA} stopOpacity={.45}/>
-            </linearGradient>
-          </defs>
+          <defs><linearGradient id="gqBar" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartA} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartA} stopOpacity={.45}/></linearGradient></defs>
           <CartesianGrid {...gridStyle} />
           <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
           <YAxis yAxisId="left" tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={44} />
@@ -632,22 +1027,19 @@ function GrowthQualityChart({ data, sym }) {
 function CashQualityChart({ data, sym }) {
   const hasData = data.netIncome?.some(v => v != null) && data.freeCashFlow?.some(v => v != null);
   if (!hasData) return null;
-  const chartData = data.years.map((y, i) => ({
-    year: String(y), "Net Income": data.netIncome?.[i], "Free Cash Flow": data.freeCashFlow?.[i],
-  }));
+  const chartData = data.years.map((y, i) => ({ year: String(y), "Net Income": data.netIncome?.[i], "Free Cash Flow": data.freeCashFlow?.[i] }));
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
   const dataLen = chartData.length;
-  const latestNI = data.netIncome?.[dataLen - 1];
-  const latestFCF = data.freeCashFlow?.[dataLen - 1];
+  const latestNI = data.netIncome?.[dataLen - 1], latestFCF = data.freeCashFlow?.[dataLen - 1];
   let quickRead, quickColor;
   if (latestNI != null && latestFCF != null && latestNI !== 0) {
     const ratio = latestFCF / latestNI;
-    if (ratio >= 0.9) { quickRead = "Free Cash Flow matches Net Income — profits are converting to real cash. This is a healthy sign."; quickColor = C.greenBg; }
-    else if (ratio >= 0.6) { quickRead = "Cash flow is moderately lower than reported profits. Normal for some industries, but monitor the gap."; }
-    else if (ratio >= 0.3) { quickRead = "Significant gap between profits and cash. Could indicate heavy reinvestment OR accounting-heavy earnings."; }
-    else { quickRead = "Cash flow is much lower than profits. Understand where the gap is coming from — it's a potential red flag."; quickColor = C.redBg; }
-  } else { quickRead = "If cash flow bars are similar to net income bars, profits are real cash."; }
+    if (ratio >= 0.9) { quickRead = "Free Cash Flow matches Net Income — profits converting to real cash."; quickColor = C.greenBg; }
+    else if (ratio >= 0.6) quickRead = "Cash flow moderately lower than reported profits. Monitor the gap.";
+    else if (ratio >= 0.3) quickRead = "Significant gap between profits and cash. Investigate cause.";
+    else { quickRead = "Cash flow much lower than profits. Potential red flag."; quickColor = C.redBg; }
+  } else quickRead = "If cash flow bars are similar to net income bars, profits are real cash.";
 
   return (
     <ChartFrame icon="💰" title="Cash Quality Check" subtitle="Compares reported profits (Net Income) with actual cash generated (Free Cash Flow). Matching = real profits." quickRead={quickRead} quickReadColor={quickColor}>
@@ -691,13 +1083,13 @@ function ProfitStructureChart({ data, sym }) {
     if (c.otherPct > 0) pieData.push({ name: "Other", value: c.otherPct, fill: COLORS.other });
     const netProfitPct = c.netProfitPct || 0;
     let quickRead, quickColor;
-    if (netProfitPct >= 20) { quickRead = `Very strong profitability — company keeps ${netProfitPct.toFixed(1)}% of every rupee as profit. Typical of premium brands or moats.`; quickColor = C.greenBg; }
-    else if (netProfitPct >= 10) { quickRead = `Healthy profit margin of ${netProfitPct.toFixed(1)}%. Industry-average for most sectors.`; quickColor = C.greenBg; }
-    else if (netProfitPct >= 5) { quickRead = `Modest profit margin of ${netProfitPct.toFixed(1)}%. Common in competitive or commodity industries.`; }
-    else { quickRead = `Thin profit margin of ${netProfitPct.toFixed(1)}%. Company keeps very little.`; }
+    if (netProfitPct >= 20) { quickRead = `Very strong profitability — ${netProfitPct.toFixed(1)}% net profit.`; quickColor = C.greenBg; }
+    else if (netProfitPct >= 10) { quickRead = `Healthy profit margin of ${netProfitPct.toFixed(1)}%.`; quickColor = C.greenBg; }
+    else if (netProfitPct >= 5) quickRead = `Modest profit margin of ${netProfitPct.toFixed(1)}%.`;
+    else quickRead = `Thin profit margin of ${netProfitPct.toFixed(1)}%.`;
 
     return (
-      <ChartFrame icon="🥧" title="Profit Structure" subtitle={`Where every ${sym}100 of revenue goes — costs, taxes, and what's left as profit (${data.years[0]}).`} quickRead={quickRead} quickReadColor={quickColor}>
+      <ChartFrame icon="🥧" title="Profit Structure" subtitle={`Where every ${sym}100 of revenue goes (${data.years[0]}).`} quickRead={quickRead} quickReadColor={quickColor}>
         <ResponsiveContainer width="100%" height={280}>
           <PieChart>
             <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} label={({ value }) => `${value.toFixed(1)}%`} labelLine={false} style={{ fontSize: 11, fontWeight: 600 }}>
@@ -713,26 +1105,21 @@ function ProfitStructureChart({ data, sym }) {
 
   const chartData = data.years.map((y, i) => {
     const c = cs[i] || {};
-    return {
-      year: String(y),
-      "Cost of Goods": c.cogsPct || 0, "Operating Exp": c.opexPct || 0,
-      "Taxes": c.taxPct || 0, "Net Profit": c.netProfitPct || 0, "Other": c.otherPct || 0,
-    };
+    return { year: String(y), "Cost of Goods": c.cogsPct || 0, "Operating Exp": c.opexPct || 0, "Taxes": c.taxPct || 0, "Net Profit": c.netProfitPct || 0, "Other": c.otherPct || 0 };
   });
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
-  const latestProfit = cs[cs.length - 1]?.netProfitPct;
-  const firstProfit = cs[0]?.netProfitPct;
+  const latestProfit = cs[cs.length - 1]?.netProfitPct, firstProfit = cs[0]?.netProfitPct;
   let quickRead, quickColor;
   if (latestProfit != null && firstProfit != null) {
     const delta = latestProfit - firstProfit;
-    if (delta > 1) { quickRead = `Net profit share grew from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margin expansion. Good sign.`; quickColor = C.greenBg; }
-    else if (delta < -1) { quickRead = `Net profit share shrank from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margins compressing.`; quickColor = C.redBg; }
-    else { quickRead = `Profit share relatively stable around ${latestProfit.toFixed(1)}%.`; }
-  } else { quickRead = "Green (Net Profit) slice getting bigger = improving efficiency. Shrinking = margin pressure."; }
+    if (delta > 1) { quickRead = `Net profit grew from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margin expansion.`; quickColor = C.greenBg; }
+    else if (delta < -1) { quickRead = `Net profit shrank from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}%.`; quickColor = C.redBg; }
+    else quickRead = `Profit share stable around ${latestProfit.toFixed(1)}%.`;
+  } else quickRead = "Green slice growing = improving efficiency.";
 
   return (
-    <ChartFrame icon="📊" title="Profit Structure Trend" subtitle="How every 100% of revenue splits across costs, taxes, and profit — tracked over time." quickRead={quickRead} quickReadColor={quickColor}>
+    <ChartFrame icon="📊" title="Profit Structure Trend" subtitle="How 100% of revenue splits across costs, taxes, and profit over time." quickRead={quickRead} quickReadColor={quickColor}>
       <ResponsiveContainer width="100%" height={280}>
         <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
           <CartesianGrid {...gridStyle} />
@@ -751,82 +1138,52 @@ function ProfitStructureChart({ data, sym }) {
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   ↓↓↓ PART 1 ENDS HERE ↓↓↓
-   Paste Part 2 below this line
-═══════════════════════════════════════════════════════════════ */
-/* ═══════════════════════════════════════════════════════════════
-   ↑↑↑ PART 2 STARTS HERE ↑↑↑
-═══════════════════════════════════════════════════════════════ */
-
 function EPSChart({ data, sym }) {
   const hasData = data.eps?.some(v => v != null);
   if (!hasData) return null;
-  const chartData = data.years.map((y, i) => ({
-    year: String(y), EPS: data.eps?.[i], growth: calcGrowth(data.eps, i),
-  }));
+  const chartData = data.years.map((y, i) => ({ year: String(y), EPS: data.eps?.[i], growth: calcGrowth(data.eps, i) }));
   const axisStyle = { fontSize: 11, fill: C.textMuted };
   const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
   const dataLen = chartData.length;
-  const latestEPS = data.eps?.[dataLen - 1];
-  const firstEPS = data.eps?.[0];
+  const latestEPS = data.eps?.[dataLen - 1], firstEPS = data.eps?.[0];
   let quickRead, quickColor;
-  if (dataLen === 1) {
-    quickRead = `EPS of ${sym}${Number(latestEPS || 0).toFixed(2)} in ${data.years[0]}. Compare with industry peers and historical trend.`;
-  } else if (firstEPS != null && latestEPS != null && firstEPS !== 0) {
+  if (dataLen === 1) quickRead = `EPS of ${sym}${Number(latestEPS || 0).toFixed(2)}.`;
+  else if (firstEPS != null && latestEPS != null && firstEPS !== 0) {
     const totalGrowth = ((latestEPS - firstEPS) / Math.abs(firstEPS)) * 100;
-    if (totalGrowth > 50) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% over this period — strong compounding shareholder wealth.`; quickColor = C.greenBg; }
+    if (totalGrowth > 50) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% — strong compounding.`; quickColor = C.greenBg; }
     else if (totalGrowth > 0) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% — steady value creation.`; quickColor = C.greenBg; }
-    else if (totalGrowth > -10) { quickRead = "EPS broadly flat. Could indicate maturity or challenges."; }
-    else { quickRead = `EPS declined ${Math.abs(totalGrowth).toFixed(0)}%. Understand cause.`; quickColor = C.redBg; }
-  } else { quickRead = "Consistent EPS growth = compounding shareholder wealth."; }
+    else if (totalGrowth > -10) quickRead = "EPS broadly flat.";
+    else { quickRead = `EPS declined ${Math.abs(totalGrowth).toFixed(0)}%.`; quickColor = C.redBg; }
+  } else quickRead = "Consistent EPS growth = shareholder wealth.";
 
   return (
-    <ChartFrame icon="📈" title="Earnings Per Share (EPS)" subtitle="What each share earned in profits. Consistent growth = real value creation for shareholders." quickRead={quickRead} quickReadColor={quickColor}>
+    <ChartFrame icon="📈" title="Earnings Per Share (EPS)" subtitle="What each share earned in profits. Consistent growth = real value creation." quickRead={quickRead} quickReadColor={quickColor}>
       <ResponsiveContainer width="100%" height={260}>
         <BarChart data={chartData} margin={{ top: 30, right: 10, left: 0, bottom: 5 }}>
-          <defs>
-            <linearGradient id="epsGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartD} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartD} stopOpacity={.55}/></linearGradient>
-          </defs>
+          <defs><linearGradient id="epsGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartD} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartD} stopOpacity={.55}/></linearGradient></defs>
           <CartesianGrid {...gridStyle} />
           <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
           <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${sym}${v}`} width={50} />
-          <Tooltip
-            content={({ active, payload, label }) => {
-              if (!active || !payload?.length) return null;
-              return (
-                <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 16px", boxShadow: C.shadowMd }}>
-                  <div style={{ color: C.textMuted, fontSize: 12, marginBottom: 6, fontWeight: 500 }}>{label}</div>
-                  <div style={{ color: C.chartD, fontSize: 13, fontFamily: "'DM Mono', monospace" }}>
-                    EPS: {sym}{Number(payload[0].value).toFixed(2)}
-                  </div>
-                  {payload[0].payload.growth != null && (
-                    <div style={{ color: payload[0].payload.growth >= 0 ? C.green : C.red, fontSize: 12, fontFamily: "'DM Mono', monospace", marginTop: 3 }}>
-                      {payload[0].payload.growth >= 0 ? "↑" : "↓"} {Math.abs(payload[0].payload.growth).toFixed(1)}% YoY
-                    </div>
-                  )}
-                </div>
-              );
-            }}
-          />
+          <Tooltip content={({ active, payload, label }) => {
+            if (!active || !payload?.length) return null;
+            return (
+              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 16px", boxShadow: C.shadowMd }}>
+                <div style={{ color: C.textMuted, fontSize: 12, marginBottom: 6, fontWeight: 500 }}>{label}</div>
+                <div style={{ color: C.chartD, fontSize: 13, fontFamily: "'DM Mono', monospace" }}>EPS: {sym}{Number(payload[0].value).toFixed(2)}</div>
+                {payload[0].payload.growth != null && <div style={{ color: payload[0].payload.growth >= 0 ? C.green : C.red, fontSize: 12, marginTop: 3 }}>{payload[0].payload.growth >= 0 ? "↑" : "↓"} {Math.abs(payload[0].payload.growth).toFixed(1)}%</div>}
+              </div>
+            );
+          }} />
           <Bar dataKey="EPS" fill="url(#epsGrad)" radius={[6, 6, 0, 0]} barSize={dataLen <= 2 ? 60 : dataLen <= 4 ? 45 : 35}>
-            {dataLen <= 5 && (
-              <LabelList dataKey="EPS" position="top" content={({ x, y, width, value, index }) => {
-                const growth = chartData[index]?.growth;
-                return (
-                  <g>
-                    <text x={x + width / 2} y={y - 18} textAnchor="middle" style={{ fill: C.textPrimary, fontSize: 11, fontWeight: 700, fontFamily: "'DM Mono', monospace" }}>
-                      {sym}{Number(value).toFixed(2)}
-                    </text>
-                    {growth != null && (
-                      <text x={x + width / 2} y={y - 4} textAnchor="middle" style={{ fill: growth >= 0 ? C.green : C.red, fontSize: 10, fontWeight: 600 }}>
-                        {growth >= 0 ? "↑" : "↓"} {Math.abs(growth).toFixed(1)}%
-                      </text>
-                    )}
-                  </g>
-                );
-              }} />
-            )}
+            {dataLen <= 5 && <LabelList dataKey="EPS" position="top" content={({ x, y, width, value, index }) => {
+              const growth = chartData[index]?.growth;
+              return (
+                <g>
+                  <text x={x + width / 2} y={y - 18} textAnchor="middle" style={{ fill: C.textPrimary, fontSize: 11, fontWeight: 700 }}>{sym}{Number(value).toFixed(2)}</text>
+                  {growth != null && <text x={x + width / 2} y={y - 4} textAnchor="middle" style={{ fill: growth >= 0 ? C.green : C.red, fontSize: 10, fontWeight: 600 }}>{growth >= 0 ? "↑" : "↓"} {Math.abs(growth).toFixed(1)}%</text>}
+                </g>
+              );
+            }} />}
           </Bar>
         </BarChart>
       </ResponsiveContainer>
@@ -837,14 +1194,10 @@ function EPSChart({ data, sym }) {
 function AnalysisSection({ icon, title, accentColor, paragraphs }) {
   let parts = [];
   if (Array.isArray(paragraphs)) parts = paragraphs.filter(Boolean);
-  else if (typeof paragraphs === "string") {
-    parts = paragraphs.split(/\n\n+/).filter(Boolean);
-    if (parts.length === 0) parts = [paragraphs];
-  }
+  else if (typeof paragraphs === "string") { parts = paragraphs.split(/\n\n+/).filter(Boolean); if (parts.length === 0) parts = [paragraphs]; }
   if (parts.length === 0) return null;
-
   return (
-    <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 22, boxShadow: C.shadow, transition: "all .2s" }}>
+    <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 22, boxShadow: C.shadow }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
         <div style={{ width: 34, height: 34, borderRadius: 8, background: `${accentColor}15`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{icon}</div>
         <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15.5, color: C.textPrimary }}>{title}</div>
@@ -889,41 +1242,22 @@ function PeriodDropdown({ value, onChange }) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
   const selected = PERIODS.find(p => p.id === value) || PERIODS[2];
-
   return (
     <div ref={ref} className="fs-dropdown" style={{ position: "relative" }}>
-      <button type="button" onClick={() => setOpen(!open)} className="fs-dropdown-btn" style={{
-        display: "flex", alignItems: "center", gap: 10, background: C.bgCard,
-        border: `1.5px solid ${open ? C.accent : C.border}`, borderRadius: 14, padding: "0 16px",
-        height: 52, minWidth: 150, fontSize: 14, fontWeight: 600, color: C.textPrimary,
-        fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", boxShadow: C.shadow,
-        transition: "border-color .15s, box-shadow .15s", whiteSpace: "nowrap",
-        justifyContent: "space-between", width: "100%",
-      }}>
+      <button type="button" onClick={() => setOpen(!open)} className="fs-dropdown-btn" style={{ display: "flex", alignItems: "center", gap: 10, background: C.bgCard, border: `1.5px solid ${open ? C.accent : C.border}`, borderRadius: 14, padding: "0 16px", height: 52, minWidth: 150, fontSize: 14, fontWeight: 600, color: C.textPrimary, fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", boxShadow: C.shadow, transition: "border-color .15s", whiteSpace: "nowrap", justifyContent: "space-between", width: "100%" }}>
         <span>{selected.short}</span>
         <span style={{ fontSize: 10, color: C.textMuted, transform: open ? "rotate(180deg)" : "rotate(0)", transition: "transform .2s", marginLeft: 4 }}>▼</span>
       </button>
       {open && (
-        <div className="fs-dropdown-menu" style={{
-          position: "absolute", top: "calc(100% + 6px)", left: 0, width: "max(100%, 220px)",
-          background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: C.shadowMd,
-          zIndex: 50, overflow: "hidden", animation: "fs-dropdown-in .15s ease",
-        }}>
+        <div className="fs-dropdown-menu" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, width: "max(100%, 220px)", background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: C.shadowMd, zIndex: 50, overflow: "hidden", animation: "fs-dropdown-in .15s ease" }}>
           {PERIODS.map(p => {
             const isActive = p.id === value;
             return (
-              <button key={p.id} type="button" onClick={() => { onChange(p.id); setOpen(false); }} style={{
-                display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, width: "100%",
-                background: isActive ? C.accentLight : "transparent", border: "none", padding: "10px 14px",
-                cursor: "pointer", fontFamily: "inherit", textAlign: "left", transition: "background .12s",
-              }}
+              <button key={p.id} type="button" onClick={() => { onChange(p.id); setOpen(false); }} style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, width: "100%", background: isActive ? C.accentLight : "transparent", border: "none", padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", textAlign: "left", transition: "background .12s" }}
                 onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = C.bgSidebar; }}
                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
               >
-                <span style={{ fontSize: 13.5, fontWeight: 600, color: isActive ? C.accent : C.textPrimary, display: "flex", alignItems: "center", gap: 6 }}>
-                  {p.label}
-                  {isActive && <span style={{ fontSize: 11, color: C.accent }}>✓</span>}
-                </span>
+                <span style={{ fontSize: 13.5, fontWeight: 600, color: isActive ? C.accent : C.textPrimary, display: "flex", alignItems: "center", gap: 6 }}>{p.label}{isActive && <span style={{ fontSize: 11, color: C.accent }}>✓</span>}</span>
                 <span style={{ fontSize: 11, color: C.textMuted }}>{p.desc}</span>
               </button>
             );
@@ -939,14 +1273,12 @@ const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakart
 const GLOBAL_CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: ${C.bgPage}; overflow-x: hidden; }
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: ${C.bgPage}; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: ${C.bgPage}; }
   ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }
   .fs-input:focus { outline: none; border-color: ${C.accent} !important; box-shadow: 0 0 0 3px rgba(207,107,78,.15) !important; }
   .fs-chip { transition: all .18s; }
   .fs-chip:hover { background: ${C.accentLight} !important; border-color: ${C.accent} !important; color: ${C.accent} !important; }
   .fs-btn-primary:hover { background: ${C.accentDark} !important; }
-  .fs-btn-ghost:hover  { background: ${C.bgSidebar} !important; }
   .fs-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
   .fs-chart-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
   .fs-act:hover { opacity: .88 !important; transform: translateY(-1px); }
@@ -959,64 +1291,43 @@ const GLOBAL_CSS = `
   .cl-internal-b3fm6y, .cl-formButtonPrimary { background-color: ${C.accent} !important; }
   .cl-formButtonPrimary:hover { background-color: ${C.accentDark} !important; }
   .cl-card { box-shadow: ${C.shadowMd} !important; border: 1px solid ${C.border} !important; }
-
   .fs-search-row { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 580px; }
   @media (min-width: 640px) { .fs-search-row { flex-direction: row; align-items: stretch; max-width: 740px; } }
   .fs-search-bar { flex: 1; display: flex; gap: 8px; background: ${C.bgCard}; border: 1.5px solid ${C.border}; border-radius: 14px; padding: 6px 6px 6px 14px; box-shadow: ${C.shadow}; min-height: 52px; align-items: center; }
-
   .fs-metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   @media (min-width: 640px) { .fs-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } }
   @media (min-width: 1024px) { .fs-metrics-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; } }
-
   .fs-charts-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
   @media (min-width: 1024px) { .fs-charts-grid { grid-template-columns: 1fr 1fr; gap: 18px; } }
-
   .fs-analysis-sections { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 20px; }
   @media (min-width: 1024px) { .fs-analysis-sections { grid-template-columns: 1fr 1fr; gap: 16px; } }
-
   .fs-insights-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 24px; }
   @media (min-width: 768px) { .fs-insights-grid { grid-template-columns: 1fr 1fr; gap: 16px; } }
   @media (min-width: 1024px) { .fs-insights-grid { grid-template-columns: 1fr 1fr 1fr; gap: 16px; } }
-
   .fs-header-dashboard { position: sticky; top: 0; z-index: 100; min-height: 60px; background: ${C.bgCard}; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; gap: 10px; flex-wrap: wrap; }
   @media (min-width: 1024px) { .fs-header-dashboard { padding: 0 28px; gap: 16px; flex-wrap: nowrap; } }
-
   .fs-header-landing { height: auto; min-height: 56px; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; background: ${C.bgCard}; gap: 10px; flex-wrap: wrap; }
   @media (min-width: 640px) { .fs-header-landing { padding: 0 28px; flex-wrap: nowrap; height: 56px; } }
-
   .fs-dash-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; width: 100%; order: 3; }
   @media (min-width: 1024px) { .fs-dash-meta { gap: 8px; order: 0; width: auto; } }
-
   .fs-header-divider { display: none; }
   @media (min-width: 1024px) { .fs-header-divider { display: block; width: 1px; height: 24px; background: ${C.border}; } }
-
   .fs-company-name { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; font-weight: 700; color: ${C.textPrimary}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
   @media (min-width: 640px) { .fs-company-name { font-size: 15px; max-width: none; } }
-
   .fs-header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-
   .fs-main-container { max-width: 1180px; margin: 0 auto; padding: 20px 14px; }
   @media (min-width: 640px) { .fs-main-container { padding: 28px 20px 22px; } }
   @media (min-width: 1024px) { .fs-main-container { padding: 32px 24px 24px; } }
-
   .fs-description { color: ${C.textSec}; font-size: 14px; line-height: 1.7; max-width: 680px; margin-bottom: 20px; }
   @media (min-width: 640px) { .fs-description { font-size: 14.5px; line-height: 1.75; margin-bottom: 28px; } }
-
   .fs-action-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
   .fs-action-btn { padding: 12px 20px; font-size: 14px; font-weight: 600; border-radius: 12px; font-family: 'Plus Jakarta Sans', sans-serif; cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
   @media (min-width: 640px) { .fs-action-btn { padding: 13px 28px; font-size: 14.5px; } }
-
   .fs-landing-main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 18px 28px; animation: fs-fade .6s ease both; }
   @media (min-width: 640px) { .fs-landing-main { padding: 48px 24px 32px; } }
-
   .fs-landing-hero { font-family: 'Plus Jakarta Sans', sans-serif; font-size: clamp(26px, 7vw, 48px); font-weight: 800; color: ${C.textPrimary}; letter-spacing: -1px; text-align: center; line-height: 1.15; margin-bottom: 14px; }
-
   .fs-chip-row-label { font-size: 11px; color: ${C.textMuted}; font-weight: 500; min-width: 60px; text-align: right; }
   @media (min-width: 640px) { .fs-chip-row-label { font-size: 12px; min-width: 70px; } }
-
-  .fs-modal-bubble { max-width: 85%; }
-  @media (min-width: 640px) { .fs-modal-bubble { max-width: 78%; } }
-
   .fs-section-heading { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; font-size: 17px; color: ${C.textPrimary}; margin-bottom: 14px; display: flex; align-items: center; gap: 10px; margin-top: 8px; }
   .fs-section-heading::before { content: ''; width: 4px; height: 20px; background: ${C.accent}; border-radius: 2px; }
 `;
@@ -1050,22 +1361,12 @@ function FinSightApp() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [stepIdx, setStepIdx] = useState(0);
-  const [modal, setModal] = useState(null);
-  const [scriptText, setScriptText] = useState("");
-  const [scriptLoading, setScriptLoading] = useState(false);
   const [excelLoading, setExcelLoading] = useState(false);
+  const [pptLoading, setPptLoading] = useState(false);
 
   useEffect(() => {
     if (user) {
-      fetch("/api/track-user", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: user.id, email: user.primaryEmailAddress?.emailAddress,
-          phone: user.primaryPhoneNumber?.phoneNumber, name: user.fullName,
-          firstName: user.firstName, lastName: user.lastName, signedUpAt: user.createdAt,
-          provider: user.externalAccounts?.[0]?.provider || "email",
-        })
-      }).catch(() => {});
+      fetch("/api/track-user", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: user.id, email: user.primaryEmailAddress?.emailAddress, phone: user.primaryPhoneNumber?.phoneNumber, name: user.fullName, firstName: user.firstName, lastName: user.lastName, signedUpAt: user.createdAt, provider: user.externalAccounts?.[0]?.provider || "email" }) }).catch(() => {});
     }
   }, [user]);
 
@@ -1077,21 +1378,13 @@ function FinSightApp() {
   }, [screen]);
 
   const analyze = async (company) => {
-    setScreen("loading"); setErr(""); setScriptText(""); setModal(null);
-    if (user) {
-      fetch("/api/track-activity", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: user.id, email: user.primaryEmailAddress?.emailAddress,
-          action: "analyze", company, period, timestamp: new Date().toISOString(),
-        })
-      }).catch(() => {});
-    }
+    setScreen("loading"); setErr("");
+    if (user) fetch("/api/track-activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: user.id, email: user.primaryEmailAddress?.emailAddress, action: "analyze", company, period, timestamp: new Date().toISOString() }) }).catch(() => {});
     const periodLabel = PERIODS.find(p => p.id === period)?.label || "1 Year";
     try {
       const raw = await callClaude({
         system: buildSystemPrompt(period),
-        userMsg: `Find and analyze the LATEST available financial data for: ${company}. Analysis period requested: ${periodLabel} (${period}). Use web search to retrieve real, recent numbers. Include cost structure and EPS. Provide analysis in 4 segmented sections, each with 3 paragraphs of 2-3 sentences. Return ONLY clean JSON with no citation tags.`,
+        userMsg: `Analyze LATEST financial data for: ${company}. Period: ${periodLabel} (${period}). Use web search for recent numbers. Include cost structure and EPS. Provide 4 segmented analysis sections, each 3 paragraphs. Return ONLY clean JSON with no citation tags.`,
         tools: [{ type: "web_search_20250305", name: "web_search" }],
         maxTokens: 6000,
       });
@@ -1099,8 +1392,6 @@ function FinSightApp() {
       const s = json.indexOf("{"), e = json.lastIndexOf("}");
       if (s >= 0 && e >= 0) json = json.slice(s, e + 1);
       const parsed = JSON.parse(json);
-
-      // ═══ CLEAN CITATION TAGS from all text fields — NEW v3.5.1 ═══
       parsed.analysisRevenue = cleanText(parsed.analysisRevenue);
       parsed.analysisProfitability = cleanText(parsed.analysisProfitability);
       parsed.analysisCashFlow = cleanText(parsed.analysisCashFlow);
@@ -1110,7 +1401,6 @@ function FinSightApp() {
       parsed.keyRisks = cleanText(parsed.keyRisks);
       parsed.outlookReason = cleanText(parsed.outlookReason);
       parsed.description = cleanText(parsed.description);
-
       setData(parsed);
       setScreen("dashboard");
     } catch (ex) {
@@ -1119,50 +1409,32 @@ function FinSightApp() {
     }
   };
 
-  const genScript = async () => {
-    setModal("script"); setScriptLoading(true); setScriptText("");
-    try {
-      const d = data, sym = d.currencySymbol;
-      const revStr = d.years.map((y, i) => `${y}: ${sym}${(d.revenue[i] / 1000).toFixed(1)}B`).join(", ");
-      const niStr  = d.years.map((y, i) => `${y}: ${sym}${(d.netIncome[i] / 1000).toFixed(1)}B`).join(", ");
-      const text = await callClaude({
-        system: "You write engaging financial podcast scripts. Use real numbers. Be conversational but insightful. NEVER include citation tags like <cite>.",
-        userMsg: `Write a 5-minute podcast between hosts ALEX and PRIYA analyzing ${d.company} (${d.ticker}). Revenue: ${revStr}. Net Income: ${niStr}. CAGR: ${d.revenueCAGR}%. Outlook: ${d.outlook}. Strengths: ${d.keyStrengths.join("; ")}. Risks: ${d.keyRisks.join("; ")}. Format strictly as alternating ALEX: and PRIYA: turns, 2–3 sentences each. NO citation tags.`,
-        maxTokens: 1800,
-      });
-      setScriptText(cleanText(text));
-    } catch { setScriptText("Failed to generate script. Please try again."); }
-    setScriptLoading(false);
-  };
-
-  const openGamma = () => {
-    const d = data, sym = d.currencySymbol;
-    const periodLabel = PERIODS.find(p => p.id === (d.periodType || period))?.label || "1 Year";
-    const prompt = `Create a professional 8-slide financial analysis presentation for ${d.company} (${d.ticker}, ${d.exchange}). Analysis period: ${periodLabel}. Revenue: ${d.years.map((y, i) => `${y}: ${sym}${(d.revenue[i] / 1000).toFixed(1)}B`).join(", ")}. Net Income: ${d.years.map((y, i) => `${y}: ${sym}${(d.netIncome[i] / 1000).toFixed(1)}B`).join(", ")}. CAGR: ${d.revenueCAGR}%. Market Cap: ${sym}${(d.marketCap/1000).toFixed(1)}B. P/E: ${d.peRatio}x. Sector: ${d.sector}. Outlook: ${d.outlook}. Strengths: ${d.keyStrengths.join(", ")}. Risks: ${d.keyRisks.join(", ")}. Slides: 1) Company Overview 2) Revenue Journey 3) Profitability 4) Cash Flow 5) Key Metrics 6) Strengths & Risks 7) Outlook 8) Summary`;
-    navigator.clipboard.writeText(prompt);
-    window.open("https://gamma.app/create/generate", "_blank");
-    setModal("ppt");
-  };
-
   const downloadExcel = async () => {
     if (!data) return;
     setExcelLoading(true);
     try {
       const periodLabel = PERIODS.find(p => p.id === (data.periodType || period))?.label || "1 Year";
       await generateExcel(data, periodLabel);
-      if (user) {
-        fetch("/api/track-activity", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId: user.id, email: user.primaryEmailAddress?.emailAddress,
-            action: "download_excel", company: data.company, period, timestamp: new Date().toISOString(),
-          })
-        }).catch(() => {});
-      }
+      if (user) fetch("/api/track-activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: user.id, email: user.primaryEmailAddress?.emailAddress, action: "download_excel", company: data.company, period, timestamp: new Date().toISOString() }) }).catch(() => {});
     } catch (ex) {
-      alert("Excel download failed. Please try again. Error: " + (ex.message || "Unknown"));
+      alert("Excel download failed. Error: " + (ex.message || "Unknown"));
     }
     setExcelLoading(false);
+  };
+
+  const downloadPPT = async () => {
+    if (!data) return;
+    setPptLoading(true);
+    try {
+      const periodLabel = PERIODS.find(p => p.id === (data.periodType || period))?.label || "1 Year";
+      await new Promise(r => setTimeout(r, 500));
+      await generatePPTFull(data, periodLabel);
+      if (user) fetch("/api/track-activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: user.id, email: user.primaryEmailAddress?.emailAddress, action: "download_ppt", company: data.company, period, timestamp: new Date().toISOString() }) }).catch(() => {});
+    } catch (ex) {
+      alert("PPT generation failed. Error: " + (ex.message || "Unknown"));
+      console.error(ex);
+    }
+    setPptLoading(false);
   };
 
   if (screen === "landing") return (
@@ -1181,13 +1453,8 @@ function FinSightApp() {
       </header>
       <main className="fs-landing-main">
         <div style={{ marginBottom: 24 }}><FinSightLogo size={64} /></div>
-        <h1 className="fs-landing-hero">
-          Financial intelligence,<br />
-          <span style={{ color: C.accent }}>one company at a time.</span>
-        </h1>
-        <p style={{ color: C.textSec, fontSize: 15, lineHeight: 1.7, textAlign: "center", maxWidth: 540, marginBottom: 32, padding: "0 8px" }}>
-          Type any company name. Get AI-powered financial analysis with interactive charts, Excel reports, PPT decks, and podcast scripts.
-        </p>
+        <h1 className="fs-landing-hero">Financial intelligence,<br /><span style={{ color: C.accent }}>one company at a time.</span></h1>
+        <p style={{ color: C.textSec, fontSize: 15, lineHeight: 1.7, textAlign: "center", maxWidth: 540, marginBottom: 32, padding: "0 8px" }}>Type any company name. Get AI-powered financial analysis with interactive charts, Excel reports, and professional PPT decks.</p>
         <div className="fs-search-row" style={{ marginBottom: 32 }}>
           <PeriodDropdown value={period} onChange={setPeriod} />
           <div className="fs-search-bar">
@@ -1199,31 +1466,20 @@ function FinSightApp() {
           {[{ flag: "🇺🇸", label: "US", items: US_EX }, { flag: "🇮🇳", label: "India", items: IN_EX }].map(row => (
             <div key={row.flag} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center", maxWidth: "100%" }}>
               <span className="fs-chip-row-label">{row.flag} {row.label}</span>
-              {row.items.map(c => (
-                <button key={c} className="fs-chip" onClick={() => analyze(c)} style={{ background: C.bgCard, border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 20, padding: "5px 12px", fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>{c}</button>
-              ))}
+              {row.items.map(c => <button key={c} className="fs-chip" onClick={() => analyze(c)} style={{ background: C.bgCard, border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 20, padding: "5px 12px", fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>{c}</button>)}
             </div>
           ))}
         </div>
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap", justifyContent: "center", padding: "0 16px" }}>
-          {[
-            { icon: "📈", text: "Flexible Periods" },
-            { icon: "📗", text: "Excel Reports" },
-            { icon: "📊", text: "PPT via Gamma" },
-            { icon: "🎙️", text: "AI Podcast" },
-          ].map(f => (
-            <div key={f.text} style={{ display: "flex", alignItems: "center", gap: 6, color: C.textSec, fontSize: 12.5 }}>
-              <span style={{ fontSize: 14 }}>{f.icon}</span>
-              <span>{f.text}</span>
-            </div>
+          {[{ icon: "📈", text: "Flexible Periods" }, { icon: "📗", text: "Excel Reports" }, { icon: "📊", text: "Professional PPT" }, { icon: "🌍", text: "US + India" }].map(f => (
+            <div key={f.text} style={{ display: "flex", alignItems: "center", gap: 6, color: C.textSec, fontSize: 12.5 }}><span style={{ fontSize: 14 }}>{f.icon}</span><span>{f.text}</span></div>
           ))}
         </div>
       </main>
       <footer style={{ padding: "18px 20px", textAlign: "center", borderTop: `1px solid ${C.border}`, background: C.bgCard }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ color: C.textMuted, fontSize: 11.5 }}>FinSight AI · Research & education only · Not investment advice</span>
-          <span style={{ color: C.border }}>·</span>
-          <Byline />
+          <span style={{ color: C.border }}>·</span><Byline />
         </div>
       </footer>
     </div>
@@ -1234,9 +1490,7 @@ function FinSightApp() {
       <style>{FONTS + GLOBAL_CSS}</style>
       <div style={{ marginBottom: 24 }}><FinSightLogo size={52} /></div>
       <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 20, fontWeight: 700, color: C.textPrimary, marginBottom: 6, textAlign: "center" }}>Analyzing financials…</h2>
-      <p style={{ color: C.textSec, fontSize: 13.5, marginBottom: 36, textAlign: "center", padding: "0 20px" }}>
-        Period: {PERIODS.find(p => p.id === period)?.label} · Searching live data — takes about 20–30 seconds
-      </p>
+      <p style={{ color: C.textSec, fontSize: 13.5, marginBottom: 36, textAlign: "center", padding: "0 20px" }}>Period: {PERIODS.find(p => p.id === period)?.label} · Takes about 20–30 seconds</p>
       <div style={{ width: "100%", maxWidth: 320, padding: "0 16px" }}>
         {STEPS.map((s, i) => {
           const done = i < stepIdx, active = i === stepIdx, pending = i > stepIdx;
@@ -1266,17 +1520,13 @@ function FinSightApp() {
 
   if (screen === "dashboard" && data) {
     const sym = data.currencySymbol || "$";
-    const OUTLOOK = {
-      Positive: { color: C.green, bg: C.greenBg }, Mixed: { color: C.amber, bg: C.amberBg }, Caution: { color: C.red, bg: C.redBg },
-      Bullish: { color: C.green, bg: C.greenBg }, Neutral: { color: C.amber, bg: C.amberBg }, Bearish: { color: C.red, bg: C.redBg },
-    };
+    const OUTLOOK = { Positive: { color: C.green, bg: C.greenBg }, Mixed: { color: C.amber, bg: C.amberBg }, Caution: { color: C.red, bg: C.redBg }, Bullish: { color: C.green, bg: C.greenBg }, Neutral: { color: C.amber, bg: C.amberBg }, Bearish: { color: C.red, bg: C.redBg } };
     const oc = OUTLOOK[data.outlook] || OUTLOOK.Mixed;
     const lastIdx = (data.years?.length || 1) - 1;
     const latestRev = data.revenue?.[lastIdx], latestNI = data.netIncome?.[lastIdx];
     const latestFCF = data.freeCashFlow?.[lastIdx], latestNM = data.netMargin?.[lastIdx];
     const latestLabel = data.years?.[lastIdx] || "Latest";
     const periodLabel = PERIODS.find(p => p.id === data.periodType)?.label || "Analysis";
-
     const analysisRev = data.analysisRevenue || (data.analysis ? [data.analysis] : null);
     const analysisProf = data.analysisProfitability || null;
     const analysisCash = data.analysisCashFlow || null;
@@ -1309,11 +1559,7 @@ function FinSightApp() {
 
         <div className="fs-main-container">
           <p className="fs-description">{data.description}</p>
-          {data.dataAsOf && (
-            <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 14 }}>
-              📅 Data as of: <strong style={{ color: C.textSec }}>{data.dataAsOf}</strong> · Period: <strong style={{ color: C.accent }}>{periodLabel}</strong>
-            </div>
-          )}
+          {data.dataAsOf && <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 14 }}>📅 Data as of: <strong style={{ color: C.textSec }}>{data.dataAsOf}</strong> · Period: <strong style={{ color: C.accent }}>{periodLabel}</strong></div>}
           <div className="fs-metrics-grid" style={{ marginBottom: 24 }}>
             {[
               { label: `${latestLabel} Revenue`, value: fmtMoney(latestRev, sym), sub: data.revenueCAGR ? `CAGR ${Number(data.revenueCAGR).toFixed(1)}%` : "Latest" },
@@ -1355,11 +1601,12 @@ function FinSightApp() {
           </div>
 
           <div className="fs-action-row">
-            <button className="fs-act fs-action-btn" onClick={openGamma} style={{ background: C.accent, color: "#fff", border: "none" }}>📊 Generate PPT</button>
+            <button className="fs-act fs-action-btn" onClick={downloadPPT} disabled={pptLoading} style={{ background: C.accent, color: "#fff", border: "none" }}>
+              {pptLoading ? <><Spinner /> Creating PPT…</> : <>📊 Download PPT</>}
+            </button>
             <button className="fs-act fs-action-btn" onClick={downloadExcel} disabled={excelLoading} style={{ background: C.chartB, color: "#fff", border: "none" }}>
               {excelLoading ? <><Spinner /> Generating…</> : <>📗 Download Excel</>}
             </button>
-            <button className="fs-act fs-action-btn" onClick={genScript} style={{ background: C.bgCard, color: C.textPrimary, border: `1px solid ${C.border}` }}>🎙️ Podcast Script</button>
             <button className="fs-act fs-action-btn" onClick={() => setScreen("landing")} style={{ background: "transparent", color: C.textSec, border: `1px solid ${C.border}` }}>← New search</button>
           </div>
 
@@ -1368,69 +1615,14 @@ function FinSightApp() {
           </div>
           <div style={{ textAlign: "center", paddingTop: 20, borderTop: `1px solid ${C.border}` }}><Byline /></div>
         </div>
-
-        {modal === "script" && (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,24,.5)", backdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 18, width: "100%", maxWidth: 720, maxHeight: "82vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 60px rgba(31,27,24,.3)" }}>
-              <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: C.bgSidebar, gap: 10 }}>
-                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>🎙️ Podcast — {data.company}</div>
-                <button onClick={() => setModal(null)} style={{ background: "none", border: "none", color: C.textMuted, fontSize: 22, cursor: "pointer", padding: 4, flexShrink: 0 }}>✕</button>
-              </div>
-              <div style={{ overflowY: "auto", flex: 1, padding: 20 }}>
-                {scriptLoading ? (
-                  <div style={{ textAlign: "center", padding: 50, color: C.textSec, fontSize: 14, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
-                    <Spinner />Generating your podcast script... ~15 seconds
-                  </div>
-                ) : (
-                  scriptText.split("\n").filter(Boolean).map((line, i) => {
-                    const isA = line.startsWith("ALEX:");
-                    const isP = line.startsWith("PRIYA:");
-                    if (!isA && !isP) return <div key={i} style={{ color: C.textMuted, fontSize: 12, fontStyle: "italic", textAlign: "center", margin: "10px 0" }}>{line}</div>;
-                    return (
-                      <div key={i} style={{ display: "flex", gap: 10, marginBottom: 14, flexDirection: isA ? "row" : "row-reverse" }}>
-                        <div style={{ width: 32, height: 32, borderRadius: "50%", background: isA ? C.accentLight : C.blueBg, color: isA ? C.accent : C.chartC, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 12, flexShrink: 0 }}>
-                          {isA ? "A" : "P"}
-                        </div>
-                        <div className="fs-modal-bubble" style={{ background: isA ? C.bgSidebar : C.blueBg, borderRadius: isA ? "4px 14px 14px 14px" : "14px 4px 14px 14px", padding: "10px 14px", color: C.textPrimary, fontSize: 13.5, lineHeight: 1.65 }}>
-                          <div style={{ color: isA ? C.accent : C.chartC, fontSize: 10, fontWeight: 700, letterSpacing: ".8px", marginBottom: 4 }}>{isA ? "ALEX" : "PRIYA"}</div>
-                          {line.replace(/^(ALEX|PRIYA):\s*/, "")}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {modal === "ppt" && (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,24,.5)", backdropFilter: "blur(4px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 18, padding: "32px 26px", maxWidth: 460, width: "100%", textAlign: "center", boxShadow: "0 20px 60px rgba(31,27,24,.3)" }}>
-              <div style={{ width: 60, height: 60, borderRadius: 18, background: C.greenBg, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 26, marginBottom: 18 }}>✓</div>
-              <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 19, fontWeight: 700, color: C.textPrimary, marginBottom: 10 }}>Prompt copied!</div>
-              <div style={{ color: C.textSec, fontSize: 13.5, marginBottom: 8, lineHeight: 1.7 }}>Gamma has opened in a new tab.</div>
-              <div style={{ color: C.textSec, fontSize: 13.5, marginBottom: 22, lineHeight: 1.7 }}>Just <strong style={{ color: C.textPrimary }}>paste (⌘V / Ctrl+V)</strong> into Gamma's prompt box and click <strong>Generate</strong>.</div>
-              <button onClick={() => setModal(null)} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 8, padding: "10px 26px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>Close</button>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
-
   return null;
 }
 
 export default function App() {
-  if (!CLERK_PUB_KEY) {
-    return (
-      <div style={{ padding: 40, textAlign: "center", fontFamily: "sans-serif" }}>
-        <h2 style={{ color: "#C04040" }}>⚠️ Clerk Key Missing</h2>
-        <p>Please add VITE_CLERK_PUBLISHABLE_KEY to your Vercel environment variables.</p>
-      </div>
-    );
-  }
+  if (!CLERK_PUB_KEY) return <div style={{ padding: 40, textAlign: "center", fontFamily: "sans-serif" }}><h2 style={{ color: "#C04040" }}>⚠️ Clerk Key Missing</h2><p>Please add VITE_CLERK_PUBLISHABLE_KEY to your Vercel environment variables.</p></div>;
   return (
     <ClerkProvider publishableKey={CLERK_PUB_KEY}>
       <SignedOut><LoginScreen /></SignedOut>
