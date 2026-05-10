@@ -5,11 +5,6 @@ import {
 } from "recharts";
 import { ClerkProvider, SignedIn, SignedOut, SignIn, SignUp, UserButton, useUser } from "@clerk/clerk-react";
 
-/* ═════════════════════════════════════════════════════════════
-   FinSight AI — by Aashni Shah
-   v3.6 (April 23, 2026) — Gorgeous Direct PPT Generation
-════════════════════════════════════════════════════════════════ */
-
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
 const C = {
@@ -31,6 +26,8 @@ const C = {
   amber:       "#A8761F",
   amberBg:     "#FEF7E6",
   blueBg:      "#F0F6FC",
+  brown:       "#8B4513",
+  brownLight:  "#F5EFE7",
   chartA:      "#CF6B4E",
   chartB:      "#2D7D5C",
   chartC:      "#3B82B0",
@@ -95,9 +92,6 @@ function calcGrowth(arr, idx) {
   return ((arr[idx] - prev) / Math.abs(prev)) * 100;
 }
 
-/* ═════════════════════════════════════════════════════════════
-   LAZY LIBRARY LOADERS — SheetJS + PptxGenJS + html2canvas
-════════════════════════════════════════════════════════════════ */
 async function loadSheetJS() {
   if (window.XLSX) return window.XLSX;
   return new Promise((resolve, reject) => {
@@ -109,1524 +103,1566 @@ async function loadSheetJS() {
   });
 }
 
-async function loadPptxGenJS() {
-  if (window.PptxGenJS) return window.PptxGenJS;
+async function loadMammoth() {
+  if (window.mammoth) return window.mammoth;
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
-    script.onload = () => resolve(window.PptxGenJS);
-    script.onerror = () => reject(new Error('Failed to load PPT library'));
+    script.src = 'https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js';
+    script.onload = () => resolve(window.mammoth);
+    script.onerror = () => reject(new Error('Failed to load Word reader'));
     document.head.appendChild(script);
   });
 }
 
-async function loadHtml2Canvas() {
-  if (window.html2canvas) return window.html2canvas;
+async function loadDocx() {
+  if (window.docx) return window.docx;
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
-    script.onload = () => resolve(window.html2canvas);
-    script.onerror = () => reject(new Error('Failed to load capture library'));
+    script.src = 'https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js';
+    script.onload = () => resolve(window.docx);
+    script.onerror = () => reject(new Error('Failed to load Word generator'));
     document.head.appendChild(script);
   });
 }
 
-async function captureChartAsImage(selector) {
-  try {
-    const html2canvas = await loadHtml2Canvas();
-    const element = document.querySelector(selector);
-    if (!element) return null;
-    const canvas = await html2canvas(element, {
-      backgroundColor: '#FFFFFF',
-      scale: 2,
-      logging: false,
-      useCORS: true,
-    });
-    return canvas.toDataURL('image/png');
-  } catch (e) {
-    console.error('Chart capture failed:', e);
-    return null;
-  }
+async function extractWordContent(file) {
+  const mammoth = await loadMammoth();
+  const arrayBuffer = await file.arrayBuffer();
+  const result = await mammoth.extractRawText({ arrayBuffer });
+  return result.value;
 }
 
-/* ═════════════════════════════════════════════════════════════
-   PPT GENERATOR — 10-slide professional presentation
-════════════════════════════════════════════════════════════════ */
-async function generatePPT(data, periodLabel) {
-  const PptxGenJS = await loadPptxGenJS();
-  const pptx = new PptxGenJS();
+function buildPrivateCompanyPrompt() {
+  return `You are a financial document organizer. You will receive raw text from a private company's financial document. Your task is to EXTRACT and ORGANIZE the data EXACTLY as provided.
 
-  const PPT_COLORS = {
-    accent:      "CF6B4E",
-    accentDark:  "A8553C",
-    accentLight: "FDF0EC",
-    bgPage:      "F9F7F4",
-    bgSidebar:   "EFEBE4",
-    bgCard:      "FFFFFF",
-    textPrimary: "1F1B18",
-    textSec:     "6B6158",
-    textMuted:   "9E9890",
-    green:       "2D7D5C",
-    greenBg:     "F0FAF5",
-    red:         "C04040",
-    redBg:       "FDF2F2",
-    border:      "E8E1D8",
-  };
+CRITICAL RULES:
+1. Use ONLY data present in the document. NEVER invent numbers.
+2. If data is missing, mark it as "NA" or omit the section.
+3. Do NOT add opinions, recommendations, or analysis.
+4. Do NOT bring in external information.
+5. Calculate ratios ONLY if both required values are present.
+6. Preserve exact numbers from the document.
 
-  pptx.layout = 'LAYOUT_WIDE';
-  pptx.author = 'Aashni Shah';
-  pptx.company = 'FinSight AI';
-  pptx.title = `${data.company} - Financial Analysis`;
-  pptx.subject = 'AI-Generated Financial Analysis Report';
+OUTPUT: Return ONLY raw JSON in this exact structure:
 
-  const sym = data.currencySymbol || "$";
-  const cur = data.currency || "USD";
-  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-  const lastIdx = (data.years?.length || 1) - 1;
-
-  const chartImg1 = await captureChartAsImage('.fs-charts-grid > div:nth-child(1)');
-  const chartImg2 = await captureChartAsImage('.fs-charts-grid > div:nth-child(2)');
-  const chartImg3 = await captureChartAsImage('.fs-charts-grid > div:nth-child(3)');
-  const chartImg4 = await captureChartAsImage('.fs-charts-grid > div:nth-child(4)');
-
-  // SLIDE 1: TITLE
-  const s1 = pptx.addSlide();
-  s1.background = { color: PPT_COLORS.bgPage };
-  s1.addShape(pptx.ShapeType.rect, {
-    x: 0, y: 0, w: 13.33, h: 0.4,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-  });
-  s1.addShape(pptx.ShapeType.rect, {
-    x: 0.8, y: 1.2, w: 0.8, h: 0.8,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-    rectRadius: 0.1,
-  });
-  s1.addText('📊', { x: 0.8, y: 1.2, w: 0.8, h: 0.8, align: 'center', valign: 'middle', fontSize: 36 });
-  s1.addText('FINSIGHT AI', {
-    x: 0.8, y: 2.2, w: 12, h: 0.5,
-    fontSize: 20, fontFace: 'Calibri', bold: true, color: PPT_COLORS.accent, charSpacing: 3,
-  });
-  s1.addShape(pptx.ShapeType.rect, {
-    x: 0.8, y: 2.85, w: 1.5, h: 0.04,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-  });
-  s1.addText(data.company || 'Company Analysis', {
-    x: 0.8, y: 3.1, w: 12, h: 1.2,
-    fontSize: 48, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, valign: 'top',
-  });
-  s1.addText(`Financial Analysis Report  •  ${periodLabel}`, {
-    x: 0.8, y: 4.4, w: 12, h: 0.5,
-    fontSize: 18, fontFace: 'Calibri', color: PPT_COLORS.textSec,
-  });
-  s1.addShape(pptx.ShapeType.rect, {
-    x: 0.8, y: 5.1, w: 3.5, h: 0.5,
-    fill: { color: PPT_COLORS.accentLight },
-    line: { color: PPT_COLORS.accentLight, width: 0 },
-    rectRadius: 0.08,
-  });
-  s1.addText(`${data.ticker || ''}  •  ${data.exchange || ''}  •  ${data.sector || ''}`, {
-    x: 0.8, y: 5.1, w: 3.5, h: 0.5,
-    fontSize: 12, fontFace: 'Calibri', bold: true, color: PPT_COLORS.accent,
-    align: 'center', valign: 'middle',
-  });
-  s1.addText(`Generated ${today}  •  by Aashni Shah  •  finsightai.org`, {
-    x: 0.8, y: 6.8, w: 12, h: 0.3,
-    fontSize: 10, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-  });
-
-  // SLIDE 2: COMPANY OVERVIEW
-  const s2 = pptx.addSlide();
-  s2.background = { color: PPT_COLORS.bgCard };
-  s2.addShape(pptx.ShapeType.rect, {
-    x: 0, y: 0, w: 13.33, h: 0.15,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-  });
-  s2.addText('COMPANY OVERVIEW', {
-    x: 0.6, y: 0.5, w: 12, h: 0.5,
-    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
-  });
-  s2.addShape(pptx.ShapeType.rect, {
-    x: 0.6, y: 1.1, w: 1.2, h: 0.04,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-  });
-  s2.addText(cleanText(data.description) || 'Company description not available.', {
-    x: 0.6, y: 1.4, w: 12, h: 1.2,
-    fontSize: 16, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
-  });
-
-  const infoItems = [
-    { label: 'Company', value: data.company || 'N/A' },
-    { label: 'Ticker', value: data.ticker || 'N/A' },
-    { label: 'Exchange', value: data.exchange || 'N/A' },
-    { label: 'Sector', value: data.sector || 'N/A' },
-    { label: 'Market', value: data.market || 'N/A' },
-    { label: 'Currency', value: `${cur} (${sym})` },
-  ];
-  infoItems.forEach((item, i) => {
-    const col = i % 3;
-    const row = Math.floor(i / 3);
-    const x = 0.6 + col * 4.1;
-    const y = 3.1 + row * 1.0;
-    s2.addShape(pptx.ShapeType.rect, {
-      x, y, w: 3.9, h: 0.85,
-      fill: { color: PPT_COLORS.bgPage },
-      line: { color: PPT_COLORS.border, width: 1 },
-      rectRadius: 0.1,
-    });
-    s2.addText(item.label.toUpperCase(), {
-      x: x + 0.2, y: y + 0.1, w: 3.5, h: 0.25,
-      fontSize: 9, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textMuted, charSpacing: 2,
-    });
-    s2.addText(item.value, {
-      x: x + 0.2, y: y + 0.35, w: 3.5, h: 0.45,
-      fontSize: 15, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary,
-    });
-  });
-
-  const outlookColor = data.outlook === 'Positive' || data.outlook === 'Bullish' ? PPT_COLORS.green
-    : data.outlook === 'Caution' || data.outlook === 'Bearish' ? PPT_COLORS.red : 'A8761F';
-  const outlookBg = data.outlook === 'Positive' || data.outlook === 'Bullish' ? PPT_COLORS.greenBg
-    : data.outlook === 'Caution' || data.outlook === 'Bearish' ? PPT_COLORS.redBg : 'FEF7E6';
-  s2.addShape(pptx.ShapeType.rect, {
-    x: 0.6, y: 5.4, w: 12.1, h: 1.3,
-    fill: { color: outlookBg }, line: { color: outlookColor, width: 2 }, rectRadius: 0.1,
-  });
-  s2.addText(`◎ ${(data.outlook || 'Mixed').toUpperCase()} OUTLOOK`, {
-    x: 1.0, y: 5.55, w: 11, h: 0.4,
-    fontSize: 14, fontFace: 'Calibri', bold: true, color: outlookColor, charSpacing: 2,
-  });
-  s2.addText(cleanText(data.outlookReason) || 'Outlook reasoning not available.', {
-    x: 1.0, y: 6.0, w: 11, h: 0.6,
-    fontSize: 13, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
-  });
-  s2.addText('FinSight AI  •  by Aashni Shah', {
-    x: 0.6, y: 7.1, w: 12, h: 0.3,
-    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-  });
-
-  // SLIDE 3: KEY METRICS DASHBOARD
-  const s3 = pptx.addSlide();
-  s3.background = { color: PPT_COLORS.bgCard };
-  s3.addShape(pptx.ShapeType.rect, {
-    x: 0, y: 0, w: 13.33, h: 0.15,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-  });
-  s3.addText('KEY FINANCIAL METRICS', {
-    x: 0.6, y: 0.5, w: 12, h: 0.5,
-    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
-  });
-  s3.addText(`${data.years?.[lastIdx] || 'Latest Period'}  •  Values in ${cur}`, {
-    x: 0.6, y: 1.0, w: 12, h: 0.3,
-    fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-  });
-
-  const metrics = [
-    { label: 'Revenue', value: fmtMoney(data.revenue?.[lastIdx], sym), sub: data.revenueCAGR ? `CAGR ${Number(data.revenueCAGR).toFixed(1)}%` : 'Latest period', color: PPT_COLORS.accent },
-    { label: 'Net Income', value: fmtMoney(data.netIncome?.[lastIdx], sym), sub: data.netMargin?.[lastIdx] ? `Margin ${Number(data.netMargin[lastIdx]).toFixed(1)}%` : 'Latest', color: PPT_COLORS.green },
-    { label: 'EBITDA', value: fmtMoney(data.ebitda?.[lastIdx], sym), sub: 'Operating earnings', color: '3B82B0' },
-    { label: 'Free Cash Flow', value: fmtMoney(data.freeCashFlow?.[lastIdx], sym), sub: 'After capex', color: '7C5CB8' },
-    { label: 'Market Cap', value: fmtMoney(data.marketCap, sym), sub: data.exchange, color: PPT_COLORS.accentDark },
-    { label: 'P/E Ratio', value: data.peRatio ? `${Number(data.peRatio).toFixed(1)}×` : 'N/A', sub: 'Current valuation', color: 'D9A441' },
-  ];
-  metrics.forEach((m, i) => {
-    const col = i % 3;
-    const row = Math.floor(i / 3);
-    const x = 0.6 + col * 4.15;
-    const y = 1.7 + row * 2.4;
-    s3.addShape(pptx.ShapeType.rect, {
-      x, y, w: 3.95, h: 2.2,
-      fill: { color: PPT_COLORS.bgPage }, line: { color: PPT_COLORS.border, width: 1 }, rectRadius: 0.15,
-    });
-    s3.addShape(pptx.ShapeType.rect, {
-      x, y, w: 3.95, h: 0.08,
-      fill: { color: m.color }, line: { color: m.color, width: 0 },
-    });
-    s3.addText(m.label.toUpperCase(), {
-      x: x + 0.25, y: y + 0.25, w: 3.5, h: 0.3,
-      fontSize: 10, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textMuted, charSpacing: 2,
-    });
-    s3.addText(m.value, {
-      x: x + 0.25, y: y + 0.7, w: 3.5, h: 0.9,
-      fontSize: 32, fontFace: 'Calibri', bold: true, color: m.color,
-    });
-    s3.addText(m.sub, {
-      x: x + 0.25, y: y + 1.7, w: 3.5, h: 0.4,
-      fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec,
-    });
-  });
-  s3.addText('FinSight AI  •  by Aashni Shah', {
-    x: 0.6, y: 7.1, w: 12, h: 0.3,
-    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-  });
-
-  // Helper for chart slides
-  const addChartSlide = (title, subtitle, chartImg, insight, insightColor = PPT_COLORS.accentLight, insightBorder = PPT_COLORS.accent) => {
-    const s = pptx.addSlide();
-    s.background = { color: PPT_COLORS.bgCard };
-    s.addShape(pptx.ShapeType.rect, {
-      x: 0, y: 0, w: 13.33, h: 0.15,
-      fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-    });
-    s.addText(title.toUpperCase(), {
-      x: 0.6, y: 0.5, w: 12, h: 0.5,
-      fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
-    });
-    s.addText(subtitle, {
-      x: 0.6, y: 1.0, w: 12, h: 0.3,
-      fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-    });
-    if (chartImg) {
-      s.addImage({ data: chartImg, x: 1.0, y: 1.6, w: 11.3, h: 4.2 });
-    } else {
-      s.addShape(pptx.ShapeType.rect, {
-        x: 1.0, y: 1.6, w: 11.3, h: 4.2,
-        fill: { color: PPT_COLORS.bgPage }, line: { color: PPT_COLORS.border, width: 1 }, rectRadius: 0.1,
-      });
-      s.addText('Chart visualization available in the dashboard', {
-        x: 1.0, y: 3.4, w: 11.3, h: 0.6,
-        fontSize: 14, fontFace: 'Calibri', color: PPT_COLORS.textMuted, align: 'center',
-      });
-    }
-    s.addShape(pptx.ShapeType.rect, {
-      x: 0.6, y: 6.0, w: 12.1, h: 1.0,
-      fill: { color: insightColor }, line: { color: insightBorder, width: 0 }, rectRadius: 0.1,
-    });
-    s.addShape(pptx.ShapeType.rect, {
-      x: 0.6, y: 6.0, w: 0.1, h: 1.0,
-      fill: { color: insightBorder }, line: { color: insightBorder, width: 0 },
-    });
-    s.addText('💡 QUICK READ', {
-      x: 0.9, y: 6.1, w: 12, h: 0.25,
-      fontSize: 10, fontFace: 'Calibri', bold: true, color: insightBorder, charSpacing: 2,
-    });
-    s.addText(insight, {
-      x: 0.9, y: 6.35, w: 11.7, h: 0.6,
-      fontSize: 13, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
-    });
-    s.addText('FinSight AI  •  by Aashni Shah', {
-      x: 0.6, y: 7.1, w: 12, h: 0.3,
-      fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-    });
-  };
-
-  // SLIDE 4: GROWTH QUALITY
-  const dataLen = data.years?.length || 0;
-  const firstMargin = data.netMargin?.[0];
-  const lastMargin = data.netMargin?.[dataLen - 1];
-  const marginTrend = lastMargin != null && firstMargin != null ? lastMargin - firstMargin : null;
-  const revenueTrend = calcGrowth(data.revenue, dataLen - 1);
-  let growthInsight = "Compare revenue trajectory with margin trend. Both rising = quality growth.";
-  let growthBorder = PPT_COLORS.accent;
-  let growthBg = PPT_COLORS.accentLight;
-  if (marginTrend != null && revenueTrend != null) {
-    if (revenueTrend > 0 && marginTrend >= -0.5) {
-      growthInsight = "Revenue is growing AND margins are stable/expanding — this is high-quality growth.";
-      growthBorder = PPT_COLORS.green; growthBg = PPT_COLORS.greenBg;
-    } else if (revenueTrend > 0 && marginTrend < -0.5) {
-      growthInsight = "Revenue growing BUT margins shrinking — growth may be coming at the cost of profitability.";
-    } else if (revenueTrend < 0) {
-      growthInsight = "Revenue declining. Check if margins are holding to understand if it's temporary or structural.";
-    }
-  }
-  addChartSlide('Growth Quality', 'Revenue vs Profitability Margins — the best companies grow revenue while maintaining margins', chartImg1, growthInsight, growthBg, growthBorder);
-
-  // SLIDE 5: CASH QUALITY
-  const latestNI = data.netIncome?.[dataLen - 1];
-  const latestFCF = data.freeCashFlow?.[dataLen - 1];
-  let cashInsight = "If cash flow bars are similar to net income bars, profits are real cash.";
-  let cashBorder = PPT_COLORS.accent;
-  let cashBg = PPT_COLORS.accentLight;
-  if (latestNI != null && latestFCF != null && latestNI !== 0) {
-    const ratio = latestFCF / latestNI;
-    if (ratio >= 0.9) {
-      cashInsight = "Free Cash Flow matches Net Income — profits are converting to real cash. Healthy sign.";
-      cashBorder = PPT_COLORS.green; cashBg = PPT_COLORS.greenBg;
-    } else if (ratio >= 0.3) {
-      cashInsight = "Gap between profits and cash. Could indicate heavy reinvestment or accounting-heavy earnings.";
-    } else {
-      cashInsight = "Cash flow is much lower than profits. Understand the cause — potential red flag.";
-      cashBorder = PPT_COLORS.red; cashBg = PPT_COLORS.redBg;
-    }
-  }
-  addChartSlide('Cash Quality Check', 'Net Income vs Free Cash Flow — matching bars = real profits', chartImg2, cashInsight, cashBg, cashBorder);
-
-  // SLIDE 6: PROFIT STRUCTURE
-  let profitInsight = "Net Profit slice shows how much of each rupee of revenue ends up as profit.";
-  let profitBorder = PPT_COLORS.accent;
-  let profitBg = PPT_COLORS.accentLight;
-  const csLatest = data.costStructure?.[data.costStructure.length - 1];
-  if (csLatest?.netProfitPct != null) {
-    const np = csLatest.netProfitPct;
-    if (np >= 15) {
-      profitInsight = `Strong profitability — company keeps ${np.toFixed(1)}% of every rupee as profit.`;
-      profitBorder = PPT_COLORS.green; profitBg = PPT_COLORS.greenBg;
-    } else if (np >= 8) {
-      profitInsight = `Healthy profit margin of ${np.toFixed(1)}% — industry-average for most sectors.`;
-      profitBorder = PPT_COLORS.green; profitBg = PPT_COLORS.greenBg;
-    } else {
-      profitInsight = `Modest profit margin of ${np.toFixed(1)}%. Check if it's industry norm or competitive pressure.`;
-    }
-  }
-  addChartSlide('Profit Structure', `Where every ${sym}100 of revenue goes — costs, taxes, and what's left as profit`, chartImg3, profitInsight, profitBg, profitBorder);
-
-  // SLIDE 7: EPS
-  const firstEPS = data.eps?.[0];
-  const latestEPS = data.eps?.[dataLen - 1];
-  let epsInsight = "Consistent EPS growth = compounding shareholder wealth over time.";
-  let epsBorder = PPT_COLORS.accent;
-  let epsBg = PPT_COLORS.accentLight;
-  if (firstEPS != null && latestEPS != null && firstEPS !== 0) {
-    const totalGrowth = ((latestEPS - firstEPS) / Math.abs(firstEPS)) * 100;
-    if (totalGrowth > 30) {
-      epsInsight = `EPS grew ${totalGrowth.toFixed(0)}% — strong compounding shareholder wealth.`;
-      epsBorder = PPT_COLORS.green; epsBg = PPT_COLORS.greenBg;
-    } else if (totalGrowth > 0) {
-      epsInsight = `EPS grew ${totalGrowth.toFixed(0)}% — steady value creation.`;
-      epsBorder = PPT_COLORS.green; epsBg = PPT_COLORS.greenBg;
-    } else {
-      epsInsight = `EPS declined ${Math.abs(totalGrowth).toFixed(0)}%. Investigate cause.`;
-      epsBorder = PPT_COLORS.red; epsBg = PPT_COLORS.redBg;
-    }
-  }
-  addChartSlide('Earnings Per Share', 'What each share earned in profits — consistent growth drives long-term value', chartImg4, epsInsight, epsBg, epsBorder);
-
-  return { pptx, data, PPT_COLORS, sym, cur, today, lastIdx };
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   ↓↓↓ PART 1 ENDS HERE ↓↓↓
-   Paste Part 2 below this line
-═══════════════════════════════════════════════════════════════ */
-/* ═══════════════════════════════════════════════════════════════
-   ↑↑↑ PART 2 STARTS HERE ↑↑↑
-═══════════════════════════════════════════════════════════════ */
-
-async function finishPPT(partial) {
-  const { pptx, data, PPT_COLORS, sym, cur, today, lastIdx } = partial;
-
-  // SLIDE 8: AI ANALYSIS (2x2 grid)
-  const s8 = pptx.addSlide();
-  s8.background = { color: PPT_COLORS.bgCard };
-  s8.addShape(pptx.ShapeType.rect, {
-    x: 0, y: 0, w: 13.33, h: 0.15,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-  });
-  s8.addText('AI FINANCIAL ANALYSIS', {
-    x: 0.6, y: 0.5, w: 12, h: 0.5,
-    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
-  });
-  s8.addText('Key insights across four dimensions of company performance', {
-    x: 0.6, y: 1.0, w: 12, h: 0.3,
-    fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-  });
-
-  const getFirstSentence = (arr) => {
-    if (!arr) return 'Analysis not available';
-    if (Array.isArray(arr) && arr.length > 0) return cleanText(arr[0]) || 'No insight available';
-    if (typeof arr === 'string') return cleanText(arr.split('.')[0] + '.') || 'No insight available';
-    return 'Analysis not available';
-  };
-
-  const sections = [
-    { icon: '📈', title: 'Revenue & Growth', text: getFirstSentence(data.analysisRevenue), color: PPT_COLORS.accent },
-    { icon: '💰', title: 'Profitability', text: getFirstSentence(data.analysisProfitability), color: PPT_COLORS.green },
-    { icon: '💵', title: 'Cash Flow', text: getFirstSentence(data.analysisCashFlow), color: '3B82B0' },
-    { icon: '🎯', title: 'Strategic Outlook', text: getFirstSentence(data.analysisOutlook), color: '7C5CB8' },
-  ];
-
-  sections.forEach((sec, i) => {
-    const col = i % 2;
-    const row = Math.floor(i / 2);
-    const x = 0.6 + col * 6.2;
-    const y = 1.7 + row * 2.8;
-    s8.addShape(pptx.ShapeType.rect, {
-      x, y, w: 6.0, h: 2.5,
-      fill: { color: PPT_COLORS.bgPage }, line: { color: PPT_COLORS.border, width: 1 }, rectRadius: 0.15,
-    });
-    s8.addShape(pptx.ShapeType.rect, {
-      x, y, w: 6.0, h: 0.08,
-      fill: { color: sec.color }, line: { color: sec.color, width: 0 },
-    });
-    s8.addText(sec.icon, {
-      x: x + 0.3, y: y + 0.25, w: 0.6, h: 0.6, fontSize: 28,
-    });
-    s8.addText(sec.title.toUpperCase(), {
-      x: x + 1.0, y: y + 0.3, w: 4.8, h: 0.35,
-      fontSize: 13, fontFace: 'Calibri', bold: true, color: sec.color, charSpacing: 2,
-    });
-    s8.addText(sec.text, {
-      x: x + 0.3, y: y + 1.0, w: 5.5, h: 1.4,
-      fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
-    });
-  });
-  s8.addText('FinSight AI  •  by Aashni Shah', {
-    x: 0.6, y: 7.1, w: 12, h: 0.3,
-    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-  });
-
-  // SLIDE 9: STRENGTHS vs RISKS
-  const s9 = pptx.addSlide();
-  s9.background = { color: PPT_COLORS.bgCard };
-  s9.addShape(pptx.ShapeType.rect, {
-    x: 0, y: 0, w: 13.33, h: 0.15,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-  });
-  s9.addText('KEY STRENGTHS & RISKS', {
-    x: 0.6, y: 0.5, w: 12, h: 0.5,
-    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
-  });
-  s9.addText('What this company does well and what to watch carefully', {
-    x: 0.6, y: 1.0, w: 12, h: 0.3,
-    fontSize: 12, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-  });
-
-  s9.addShape(pptx.ShapeType.rect, {
-    x: 0.6, y: 1.6, w: 6.0, h: 5.3,
-    fill: { color: PPT_COLORS.greenBg }, line: { color: PPT_COLORS.green, width: 2 }, rectRadius: 0.15,
-  });
-  s9.addText('✓  KEY STRENGTHS', {
-    x: 0.9, y: 1.85, w: 5.5, h: 0.4,
-    fontSize: 16, fontFace: 'Calibri', bold: true, color: PPT_COLORS.green, charSpacing: 2,
-  });
-  (data.keyStrengths || []).slice(0, 5).forEach((s, i) => {
-    const y = 2.5 + i * 0.85;
-    s9.addShape(pptx.ShapeType.ellipse, {
-      x: 0.95, y: y + 0.05, w: 0.35, h: 0.35,
-      fill: { color: PPT_COLORS.green }, line: { color: PPT_COLORS.green, width: 0 },
-    });
-    s9.addText(`${i + 1}`, {
-      x: 0.95, y: y + 0.05, w: 0.35, h: 0.35,
-      fontSize: 11, fontFace: 'Calibri', bold: true, color: 'FFFFFF', align: 'center', valign: 'middle',
-    });
-    s9.addText(cleanText(s) || '', {
-      x: 1.45, y, w: 5.0, h: 0.8,
-      fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
-    });
-  });
-
-  s9.addShape(pptx.ShapeType.rect, {
-    x: 6.8, y: 1.6, w: 6.0, h: 5.3,
-    fill: { color: PPT_COLORS.redBg }, line: { color: PPT_COLORS.red, width: 2 }, rectRadius: 0.15,
-  });
-  s9.addText('⚠  KEY RISKS', {
-    x: 7.1, y: 1.85, w: 5.5, h: 0.4,
-    fontSize: 16, fontFace: 'Calibri', bold: true, color: PPT_COLORS.red, charSpacing: 2,
-  });
-  (data.keyRisks || []).slice(0, 5).forEach((r, i) => {
-    const y = 2.5 + i * 0.85;
-    s9.addShape(pptx.ShapeType.ellipse, {
-      x: 7.15, y: y + 0.05, w: 0.35, h: 0.35,
-      fill: { color: PPT_COLORS.red }, line: { color: PPT_COLORS.red, width: 0 },
-    });
-    s9.addText(`${i + 1}`, {
-      x: 7.15, y: y + 0.05, w: 0.35, h: 0.35,
-      fontSize: 11, fontFace: 'Calibri', bold: true, color: 'FFFFFF', align: 'center', valign: 'middle',
-    });
-    s9.addText(cleanText(r) || '', {
-      x: 7.65, y, w: 5.0, h: 0.8,
-      fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec, valign: 'top',
-    });
-  });
-  s9.addText('FinSight AI  •  by Aashni Shah', {
-    x: 0.6, y: 7.1, w: 12, h: 0.3,
-    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted,
-  });
-
-  // SLIDE 10: FINAL VERDICT
-  const s10 = pptx.addSlide();
-  s10.background = { color: PPT_COLORS.bgPage };
-  s10.addShape(pptx.ShapeType.rect, {
-    x: 0, y: 0, w: 13.33, h: 0.4,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-  });
-  const outlookColor10 = data.outlook === 'Positive' || data.outlook === 'Bullish' ? PPT_COLORS.green
-    : data.outlook === 'Caution' || data.outlook === 'Bearish' ? PPT_COLORS.red : 'A8761F';
-  const outlookBg10 = data.outlook === 'Positive' || data.outlook === 'Bullish' ? PPT_COLORS.greenBg
-    : data.outlook === 'Caution' || data.outlook === 'Bearish' ? PPT_COLORS.redBg : 'FEF7E6';
-
-  s10.addText('FINAL VERDICT', {
-    x: 0.6, y: 0.8, w: 12, h: 0.5,
-    fontSize: 22, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textPrimary, charSpacing: 2,
-  });
-  s10.addShape(pptx.ShapeType.rect, {
-    x: 0.6, y: 1.5, w: 12.1, h: 2.5,
-    fill: { color: outlookBg10 }, line: { color: outlookColor10, width: 3 }, rectRadius: 0.2,
-  });
-  s10.addText(`◎  ${(data.outlook || 'Mixed').toUpperCase()} OUTLOOK`, {
-    x: 0.6, y: 1.8, w: 12.1, h: 0.6,
-    fontSize: 28, fontFace: 'Calibri', bold: true, color: outlookColor10, align: 'center', charSpacing: 3,
-  });
-  s10.addText(cleanText(data.outlookReason) || 'Outlook reasoning not available.', {
-    x: 1.5, y: 2.6, w: 10.3, h: 1.2,
-    fontSize: 15, fontFace: 'Calibri', color: PPT_COLORS.textSec, align: 'center', valign: 'top',
-  });
-  s10.addText('REPORT INFORMATION', {
-    x: 0.6, y: 4.3, w: 12, h: 0.3,
-    fontSize: 11, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textMuted, charSpacing: 2,
-  });
-  s10.addShape(pptx.ShapeType.rect, {
-    x: 0.6, y: 4.65, w: 1.0, h: 0.03,
-    fill: { color: PPT_COLORS.accent }, line: { color: PPT_COLORS.accent, width: 0 },
-  });
-  s10.addText(`Company: ${data.company}  •  Ticker: ${data.ticker}  •  Exchange: ${data.exchange}`, {
-    x: 0.6, y: 4.8, w: 12, h: 0.3,
-    fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec,
-  });
-  s10.addText(`Data as of: ${data.dataAsOf || 'Latest available'}  •  Generated: ${today}`, {
-    x: 0.6, y: 5.1, w: 12, h: 0.3,
-    fontSize: 11, fontFace: 'Calibri', color: PPT_COLORS.textSec,
-  });
-  s10.addShape(pptx.ShapeType.rect, {
-    x: 0.6, y: 5.7, w: 12.1, h: 1.1,
-    fill: { color: PPT_COLORS.bgSidebar }, line: { color: PPT_COLORS.border, width: 1 }, rectRadius: 0.1,
-  });
-  s10.addText('DISCLAIMER', {
-    x: 0.9, y: 5.8, w: 11.5, h: 0.25,
-    fontSize: 9, fontFace: 'Calibri', bold: true, color: PPT_COLORS.textSec, charSpacing: 2,
-  });
-  s10.addText('FinSight AI provides research and educational content only. This is NOT investment advice. We are NOT a SEBI-registered Investment Advisor. Always verify information with original sources and consult a qualified financial advisor before making investment decisions.', {
-    x: 0.9, y: 6.05, w: 11.5, h: 0.7,
-    fontSize: 9, fontFace: 'Calibri', color: PPT_COLORS.textMuted, valign: 'top',
-  });
-  s10.addText('FINSIGHT AI', {
-    x: 0.6, y: 6.95, w: 12, h: 0.25,
-    fontSize: 14, fontFace: 'Calibri', bold: true, color: PPT_COLORS.accent, align: 'center', charSpacing: 4,
-  });
-  s10.addText('Financial intelligence, one company at a time  •  by Aashni Shah  •  finsightai.org', {
-    x: 0.6, y: 7.2, w: 12, h: 0.25,
-    fontSize: 10, fontFace: 'Calibri', color: PPT_COLORS.textMuted, align: 'center',
-  });
-
-  const cleanCompany = (data.company || "Company").replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
-  const cleanPeriodName = (partial.periodLabel || "Analysis").replace(/\s+/g, '');
-  const filename = `FinSight_${cleanCompany}_${cleanPeriodName}_${new Date().toISOString().split('T')[0]}.pptx`;
-  await pptx.writeFile({ fileName: filename });
-}
-
-async function generatePPTFull(data, periodLabel) {
-  const partial = await generatePPT(data, periodLabel);
-  partial.periodLabel = periodLabel;
-  await finishPPT(partial);
-}
-
-/* ═════════════════════════════════════════════════════════════
-   EXCEL EXPORT
-════════════════════════════════════════════════════════════════ */
-async function generateExcel(data, periodLabel) {
-  const XLSX = await loadSheetJS();
-  const wb = XLSX.utils.book_new();
-  const sym = data.currencySymbol || "$";
-  const cur = data.currency || "USD";
-  const today = new Date().toISOString().split('T')[0];
-  const lastIdx = (data.years?.length || 1) - 1;
-
-  const s1Data = [
-    ["FINSIGHT AI — FINANCIAL ANALYSIS REPORT"], ["by Aashni Shah"], [""],
-    ["COMPANY OVERVIEW"],
-    ["Company Name", data.company || "N/A"], ["Ticker", data.ticker || "N/A"],
-    ["Exchange", data.exchange || "N/A"], ["Market", data.market || "N/A"],
-    ["Sector", data.sector || "N/A"], ["Currency", `${cur} (${sym})`],
-    ["Analysis Period", periodLabel], ["Data As Of", data.dataAsOf || "N/A"],
-    ["Report Generated", today], [""],
-    ["DESCRIPTION"], [data.description || "N/A"], [""],
-    ["KEY METRICS (LATEST PERIOD)"], ["Metric", "Value", "Context"],
-    ["Revenue", fmtMoney(data.revenue?.[lastIdx], sym), `Period: ${data.years?.[lastIdx] || "N/A"}`],
-    ["Net Income", fmtMoney(data.netIncome?.[lastIdx], sym), data.netMargin?.[lastIdx] ? `Margin: ${Number(data.netMargin[lastIdx]).toFixed(1)}%` : ""],
-    ["EBITDA", fmtMoney(data.ebitda?.[lastIdx], sym), "Operating earnings"],
-    ["Free Cash Flow", fmtMoney(data.freeCashFlow?.[lastIdx], sym), "Cash after capex"],
-    ["EPS", data.eps?.[lastIdx] != null ? `${sym}${Number(data.eps[lastIdx]).toFixed(2)}` : "N/A", "Per share"],
-    ["Market Cap", fmtMoney(data.marketCap, sym), "Total value"],
-    ["P/E Ratio", data.peRatio ? `${Number(data.peRatio).toFixed(1)}x` : "N/A", "Current"],
-    ["Revenue CAGR", data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(1)}%` : "N/A", periodLabel],
-    [""], ["OUTLOOK"], ["Rating", data.outlook || "N/A"], ["Reasoning", data.outlookReason || "N/A"],
-  ];
-  const ws1 = XLSX.utils.aoa_to_sheet(s1Data);
-  ws1['!cols'] = [{ wch: 25 }, { wch: 35 }, { wch: 30 }];
-  XLSX.utils.book_append_sheet(wb, ws1, "Executive Summary");
-
-  const header = ["Metric", ...(data.years || [])];
-  const fmtRow = (label, arr) => { const row = [label]; (arr || []).forEach(v => row.push(v != null ? v : "N/A")); return row; };
-  const growthRow = (label, arr) => {
-    const row = [label];
-    (arr || []).forEach((v, i) => {
-      const g = calcGrowth(arr, i);
-      row.push(g != null ? `${g.toFixed(1)}%` : (i === 0 ? "Base" : "N/A"));
-    });
-    return row;
-  };
-
-  const s2Data = [
-    ["FINANCIAL PERFORMANCE"], [`${data.company || ""} | ${periodLabel} | Values in ${cur} millions`], [""],
-    ["ABSOLUTE VALUES (Millions)"], header,
-    fmtRow("Revenue", data.revenue), fmtRow("Net Income", data.netIncome),
-    fmtRow("EBITDA", data.ebitda), fmtRow("Free Cash Flow", data.freeCashFlow), [""],
-    ["GROWTH RATES (Period-over-Period)"], header,
-    growthRow("Revenue Growth", data.revenue), growthRow("Net Income Growth", data.netIncome),
-    growthRow("EBITDA Growth", data.ebitda), growthRow("FCF Growth", data.freeCashFlow), [""],
-    ["SUMMARY STATISTICS"],
-    ["Revenue CAGR", data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(2)}%` : "N/A"],
-    ["Latest Revenue", fmtMoney(data.revenue?.[lastIdx], sym)],
-    ["Latest Net Income", fmtMoney(data.netIncome?.[lastIdx], sym)],
-    ["Latest FCF", fmtMoney(data.freeCashFlow?.[lastIdx], sym)],
-  ];
-  const ws2 = XLSX.utils.aoa_to_sheet(s2Data);
-  const colWidths2 = [{ wch: 22 }];
-  (data.years || []).forEach(() => colWidths2.push({ wch: 16 }));
-  ws2['!cols'] = colWidths2;
-  XLSX.utils.book_append_sheet(wb, ws2, "Financial Performance");
-
-  const s3Data = [
-    ["PROFITABILITY & RATIOS"], [`${data.company || ""} | ${periodLabel}`], [""],
-    ["MARGINS (%)"], header,
-    fmtRow("Gross Margin", data.grossMargin), fmtRow("Net Margin", data.netMargin), [""],
-    ["EARNINGS PER SHARE"], header,
-    fmtRow(`EPS (${sym})`, data.eps), growthRow("EPS Growth", data.eps), [""],
-    ["VALUATION METRICS"],
-    ["P/E Ratio", data.peRatio ? `${Number(data.peRatio).toFixed(2)}x` : "N/A"],
-    ["Market Cap", fmtMoney(data.marketCap, sym)], [""],
-    ["COST STRUCTURE (% of Revenue)"],
-  ];
-  if (data.costStructure && data.costStructure.length) {
-    s3Data.push(["Category", ...(data.years || [])]);
-    const categories = [
-      { key: "cogsPct", label: "Cost of Goods Sold" },
-      { key: "opexPct", label: "Operating Expenses" },
-      { key: "taxPct", label: "Taxes" }, { key: "otherPct", label: "Other" },
-      { key: "netProfitPct", label: "Net Profit" },
-    ];
-    categories.forEach(cat => {
-      const row = [cat.label];
-      data.costStructure.forEach(cs => {
-        const v = cs?.[cat.key];
-        row.push(v != null ? `${Number(v).toFixed(1)}%` : "N/A");
-      });
-      s3Data.push(row);
-    });
-  }
-  const ws3 = XLSX.utils.aoa_to_sheet(s3Data);
-  const colWidths3 = [{ wch: 28 }];
-  (data.years || []).forEach(() => colWidths3.push({ wch: 16 }));
-  ws3['!cols'] = colWidths3;
-  XLSX.utils.book_append_sheet(wb, ws3, "Profitability & Ratios");
-
-  const s4Data = [["AI FINANCIAL ANALYSIS"], [`${data.company || ""} | Generated by FinSight AI`], [""]];
-  const addSection = (icon, title, paragraphs) => {
-    if (!paragraphs) return;
-    s4Data.push([`${icon} ${title.toUpperCase()}`]); s4Data.push([""]);
-    if (Array.isArray(paragraphs)) {
-      paragraphs.forEach((p, i) => { s4Data.push([`${i + 1}.`, p]); s4Data.push([""]); });
-    } else if (typeof paragraphs === "string") {
-      s4Data.push(["", paragraphs]); s4Data.push([""]);
-    }
-    s4Data.push([""]);
-  };
-  if (data.analysisRevenue || data.analysisProfitability || data.analysisCashFlow || data.analysisOutlook) {
-    addSection("📈", "Revenue & Growth Story", data.analysisRevenue);
-    addSection("💰", "Profitability Performance", data.analysisProfitability);
-    addSection("💵", "Cash Flow Analysis", data.analysisCashFlow);
-    addSection("🎯", "Competitive & Strategic Outlook", data.analysisOutlook);
-  } else if (data.analysis) {
-    s4Data.push(["DETAILED ANALYSIS"]); s4Data.push([""]);
-    String(data.analysis).split(/\n+/).filter(Boolean).forEach((p, i) => { s4Data.push([`${i + 1}.`, p]); s4Data.push([""]); });
-  }
-  const ws4 = XLSX.utils.aoa_to_sheet(s4Data);
-  ws4['!cols'] = [{ wch: 5 }, { wch: 120 }];
-  XLSX.utils.book_append_sheet(wb, ws4, "AI Analysis");
-
-  const s5Data = [["KEY INSIGHTS"], [`${data.company || ""} | ${periodLabel}`], [""], ["✓ KEY STRENGTHS"], [""]];
-  (data.keyStrengths || []).forEach((s, i) => s5Data.push([`${i + 1}.`, s]));
-  s5Data.push([""], [""], ["⚠ KEY RISKS"], [""]);
-  (data.keyRisks || []).forEach((r, i) => s5Data.push([`${i + 1}.`, r]));
-  s5Data.push([""], [""], ["◎ OUTLOOK"], [""]);
-  s5Data.push(["Rating", data.outlook || "N/A"]);
-  s5Data.push(["Reasoning", data.outlookReason || "N/A"]);
-  const ws5 = XLSX.utils.aoa_to_sheet(s5Data);
-  ws5['!cols'] = [{ wch: 12 }, { wch: 110 }];
-  XLSX.utils.book_append_sheet(wb, ws5, "Key Insights");
-
-  const s6Data = [
-    ["ABOUT THIS REPORT"], [""],
-    ["Generated By", "FinSight AI"], ["Platform Creator", "Aashni Shah"],
-    ["Website", "https://finsightai.org"], ["Report Date", today], [""],
-    ["METHODOLOGY"], [""],
-    ["This report is generated using AI-powered financial research."],
-    ["Data is sourced from publicly available official filings and reports including:"],
-    ["  • Company Investor Relations pages"], ["  • BSE/NSE filings (for Indian companies)"],
-    ["  • SEC filings (for US companies)"], ["  • Annual and quarterly reports"],
-    ["  • Earnings call transcripts"], ["  • Recent news and press releases"], [""],
-    ["ABOUT FINSIGHT AI"], [""],
-    ["FinSight AI is a source-grounded AI research copilot for public companies."],
-    ["Designed for MBA students, CA candidates, and retail investors."], [""],
-    ["DISCLAIMER"], [""],
-    ["FinSight AI provides research and educational content only."],
-    ["This is NOT investment advice."], ["We are NOT a SEBI-registered Investment Advisor."],
-    ["Always verify information with original sources."],
-    ["Consult a qualified financial advisor before making investment decisions."], [""],
-    ["© 2026 FinSight AI. Built by Aashni Shah."],
-  ];
-  const ws6 = XLSX.utils.aoa_to_sheet(s6Data);
-  ws6['!cols'] = [{ wch: 25 }, { wch: 80 }];
-  XLSX.utils.book_append_sheet(wb, ws6, "About & Sources");
-
-  const cleanCompany = (data.company || "Company").replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
-  const cleanPeriod = periodLabel.replace(/\s+/g, '');
-  const filename = `FinSight_${cleanCompany}_${cleanPeriod}_${today}.xlsx`;
-  XLSX.writeFile(wb, filename);
-}
-
-const ChartTip = ({ active, payload, label, sym = "$", isPct = false }) => {
-  if (!active || !payload?.length) return null;
-  return (
-    <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 16px", boxShadow: C.shadowMd }}>
-      <div style={{ color: C.textMuted, fontSize: 12, marginBottom: 6, fontWeight: 500 }}>{label}</div>
-      {payload.map((p, i) => (
-        <div key={i} style={{ color: p.color || p.fill, fontSize: 13, fontFamily: "'DM Mono', monospace" }}>
-          {p.name}: {isPct || p.name?.toLowerCase().includes("margin") ? `${Number(p.value).toFixed(1)}%` : fmtMoney(p.value, sym)}
-        </div>
-      ))}
-    </div>
-  );
-};
-
-const US_EX = ["Apple", "Microsoft", "Tesla", "Amazon", "Nvidia", "Meta"];
-const IN_EX = ["Reliance Industries", "Infosys", "TCS", "HDFC Bank", "Wipro", "Bajaj Finance"];
-const STEPS = ["Searching financial databases", "Fetching latest financial data", "Analyzing profitability trends", "Computing key financial ratios", "Generating AI insights", "Building your dashboard"];
-
-function buildSystemPrompt(period) {
-  const today = new Date().toISOString().split('T')[0];
-  const currentYear = new Date().getFullYear();
-  const periodInstructions = {
-    latest_quarter: `Return data for the MOST RECENT QUARTER only.\n- "years" array: Quarter labels like ["Q3 FY26"]\n- All financial arrays: 1 value each\n- Include "prevQuarter" object with previous quarter values`,
-    half_yearly: `Return data for LAST 2 QUARTERS.\n- "years" array: Quarter labels like ["Q2 FY26", "Q3 FY26"]\n- All financial arrays: 2 values each`,
-    "1_year": `Return data for LAST 4 QUARTERS.\n- "years" array: ["Q4 FY25", "Q1 FY26", "Q2 FY26", "Q3 FY26"]\n- All financial arrays: 4 values each`,
-    "2_year": `Return data for LAST 2 FISCAL YEARS.\n- "years" array: ["FY25", "FY26"]\n- All financial arrays: 2 values each`,
-    "3_year": `Return data for LAST 3 FISCAL YEARS.\n- "years" array: ["FY24", "FY25", "FY26"]\n- All financial arrays: 3 values each`,
-    "5_year": `Return data for LAST 5 FISCAL YEARS.\n- "years" array: ["FY22", "FY23", "FY24", "FY25", "FY26"]\n- All financial arrays: 5 values each`,
-  };
-
-  return `You are FinSight AI, a financial research assistant for public companies. Today's date is ${today}.
-
-CRITICAL: Retrieve MOST RECENT data. Indian: FY26 = April 2025 to March 2026. US: calendar year quarters (${currentYear}).
-
-ANALYSIS PERIOD: ${period.toUpperCase()}
-${periodInstructions[period] || periodInstructions["1_year"]}
-
-OUTPUT: Return ONLY raw JSON. No markdown. No <cite> tags. Clean plain English.
-
-Return this structure (monetary values in MILLIONS, percentages as numbers like 23.5):
 {
-  "company": "Full Name", "ticker": "SYMBOL", "market": "US or India", "exchange": "NSE/NYSE etc",
-  "currency": "USD or INR", "currencySymbol": "$ or ₹", "sector": "sector",
-  "description": "2 sentences about what the company does",
-  "periodType": "${period}", "dataAsOf": "YYYY-MM-DD",
-  "years": [label, label, ...],
-  "revenue": [n, ...], "netIncome": [n, ...], "ebitda": [n, ...], "freeCashFlow": [n, ...],
-  "grossMargin": [n, ...], "netMargin": [n, ...], "eps": [n, ...],
-  "costStructure": [{ "cogsPct": n, "opexPct": n, "taxPct": n, "netProfitPct": n, "otherPct": n }],
-  "marketCap": number, "peRatio": number, "revenueCAGR": number,
-  ${period === "latest_quarter" ? '"prevQuarter": {"revenue": n, "netIncome": n, "ebitda": n, "freeCashFlow": n, "grossMargin": n, "netMargin": n, "label": "Q2 FY26"},' : ''}
-  "analysisRevenue": ["Para 1 (2-3 sentences, specific numbers, NO citation tags)", "Para 2", "Para 3"],
-  "analysisProfitability": ["Para 1", "Para 2", "Para 3"],
-  "analysisCashFlow": ["Para 1", "Para 2", "Para 3"],
-  "analysisOutlook": ["Para 1", "Para 2", "Para 3"],
-  "analysis": "Combined 2-3 paragraph summary",
-  "keyStrengths": ["strength 1", "strength 2", "strength 3"],
-  "keyRisks": ["risk 1", "risk 2", "risk 3"],
-  "outlook": "Positive or Mixed or Caution", "outlookReason": "One concise sentence"
+  "companyInfo": {
+    "name": "extracted name or NA",
+    "cin": "if mentioned",
+    "pan": "if mentioned",
+    "address": "if mentioned",
+    "industry": "if mentioned",
+    "incorporationDate": "if mentioned",
+    "reportingPeriod": "extract the period covered",
+    "currency": "INR or USD or extract",
+    "rounding": "Lakhs/Crores/Millions/etc - extract or default to 'Lakhs'",
+    "businessNature": "1-2 sentence factual description from document",
+    "description": "Brief description if available in document"
+  },
+  "balanceSheet": {
+    "available": true/false,
+    "asOfDates": ["31/03/2025", "31/03/2024"],
+    "equity": {
+      "shareCapital": [val1, val2],
+      "reservesAndSurplus": [val1, val2],
+      "totalEquity": [val1, val2]
+    },
+    "nonCurrentLiabilities": {
+      "longTermBorrowings": [val1, val2],
+      "deferredTaxLiabilities": [val1, val2],
+      "otherNonCurrentLiabilities": [val1, val2],
+      "totalNonCurrent": [val1, val2]
+    },
+    "currentLiabilities": {
+      "shortTermBorrowings": [val1, val2],
+      "tradePayables": [val1, val2],
+      "otherCurrentLiabilities": [val1, val2],
+      "shortTermProvisions": [val1, val2],
+      "totalCurrent": [val1, val2]
+    },
+    "totalEquityLiabilities": [val1, val2],
+    "nonCurrentAssets": {
+      "propertyPlantEquipment": [val1, val2],
+      "intangibleAssets": [val1, val2],
+      "investments": [val1, val2],
+      "otherNonCurrentAssets": [val1, val2],
+      "totalNonCurrentAssets": [val1, val2]
+    },
+    "currentAssets": {
+      "inventories": [val1, val2],
+      "tradeReceivables": [val1, val2],
+      "cashAndEquivalents": [val1, val2],
+      "shortTermLoansAndAdvances": [val1, val2],
+      "otherCurrentAssets": [val1, val2],
+      "totalCurrentAssets": [val1, val2]
+    },
+    "totalAssets": [val1, val2]
+  },
+  "profitAndLoss": {
+    "available": true/false,
+    "periods": ["FY24-25", "FY23-24"],
+    "revenue": {
+      "revenueFromOperations": [val1, val2],
+      "otherIncome": [val1, val2],
+      "totalRevenue": [val1, val2]
+    },
+    "expenses": {
+      "costOfMaterials": [val1, val2],
+      "purchaseOfStockInTrade": [val1, val2],
+      "changesInInventories": [val1, val2],
+      "employeeBenefits": [val1, val2],
+      "financeCosts": [val1, val2],
+      "depreciation": [val1, val2],
+      "otherExpenses": [val1, val2],
+      "totalExpenses": [val1, val2]
+    },
+    "profitBeforeTax": [val1, val2],
+    "taxExpense": [val1, val2],
+    "profitForPeriod": [val1, val2],
+    "earningsPerShare": {
+      "basic": [val1, val2],
+      "diluted": [val1, val2]
+    }
+  },
+  "cashFlow": {
+    "available": true/false,
+    "periods": ["FY24-25", "FY23-24"],
+    "operating": {
+      "profitBeforeTax": [val1, val2],
+      "adjustments": [val1, val2],
+      "workingCapitalChanges": [val1, val2],
+      "taxesPaid": [val1, val2],
+      "netCashFromOperating": [val1, val2]
+    },
+    "investing": {
+      "purchaseOfFixedAssets": [val1, val2],
+      "saleOfFixedAssets": [val1, val2],
+      "investmentsMade": [val1, val2],
+      "interestReceived": [val1, val2],
+      "netCashFromInvesting": [val1, val2]
+    },
+    "financing": {
+      "proceedsFromBorrowings": [val1, val2],
+      "repaymentOfBorrowings": [val1, val2],
+      "interestPaid": [val1, val2],
+      "dividendPaid": [val1, val2],
+      "netCashFromFinancing": [val1, val2]
+    },
+    "netChangeInCash": [val1, val2],
+    "openingCash": [val1, val2],
+    "closingCash": [val1, val2]
+  },
+  "ratios": {
+    "calculated": true/false,
+    "profitability": {
+      "grossMargin": "X% or NA",
+      "operatingMargin": "X% or NA",
+      "netMargin": "X% or NA",
+      "returnOnEquity": "X% or NA",
+      "returnOnAssets": "X% or NA"
+    },
+    "liquidity": {
+      "currentRatio": "X.XX or NA",
+      "quickRatio": "X.XX or NA",
+      "cashRatio": "X.XX or NA"
+    },
+    "leverage": {
+      "debtToEquity": "X.XX or NA",
+      "interestCoverage": "X.XX or NA",
+      "debtToAssets": "X.XX or NA"
+    },
+    "efficiency": {
+      "assetTurnover": "X.XX or NA",
+      "inventoryTurnover": "X.XX or NA",
+      "receivablesDays": "X days or NA"
+    }
+  },
+  "otherNotes": [
+    {
+      "noteNumber": "1",
+      "title": "Note title",
+      "content": "Note content as in document"
+    }
+  ],
+  "extractionNotes": {
+    "sectionsFound": ["balance_sheet", "profit_loss", "cash_flow", "notes"],
+    "sectionsMissing": ["list of expected sections not in document"],
+    "dataQuality": "High/Medium/Low - based on completeness"
+  }
 }
 
-CRITICAL: NO <cite> tags. Clean text only. All arrays must match years length. Percentages as numbers.`;
+REMEMBER:
+- ONLY use data from the document
+- Mark missing values as null or "NA"
+- Set "available: false" if entire section is missing
+- Calculate ratios ONLY when both required values exist
+- Return clean JSON with no markdown, no explanations`;
 }
 
-const FinSightLogo = ({ size = 32 }) => (
-  <svg width={size} height={size} viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <linearGradient id="fs-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stopColor="#E48164"/><stop offset="100%" stopColor="#B85A3A"/>
-      </linearGradient>
-    </defs>
-    <rect width="40" height="40" rx="10" fill="url(#fs-grad)"/>
-    <path d="M9 28 L16 22 L23 25 L31 13" stroke="white" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-    <circle cx="9" cy="28" r="1.8" fill="white"/><circle cx="16" cy="22" r="1.8" fill="white"/>
-    <circle cx="23" cy="25" r="1.8" fill="white"/><circle cx="31" cy="13" r="4.5" fill="white" fillOpacity=".22"/>
-    <circle cx="31" cy="13" r="2.4" fill="white"/>
-  </svg>
-);
+async function generatePrivateCompanyDoc(data, originalFileName) {
+  const docx = await loadDocx();
+  const {
+    Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+    BorderStyle, AlignmentType, WidthType, PageNumber, Header, Footer, ShadingType
+  } = docx;
 
-const Spinner = () => <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${C.accentLight}`, borderTopColor: C.accent, animation: "fs-spin .8s linear infinite" }} />;
+  const BLACK = "000000";
 
-const MetricCard = ({ label, value, sub, accent }) => (
-  <div className="fs-card fs-metric" style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 12px", boxShadow: C.shadow, transition: "all .2s", minWidth: 0 }}>
-    <div style={{ color: C.textMuted, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".6px", marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
-    <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 16, fontWeight: 500, color: accent || C.textPrimary, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
-    <div style={{ color: C.textMuted, fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>
-  </div>
-);
+  const cellBorder = {
+    top: { style: BorderStyle.SINGLE, size: 4, color: BLACK },
+    bottom: { style: BorderStyle.SINGLE, size: 4, color: BLACK },
+    left: { style: BorderStyle.SINGLE, size: 4, color: BLACK },
+    right: { style: BorderStyle.SINGLE, size: 4, color: BLACK },
+  };
 
-const Byline = () => <span style={{ color: C.textMuted, fontSize: 11.5, letterSpacing: ".3px" }}>by <span style={{ fontWeight: 600, color: C.accent }}>Aashni Shah</span></span>;
+  const text = (str, opts = {}) => new TextRun({
+    text: String(str || ""),
+    font: opts.font || "Arial",
+    size: opts.size || 18,
+    bold: opts.bold || false,
+    italics: opts.italics || false,
+    color: opts.color || BLACK,
+    ...opts
+  });
 
-function ChartFrame({ icon, title, subtitle, children, quickRead, quickReadColor }) {
-  return (
-    <div className="fs-chart-card" style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 22, boxShadow: C.shadow, display: "flex", flexDirection: "column", gap: 14 }}>
-      <div>
-        <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, color: C.textPrimary, display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-          <span style={{ fontSize: 18 }}>{icon}</span><span>{title}</span>
-        </div>
-        <div style={{ color: C.textMuted, fontSize: 12, lineHeight: 1.5 }}>{subtitle}</div>
-      </div>
-      <div style={{ flex: 1 }}>{children}</div>
-      {quickRead && (
-        <div style={{ background: quickReadColor || C.accentLight, borderLeft: `3px solid ${quickReadColor ? C.green : C.accent}`, borderRadius: 6, padding: "10px 14px", fontSize: 12.5, lineHeight: 1.6, color: C.textSec }}>
-          <span style={{ color: quickReadColor ? C.green : C.accent, fontWeight: 700, fontSize: 10, textTransform: "uppercase", letterSpacing: ".8px", display: "block", marginBottom: 3 }}>💡 Quick Read</span>
-          {quickRead}
-        </div>
-      )}
-    </div>
+  const para = (children, opts = {}) => new Paragraph({
+    children: Array.isArray(children) ? children : [children],
+    alignment: opts.align || AlignmentType.LEFT,
+    spacing: opts.spacing || { before: 100, after: 100 },
+    ...opts
+  });
+
+  const cell = (children, opts = {}) => new TableCell({
+    children: Array.isArray(children) ? children : [children],
+    borders: cellBorder,
+    width: opts.width,
+    shading: opts.shading,
+    verticalAlign: "center",
+    ...opts
+  });
+
+  const numCell = (value, opts = {}) => cell(
+    para(text(value != null && value !== "NA" ? formatNumber(value) : "—", { font: "Arial", size: 18, ...(opts.textOpts || {}) }), { align: AlignmentType.RIGHT }),
+    opts
   );
-}
 
-function GrowthQualityChart({ data, sym }) {
-  const hasData = data.revenue?.some(v => v != null);
-  if (!hasData) return null;
-  const chartData = data.years.map((y, i) => ({ year: String(y), Revenue: data.revenue?.[i], "Gross Margin": data.grossMargin?.[i], "Net Margin": data.netMargin?.[i] }));
-  const axisStyle = { fontSize: 11, fill: C.textMuted };
-  const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
-  const dataLen = chartData.length;
-  const firstMargin = data.netMargin?.[0], lastMargin = data.netMargin?.[dataLen - 1];
-  const marginTrend = lastMargin != null && firstMargin != null ? lastMargin - firstMargin : null;
-  const revenueTrend = calcGrowth(data.revenue, dataLen - 1);
-  let quickRead, quickColor;
-  if (dataLen === 1) quickRead = `Revenue ${fmtMoney(data.revenue[0], sym)} with net margin of ${data.netMargin?.[0]?.toFixed(1) || "N/A"}%.`;
-  else if (marginTrend != null && revenueTrend != null) {
-    if (revenueTrend > 0 && marginTrend >= -0.5) { quickRead = "Revenue is growing AND margins are stable/expanding — this is high-quality growth."; quickColor = C.greenBg; }
-    else if (revenueTrend > 0 && marginTrend < -0.5) quickRead = "Revenue growing BUT margins shrinking — growth may be coming at the cost of profitability.";
-    else if (revenueTrend < 0) quickRead = "Revenue declining. Check if margins are holding.";
-    else quickRead = "Stable performance. Look at both revenue trajectory and margins.";
-  } else quickRead = "Compare revenue bars with margin lines. Both rising = quality growth.";
-
-  return (
-    <ChartFrame icon="📊" title="Growth Quality" subtitle="Revenue (bars) plotted against profit margins (lines). The best companies grow revenue WHILE maintaining or improving margins." quickRead={quickRead} quickReadColor={quickColor}>
-      <ResponsiveContainer width="100%" height={260}>
-        <ComposedChart data={chartData} margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
-          <defs><linearGradient id="gqBar" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartA} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartA} stopOpacity={.45}/></linearGradient></defs>
-          <CartesianGrid {...gridStyle} />
-          <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-          <YAxis yAxisId="left" tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={44} />
-          <YAxis yAxisId="right" orientation="right" tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} width={40} />
-          <Tooltip content={<ChartTip sym={sym} />} />
-          <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }} />
-          <Bar yAxisId="left" dataKey="Revenue" fill="url(#gqBar)" radius={[6, 6, 0, 0]} barSize={dataLen <= 2 ? 60 : dataLen <= 4 ? 40 : 28} />
-          <Line yAxisId="right" type="monotone" dataKey="Gross Margin" stroke={C.chartC} strokeWidth={2.6} dot={{ fill: C.chartC, r: 4, strokeWidth: 2, stroke: "#fff" }} />
-          <Line yAxisId="right" type="monotone" dataKey="Net Margin" stroke={C.chartD} strokeWidth={2.6} dot={{ fill: C.chartD, r: 4, strokeWidth: 2, stroke: "#fff" }} />
-        </ComposedChart>
-      </ResponsiveContainer>
-    </ChartFrame>
+  const labelCell = (label, opts = {}) => cell(
+    para(text(label, { font: "Arial", size: 18, ...(opts.textOpts || {}) }), { align: AlignmentType.LEFT }),
+    opts
   );
-}
 
-function CashQualityChart({ data, sym }) {
-  const hasData = data.netIncome?.some(v => v != null) && data.freeCashFlow?.some(v => v != null);
-  if (!hasData) return null;
-  const chartData = data.years.map((y, i) => ({ year: String(y), "Net Income": data.netIncome?.[i], "Free Cash Flow": data.freeCashFlow?.[i] }));
-  const axisStyle = { fontSize: 11, fill: C.textMuted };
-  const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
-  const dataLen = chartData.length;
-  const latestNI = data.netIncome?.[dataLen - 1], latestFCF = data.freeCashFlow?.[dataLen - 1];
-  let quickRead, quickColor;
-  if (latestNI != null && latestFCF != null && latestNI !== 0) {
-    const ratio = latestFCF / latestNI;
-    if (ratio >= 0.9) { quickRead = "Free Cash Flow matches Net Income — profits converting to real cash."; quickColor = C.greenBg; }
-    else if (ratio >= 0.6) quickRead = "Cash flow moderately lower than reported profits. Monitor the gap.";
-    else if (ratio >= 0.3) quickRead = "Significant gap between profits and cash. Investigate cause.";
-    else { quickRead = "Cash flow much lower than profits. Potential red flag."; quickColor = C.redBg; }
-  } else quickRead = "If cash flow bars are similar to net income bars, profits are real cash.";
-
-  return (
-    <ChartFrame icon="💰" title="Cash Quality Check" subtitle="Compares reported profits (Net Income) with actual cash generated (Free Cash Flow). Matching = real profits." quickRead={quickRead} quickReadColor={quickColor}>
-      <ResponsiveContainer width="100%" height={260}>
-        <BarChart data={chartData} barGap={6} margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
-          <defs>
-            <linearGradient id="cqNI" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartB} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartB} stopOpacity={.5}/></linearGradient>
-            <linearGradient id="cqFCF" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartC} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartC} stopOpacity={.5}/></linearGradient>
-          </defs>
-          <CartesianGrid {...gridStyle} />
-          <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-          <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => fmtMoney(v, "")} width={44} />
-          <Tooltip content={<ChartTip sym={sym} />} />
-          <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }} />
-          <Bar dataKey="Net Income" fill="url(#cqNI)" radius={[6, 6, 0, 0]} barSize={dataLen <= 2 ? 55 : 35}>
-            {dataLen <= 4 && <LabelList dataKey="Net Income" position="top" formatter={(v) => fmtMoney(v, "")} style={{ fill: C.chartB, fontSize: 10, fontWeight: 600 }} />}
-          </Bar>
-          <Bar dataKey="Free Cash Flow" fill="url(#cqFCF)" radius={[6, 6, 0, 0]} barSize={dataLen <= 2 ? 55 : 35}>
-            {dataLen <= 4 && <LabelList dataKey="Free Cash Flow" position="top" formatter={(v) => fmtMoney(v, "")} style={{ fill: C.chartC, fontSize: 10, fontWeight: 600 }} />}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-    </ChartFrame>
+  const sectionHeader = (number, title) => para(
+    [text(`[${number}] ${title}`, { font: "Times New Roman", size: 24, bold: true, color: BLACK })],
+    { align: AlignmentType.CENTER, spacing: { before: 400, after: 200 } }
   );
-}
 
-function ProfitStructureChart({ data, sym }) {
-  const cs = data.costStructure;
-  if (!cs || !cs.length || !cs.some(c => c && c.cogsPct != null)) return null;
-  const dataLen = data.years.length;
-  const COLORS = { cogs: C.chartF, opex: C.chartD, tax: C.chartE, netProfit: C.chartB, other: C.textMuted };
+  const disclaimer = (curr) => para(
+    [text(`Unless otherwise specified, all monetary values are in ${curr || "Lakhs"} of INR`, {
+      font: "Times New Roman", size: 18, italics: true
+    })],
+    { align: AlignmentType.RIGHT, spacing: { before: 100, after: 200 } }
+  );
 
-  if (dataLen === 1) {
-    const c = cs[0];
-    const pieData = [
-      { name: "Cost of Goods", value: c.cogsPct || 0, fill: COLORS.cogs },
-      { name: "Operating Expenses", value: c.opexPct || 0, fill: COLORS.opex },
-      { name: "Taxes", value: c.taxPct || 0, fill: COLORS.tax },
-      { name: "Net Profit", value: c.netProfitPct || 0, fill: COLORS.netProfit },
-    ].filter(d => d.value > 0);
-    if (c.otherPct > 0) pieData.push({ name: "Other", value: c.otherPct, fill: COLORS.other });
-    const netProfitPct = c.netProfitPct || 0;
-    let quickRead, quickColor;
-    if (netProfitPct >= 20) { quickRead = `Very strong profitability — ${netProfitPct.toFixed(1)}% net profit.`; quickColor = C.greenBg; }
-    else if (netProfitPct >= 10) { quickRead = `Healthy profit margin of ${netProfitPct.toFixed(1)}%.`; quickColor = C.greenBg; }
-    else if (netProfitPct >= 5) quickRead = `Modest profit margin of ${netProfitPct.toFixed(1)}%.`;
-    else quickRead = `Thin profit margin of ${netProfitPct.toFixed(1)}%.`;
-
-    return (
-      <ChartFrame icon="🥧" title="Profit Structure" subtitle={`Where every ${sym}100 of revenue goes (${data.years[0]}).`} quickRead={quickRead} quickReadColor={quickColor}>
-        <ResponsiveContainer width="100%" height={280}>
-          <PieChart>
-            <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} label={({ value }) => `${value.toFixed(1)}%`} labelLine={false} style={{ fontSize: 11, fontWeight: 600 }}>
-              {pieData.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
-            </Pie>
-            <Tooltip content={<ChartTip isPct />} />
-            <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }} />
-          </PieChart>
-        </ResponsiveContainer>
-      </ChartFrame>
-    );
+  function formatNumber(val) {
+    if (val == null || val === "NA" || val === "") return "—";
+    if (typeof val === 'string' && isNaN(parseFloat(val))) return val;
+    const num = parseFloat(val);
+    if (isNaN(num)) return val;
+    return num.toLocaleString('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
   }
 
-  const chartData = data.years.map((y, i) => {
-    const c = cs[i] || {};
-    return { year: String(y), "Cost of Goods": c.cogsPct || 0, "Operating Exp": c.opexPct || 0, "Taxes": c.taxPct || 0, "Net Profit": c.netProfitPct || 0, "Other": c.otherPct || 0 };
+  const ci = data.companyInfo || {};
+  const bs = data.balanceSheet || {};
+  const pl = data.profitAndLoss || {};
+  const cf = data.cashFlow || {};
+  const ratios = data.ratios || {};
+  const notes = data.otherNotes || [];
+
+  const allSections = [];
+
+  allSections.push(para(
+    [text(ci.name || "PRIVATE COMPANY", {
+      font: "Times New Roman", size: 28, bold: true
+    })],
+    { align: AlignmentType.CENTER, spacing: { before: 200, after: 100 } }
+  ));
+
+  allSections.push(para(
+    [text(`Standalone Financial Statements for period ${ci.reportingPeriod || ""}`, {
+      font: "Times New Roman", size: 22
+    })],
+    { align: AlignmentType.CENTER, spacing: { before: 100, after: 400 } }
+  ));
+
+  allSections.push(sectionHeader("400100", "Disclosure of general information about company"));
+  allSections.push(disclaimer(ci.rounding));
+
+  const infoRows = [
+    ["Name of company", ci.name],
+    ["Corporate identity number", ci.cin],
+    ["Permanent account number of entity", ci.pan],
+    ["Address of registered office of company", ci.address],
+    ["Type of industry", ci.industry],
+    ["Date of incorporation", ci.incorporationDate],
+    ["Period covered by financial statements", ci.reportingPeriod],
+    ["Description of presentation currency", ci.currency || "INR"],
+    ["Level of rounding used in financial statements", ci.rounding || "Lakhs"],
+    ["Nature of report", "Standalone"],
+    ["Content of report", "Financial Statements"],
+  ];
+
+  if (ci.businessNature) {
+    infoRows.push(["Description of nature of business", ci.businessNature]);
+  }
+
+  const infoTable = new Table({
+    rows: infoRows.map(([label, value]) => new TableRow({
+      children: [
+        cell(para(text(label, { font: "Arial", size: 18 }))),
+        cell(para(text(value || "NA", { font: "Arial", size: 18 }))),
+      ]
+    })),
+    width: { size: 100, type: WidthType.PERCENTAGE },
   });
-  const axisStyle = { fontSize: 11, fill: C.textMuted };
-  const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
-  const latestProfit = cs[cs.length - 1]?.netProfitPct, firstProfit = cs[0]?.netProfitPct;
-  let quickRead, quickColor;
-  if (latestProfit != null && firstProfit != null) {
-    const delta = latestProfit - firstProfit;
-    if (delta > 1) { quickRead = `Net profit grew from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}% — margin expansion.`; quickColor = C.greenBg; }
-    else if (delta < -1) { quickRead = `Net profit shrank from ${firstProfit.toFixed(1)}% to ${latestProfit.toFixed(1)}%.`; quickColor = C.redBg; }
-    else quickRead = `Profit share stable around ${latestProfit.toFixed(1)}%.`;
-  } else quickRead = "Green slice growing = improving efficiency.";
+  allSections.push(infoTable);
 
-  return (
-    <ChartFrame icon="📊" title="Profit Structure Trend" subtitle="How 100% of revenue splits across costs, taxes, and profit over time." quickRead={quickRead} quickReadColor={quickColor}>
-      <ResponsiveContainer width="100%" height={280}>
-        <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
-          <CartesianGrid {...gridStyle} />
-          <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-          <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${v}%`} width={40} domain={[0, 100]} />
-          <Tooltip content={<ChartTip isPct />} />
-          <Legend wrapperStyle={{ fontSize: 11.5, color: C.textSec, paddingTop: 8 }} iconType="circle" />
-          <Bar dataKey="Cost of Goods" stackId="a" fill={COLORS.cogs} />
-          <Bar dataKey="Operating Exp" stackId="a" fill={COLORS.opex} />
-          <Bar dataKey="Taxes" stackId="a" fill={COLORS.tax} />
-          <Bar dataKey="Other" stackId="a" fill={COLORS.other} />
-          <Bar dataKey="Net Profit" stackId="a" fill={COLORS.netProfit} radius={[6, 6, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    </ChartFrame>
+  if (bs.available) {
+    allSections.push(sectionHeader("400200", "Balance Sheet"));
+    allSections.push(disclaimer(ci.rounding));
+
+    const dates = bs.asOfDates || ["Current Year", "Previous Year"];
+
+    const bsRows = [
+      new TableRow({
+        tableHeader: true,
+        children: [
+          cell(para(text("Particulars", { font: "Arial", size: 18, bold: true })),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+          cell(para(text(`As at ${dates[0] || ""}`, { font: "Arial", size: 18, bold: true }), { align: AlignmentType.CENTER }),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+          cell(para(text(`As at ${dates[1] || ""}`, { font: "Arial", size: 18, bold: true }), { align: AlignmentType.CENTER }),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+        ]
+      }),
+    ];
+
+    bsRows.push(new TableRow({ children: [
+      cell(para(text("EQUITY AND LIABILITIES", { font: "Arial", size: 18, bold: true })),
+           { shading: { type: ShadingType.SOLID, color: "FAFAFA" } }),
+      cell(para(text(""))),
+      cell(para(text(""))),
+    ]}));
+
+    if (bs.equity) {
+      bsRows.push(new TableRow({ children: [
+        labelCell("Shareholders' Funds", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Share Capital"),
+        numCell(bs.equity.shareCapital?.[0]),
+        numCell(bs.equity.shareCapital?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Reserves and Surplus"),
+        numCell(bs.equity.reservesAndSurplus?.[0]),
+        numCell(bs.equity.reservesAndSurplus?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Total Equity", { textOpts: { bold: true } }),
+        numCell(bs.equity.totalEquity?.[0], { textOpts: { bold: true } }),
+        numCell(bs.equity.totalEquity?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    if (bs.nonCurrentLiabilities) {
+      bsRows.push(new TableRow({ children: [
+        labelCell("Non-Current Liabilities", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Long-term Borrowings"),
+        numCell(bs.nonCurrentLiabilities.longTermBorrowings?.[0]),
+        numCell(bs.nonCurrentLiabilities.longTermBorrowings?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Deferred Tax Liabilities"),
+        numCell(bs.nonCurrentLiabilities.deferredTaxLiabilities?.[0]),
+        numCell(bs.nonCurrentLiabilities.deferredTaxLiabilities?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Other Non-Current Liabilities"),
+        numCell(bs.nonCurrentLiabilities.otherNonCurrentLiabilities?.[0]),
+        numCell(bs.nonCurrentLiabilities.otherNonCurrentLiabilities?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Total Non-Current Liabilities", { textOpts: { bold: true } }),
+        numCell(bs.nonCurrentLiabilities.totalNonCurrent?.[0], { textOpts: { bold: true } }),
+        numCell(bs.nonCurrentLiabilities.totalNonCurrent?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    if (bs.currentLiabilities) {
+      bsRows.push(new TableRow({ children: [
+        labelCell("Current Liabilities", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Short-term Borrowings"),
+        numCell(bs.currentLiabilities.shortTermBorrowings?.[0]),
+        numCell(bs.currentLiabilities.shortTermBorrowings?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Trade Payables"),
+        numCell(bs.currentLiabilities.tradePayables?.[0]),
+        numCell(bs.currentLiabilities.tradePayables?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Other Current Liabilities"),
+        numCell(bs.currentLiabilities.otherCurrentLiabilities?.[0]),
+        numCell(bs.currentLiabilities.otherCurrentLiabilities?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Short-term Provisions"),
+        numCell(bs.currentLiabilities.shortTermProvisions?.[0]),
+        numCell(bs.currentLiabilities.shortTermProvisions?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Total Current Liabilities", { textOpts: { bold: true } }),
+        numCell(bs.currentLiabilities.totalCurrent?.[0], { textOpts: { bold: true } }),
+        numCell(bs.currentLiabilities.totalCurrent?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    bsRows.push(new TableRow({ children: [
+      labelCell("TOTAL EQUITY AND LIABILITIES", { textOpts: { bold: true } }),
+      numCell(bs.totalEquityLiabilities?.[0], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "F5F5F5" } }),
+      numCell(bs.totalEquityLiabilities?.[1], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "F5F5F5" } }),
+    ]}));
+
+    bsRows.push(new TableRow({ children: [
+      cell(para(text("ASSETS", { font: "Arial", size: 18, bold: true })),
+           { shading: { type: ShadingType.SOLID, color: "FAFAFA" } }),
+      cell(para(text(""))), cell(para(text(""))),
+    ]}));
+
+    if (bs.nonCurrentAssets) {
+      bsRows.push(new TableRow({ children: [
+        labelCell("Non-Current Assets", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Property, Plant and Equipment"),
+        numCell(bs.nonCurrentAssets.propertyPlantEquipment?.[0]),
+        numCell(bs.nonCurrentAssets.propertyPlantEquipment?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Intangible Assets"),
+        numCell(bs.nonCurrentAssets.intangibleAssets?.[0]),
+        numCell(bs.nonCurrentAssets.intangibleAssets?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Investments"),
+        numCell(bs.nonCurrentAssets.investments?.[0]),
+        numCell(bs.nonCurrentAssets.investments?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Other Non-Current Assets"),
+        numCell(bs.nonCurrentAssets.otherNonCurrentAssets?.[0]),
+        numCell(bs.nonCurrentAssets.otherNonCurrentAssets?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Total Non-Current Assets", { textOpts: { bold: true } }),
+        numCell(bs.nonCurrentAssets.totalNonCurrentAssets?.[0], { textOpts: { bold: true } }),
+        numCell(bs.nonCurrentAssets.totalNonCurrentAssets?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    if (bs.currentAssets) {
+      bsRows.push(new TableRow({ children: [
+        labelCell("Current Assets", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Inventories"),
+        numCell(bs.currentAssets.inventories?.[0]),
+        numCell(bs.currentAssets.inventories?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Trade Receivables"),
+        numCell(bs.currentAssets.tradeReceivables?.[0]),
+        numCell(bs.currentAssets.tradeReceivables?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Cash and Cash Equivalents"),
+        numCell(bs.currentAssets.cashAndEquivalents?.[0]),
+        numCell(bs.currentAssets.cashAndEquivalents?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Short-term Loans and Advances"),
+        numCell(bs.currentAssets.shortTermLoansAndAdvances?.[0]),
+        numCell(bs.currentAssets.shortTermLoansAndAdvances?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Other Current Assets"),
+        numCell(bs.currentAssets.otherCurrentAssets?.[0]),
+        numCell(bs.currentAssets.otherCurrentAssets?.[1]),
+      ]}));
+      bsRows.push(new TableRow({ children: [
+        labelCell("    Total Current Assets", { textOpts: { bold: true } }),
+        numCell(bs.currentAssets.totalCurrentAssets?.[0], { textOpts: { bold: true } }),
+        numCell(bs.currentAssets.totalCurrentAssets?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    bsRows.push(new TableRow({ children: [
+      labelCell("TOTAL ASSETS", { textOpts: { bold: true } }),
+      numCell(bs.totalAssets?.[0], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "F5F5F5" } }),
+      numCell(bs.totalAssets?.[1], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "F5F5F5" } }),
+    ]}));
+
+    const bsTable = new Table({
+      rows: bsRows,
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      columnWidths: [4500, 1500, 1500]
+    });
+    allSections.push(bsTable);
+  }
+
+  return { docx, data, originalFileName, allSections, ci, pl, cf, ratios, notes };
+}
+async function finalizePrivateCompanyDoc(partial) {
+  const { docx, data, originalFileName, allSections, ci, pl, cf, ratios, notes } = partial;
+  const {
+    Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+    BorderStyle, AlignmentType, WidthType, PageNumber, Header, Footer, ShadingType
+  } = docx;
+
+  const BLACK = "000000";
+
+  const cellBorder = {
+    top: { style: BorderStyle.SINGLE, size: 4, color: BLACK },
+    bottom: { style: BorderStyle.SINGLE, size: 4, color: BLACK },
+    left: { style: BorderStyle.SINGLE, size: 4, color: BLACK },
+    right: { style: BorderStyle.SINGLE, size: 4, color: BLACK },
+  };
+
+  const text = (str, opts = {}) => new TextRun({
+    text: String(str || ""),
+    font: opts.font || "Arial",
+    size: opts.size || 18,
+    bold: opts.bold || false,
+    italics: opts.italics || false,
+    color: opts.color || BLACK,
+    ...opts
+  });
+
+  const para = (children, opts = {}) => new Paragraph({
+    children: Array.isArray(children) ? children : [children],
+    alignment: opts.align || AlignmentType.LEFT,
+    spacing: opts.spacing || { before: 100, after: 100 },
+    ...opts
+  });
+
+  const cell = (children, opts = {}) => new TableCell({
+    children: Array.isArray(children) ? children : [children],
+    borders: cellBorder,
+    width: opts.width,
+    shading: opts.shading,
+    verticalAlign: "center",
+    ...opts
+  });
+
+  const numCell = (value, opts = {}) => cell(
+    para(text(value != null && value !== "NA" ? formatNumber(value) : "—", { font: "Arial", size: 18, ...(opts.textOpts || {}) }), { align: AlignmentType.RIGHT }),
+    opts
   );
+
+  const labelCell = (label, opts = {}) => cell(
+    para(text(label, { font: "Arial", size: 18, ...(opts.textOpts || {}) }), { align: AlignmentType.LEFT }),
+    opts
+  );
+
+  const sectionHeader = (number, title) => para(
+    [text(`[${number}] ${title}`, { font: "Times New Roman", size: 24, bold: true })],
+    { align: AlignmentType.CENTER, spacing: { before: 400, after: 200 } }
+  );
+
+  const disclaimer = (curr) => para(
+    [text(`Unless otherwise specified, all monetary values are in ${curr || "Lakhs"} of INR`, {
+      font: "Times New Roman", size: 18, italics: true
+    })],
+    { align: AlignmentType.RIGHT, spacing: { before: 100, after: 200 } }
+  );
+
+  function formatNumber(val) {
+    if (val == null || val === "NA" || val === "") return "—";
+    if (typeof val === 'string' && isNaN(parseFloat(val))) return val;
+    const num = parseFloat(val);
+    if (isNaN(num)) return val;
+    return num.toLocaleString('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
+  }
+
+  if (pl.available) {
+    allSections.push(sectionHeader("400300", "Profit and Loss Statement"));
+    allSections.push(disclaimer(ci.rounding));
+
+    const periods = pl.periods || ["Current Year", "Previous Year"];
+
+    const plRows = [
+      new TableRow({
+        tableHeader: true,
+        children: [
+          cell(para(text("Particulars", { font: "Arial", size: 18, bold: true })),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+          cell(para(text(periods[0] || "", { font: "Arial", size: 18, bold: true }), { align: AlignmentType.CENTER }),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+          cell(para(text(periods[1] || "", { font: "Arial", size: 18, bold: true }), { align: AlignmentType.CENTER }),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+        ]
+      }),
+    ];
+
+    if (pl.revenue) {
+      plRows.push(new TableRow({ children: [
+        labelCell("Revenue", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Revenue from Operations"),
+        numCell(pl.revenue.revenueFromOperations?.[0]),
+        numCell(pl.revenue.revenueFromOperations?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Other Income"),
+        numCell(pl.revenue.otherIncome?.[0]),
+        numCell(pl.revenue.otherIncome?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Total Revenue", { textOpts: { bold: true } }),
+        numCell(pl.revenue.totalRevenue?.[0], { textOpts: { bold: true } }),
+        numCell(pl.revenue.totalRevenue?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    if (pl.expenses) {
+      plRows.push(new TableRow({ children: [
+        labelCell("Expenses", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Cost of Materials Consumed"),
+        numCell(pl.expenses.costOfMaterials?.[0]),
+        numCell(pl.expenses.costOfMaterials?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Purchase of Stock-in-Trade"),
+        numCell(pl.expenses.purchaseOfStockInTrade?.[0]),
+        numCell(pl.expenses.purchaseOfStockInTrade?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Changes in Inventories"),
+        numCell(pl.expenses.changesInInventories?.[0]),
+        numCell(pl.expenses.changesInInventories?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Employee Benefits Expense"),
+        numCell(pl.expenses.employeeBenefits?.[0]),
+        numCell(pl.expenses.employeeBenefits?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Finance Costs"),
+        numCell(pl.expenses.financeCosts?.[0]),
+        numCell(pl.expenses.financeCosts?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Depreciation and Amortization"),
+        numCell(pl.expenses.depreciation?.[0]),
+        numCell(pl.expenses.depreciation?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Other Expenses"),
+        numCell(pl.expenses.otherExpenses?.[0]),
+        numCell(pl.expenses.otherExpenses?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Total Expenses", { textOpts: { bold: true } }),
+        numCell(pl.expenses.totalExpenses?.[0], { textOpts: { bold: true } }),
+        numCell(pl.expenses.totalExpenses?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    plRows.push(new TableRow({ children: [
+      labelCell("Profit Before Tax", { textOpts: { bold: true } }),
+      numCell(pl.profitBeforeTax?.[0], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "FAFAFA" } }),
+      numCell(pl.profitBeforeTax?.[1], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "FAFAFA" } }),
+    ]}));
+
+    plRows.push(new TableRow({ children: [
+      labelCell("Tax Expense"),
+      numCell(pl.taxExpense?.[0]),
+      numCell(pl.taxExpense?.[1]),
+    ]}));
+
+    plRows.push(new TableRow({ children: [
+      labelCell("Profit for the Period", { textOpts: { bold: true } }),
+      numCell(pl.profitForPeriod?.[0], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "F5F5F5" } }),
+      numCell(pl.profitForPeriod?.[1], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "F5F5F5" } }),
+    ]}));
+
+    if (pl.earningsPerShare) {
+      plRows.push(new TableRow({ children: [
+        labelCell("Earnings Per Share", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Basic"),
+        numCell(pl.earningsPerShare.basic?.[0]),
+        numCell(pl.earningsPerShare.basic?.[1]),
+      ]}));
+      plRows.push(new TableRow({ children: [
+        labelCell("    Diluted"),
+        numCell(pl.earningsPerShare.diluted?.[0]),
+        numCell(pl.earningsPerShare.diluted?.[1]),
+      ]}));
+    }
+
+    const plTable = new Table({
+      rows: plRows,
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      columnWidths: [4500, 1500, 1500]
+    });
+    allSections.push(plTable);
+  }
+
+  if (cf.available) {
+    allSections.push(sectionHeader("400400", "Cash Flow Statement"));
+    allSections.push(disclaimer(ci.rounding));
+
+    const periods = cf.periods || ["Current Year", "Previous Year"];
+
+    const cfRows = [
+      new TableRow({
+        tableHeader: true,
+        children: [
+          cell(para(text("Particulars", { font: "Arial", size: 18, bold: true })),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+          cell(para(text(periods[0] || "", { font: "Arial", size: 18, bold: true }), { align: AlignmentType.CENTER }),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+          cell(para(text(periods[1] || "", { font: "Arial", size: 18, bold: true }), { align: AlignmentType.CENTER }),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+        ]
+      }),
+    ];
+
+    if (cf.operating) {
+      cfRows.push(new TableRow({ children: [
+        labelCell("A. Cash Flow from Operating Activities", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Profit Before Tax"),
+        numCell(cf.operating.profitBeforeTax?.[0]),
+        numCell(cf.operating.profitBeforeTax?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Adjustments for Non-Cash Items"),
+        numCell(cf.operating.adjustments?.[0]),
+        numCell(cf.operating.adjustments?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Working Capital Changes"),
+        numCell(cf.operating.workingCapitalChanges?.[0]),
+        numCell(cf.operating.workingCapitalChanges?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Taxes Paid"),
+        numCell(cf.operating.taxesPaid?.[0]),
+        numCell(cf.operating.taxesPaid?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Net Cash from Operating Activities", { textOpts: { bold: true } }),
+        numCell(cf.operating.netCashFromOperating?.[0], { textOpts: { bold: true } }),
+        numCell(cf.operating.netCashFromOperating?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    if (cf.investing) {
+      cfRows.push(new TableRow({ children: [
+        labelCell("B. Cash Flow from Investing Activities", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Purchase of Fixed Assets"),
+        numCell(cf.investing.purchaseOfFixedAssets?.[0]),
+        numCell(cf.investing.purchaseOfFixedAssets?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Sale of Fixed Assets"),
+        numCell(cf.investing.saleOfFixedAssets?.[0]),
+        numCell(cf.investing.saleOfFixedAssets?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Investments Made"),
+        numCell(cf.investing.investmentsMade?.[0]),
+        numCell(cf.investing.investmentsMade?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Interest Received"),
+        numCell(cf.investing.interestReceived?.[0]),
+        numCell(cf.investing.interestReceived?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Net Cash from Investing Activities", { textOpts: { bold: true } }),
+        numCell(cf.investing.netCashFromInvesting?.[0], { textOpts: { bold: true } }),
+        numCell(cf.investing.netCashFromInvesting?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    if (cf.financing) {
+      cfRows.push(new TableRow({ children: [
+        labelCell("C. Cash Flow from Financing Activities", { textOpts: { bold: true } }),
+        cell(para(text(""))), cell(para(text(""))),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Proceeds from Borrowings"),
+        numCell(cf.financing.proceedsFromBorrowings?.[0]),
+        numCell(cf.financing.proceedsFromBorrowings?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Repayment of Borrowings"),
+        numCell(cf.financing.repaymentOfBorrowings?.[0]),
+        numCell(cf.financing.repaymentOfBorrowings?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Interest Paid"),
+        numCell(cf.financing.interestPaid?.[0]),
+        numCell(cf.financing.interestPaid?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Dividend Paid"),
+        numCell(cf.financing.dividendPaid?.[0]),
+        numCell(cf.financing.dividendPaid?.[1]),
+      ]}));
+      cfRows.push(new TableRow({ children: [
+        labelCell("    Net Cash from Financing Activities", { textOpts: { bold: true } }),
+        numCell(cf.financing.netCashFromFinancing?.[0], { textOpts: { bold: true } }),
+        numCell(cf.financing.netCashFromFinancing?.[1], { textOpts: { bold: true } }),
+      ]}));
+    }
+
+    cfRows.push(new TableRow({ children: [
+      labelCell("Net Change in Cash", { textOpts: { bold: true } }),
+      numCell(cf.netChangeInCash?.[0], { textOpts: { bold: true } }),
+      numCell(cf.netChangeInCash?.[1], { textOpts: { bold: true } }),
+    ]}));
+    cfRows.push(new TableRow({ children: [
+      labelCell("Opening Cash Balance"),
+      numCell(cf.openingCash?.[0]),
+      numCell(cf.openingCash?.[1]),
+    ]}));
+    cfRows.push(new TableRow({ children: [
+      labelCell("Closing Cash Balance", { textOpts: { bold: true } }),
+      numCell(cf.closingCash?.[0], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "F5F5F5" } }),
+      numCell(cf.closingCash?.[1], { textOpts: { bold: true }, shading: { type: ShadingType.SOLID, color: "F5F5F5" } }),
+    ]}));
+
+    const cfTable = new Table({
+      rows: cfRows,
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      columnWidths: [4500, 1500, 1500]
+    });
+    allSections.push(cfTable);
+  }
+
+  if (ratios.calculated) {
+    allSections.push(sectionHeader("400500", "Key Financial Ratios"));
+    allSections.push(disclaimer(ci.rounding));
+
+    const ratioRows = [
+      new TableRow({
+        tableHeader: true,
+        children: [
+          cell(para(text("Ratio Category", { font: "Arial", size: 18, bold: true })),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+          cell(para(text("Ratio Name", { font: "Arial", size: 18, bold: true })),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+          cell(para(text("Value", { font: "Arial", size: 18, bold: true }), { align: AlignmentType.CENTER }),
+               { shading: { type: ShadingType.SOLID, color: "F0F0F0" } }),
+        ]
+      }),
+    ];
+
+    if (ratios.profitability) {
+      const r = ratios.profitability;
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text("Profitability", { font: "Arial", size: 18, bold: true }))),
+        labelCell("Gross Margin"),
+        cell(para(text(r.grossMargin || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Operating Margin"),
+        cell(para(text(r.operatingMargin || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Net Margin"),
+        cell(para(text(r.netMargin || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Return on Equity (ROE)"),
+        cell(para(text(r.returnOnEquity || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Return on Assets (ROA)"),
+        cell(para(text(r.returnOnAssets || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+    }
+
+    if (ratios.liquidity) {
+      const r = ratios.liquidity;
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text("Liquidity", { font: "Arial", size: 18, bold: true }))),
+        labelCell("Current Ratio"),
+        cell(para(text(r.currentRatio || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Quick Ratio"),
+        cell(para(text(r.quickRatio || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Cash Ratio"),
+        cell(para(text(r.cashRatio || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+    }
+
+    if (ratios.leverage) {
+      const r = ratios.leverage;
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text("Leverage", { font: "Arial", size: 18, bold: true }))),
+        labelCell("Debt to Equity"),
+        cell(para(text(r.debtToEquity || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Interest Coverage"),
+        cell(para(text(r.interestCoverage || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Debt to Assets"),
+        cell(para(text(r.debtToAssets || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+    }
+
+    if (ratios.efficiency) {
+      const r = ratios.efficiency;
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text("Efficiency", { font: "Arial", size: 18, bold: true }))),
+        labelCell("Asset Turnover"),
+        cell(para(text(r.assetTurnover || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Inventory Turnover"),
+        cell(para(text(r.inventoryTurnover || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+      ratioRows.push(new TableRow({ children: [
+        cell(para(text(""))),
+        labelCell("Receivables Days"),
+        cell(para(text(r.receivablesDays || "—", { font: "Arial", size: 18 }), { align: AlignmentType.CENTER })),
+      ]}));
+    }
+
+    const ratiosTable = new Table({
+      rows: ratioRows,
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      columnWidths: [2500, 3500, 1500]
+    });
+    allSections.push(ratiosTable);
+  }
+
+  if (notes.length > 0) {
+    allSections.push(sectionHeader("400600", "Notes to Financial Statements"));
+    allSections.push(disclaimer(ci.rounding));
+
+    notes.forEach((note) => {
+      allSections.push(para(
+        [text(`Note ${note.noteNumber || ""}: ${note.title || ""}`, {
+          font: "Arial", size: 20, bold: true
+        })],
+        { spacing: { before: 300, after: 100 } }
+      ));
+      if (note.content) {
+        allSections.push(para(
+          [text(note.content, { font: "Arial", size: 18 })],
+          { spacing: { before: 100, after: 200 } }
+        ));
+      }
+    });
+  }
+
+  const doc = new Document({
+    creator: "Pallav Shah",
+    title: `${ci.name || "Private Company"} - Financial Statements`,
+    description: "Generated by FinSight AI",
+    sections: [{
+      properties: {
+        page: {
+          margin: { top: 1000, right: 1000, bottom: 1000, left: 1000 }
+        }
+      },
+      headers: {
+        default: new Header({
+          children: [
+            para(
+              [text(`${ci.name || "Private Company"} ${ci.reportingPeriod ? `Standalone Financial Statements for period ${ci.reportingPeriod}` : ""}`, {
+                font: "Arial", size: 14, italics: true, color: "666666"
+              })],
+              { spacing: { before: 0, after: 0 } }
+            )
+          ]
+        })
+      },
+      footers: {
+        default: new Footer({
+          children: [
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [
+                new TextRun({ children: [PageNumber.CURRENT], size: 16, color: "666666" })
+              ]
+            })
+          ]
+        })
+      },
+      children: allSections
+    }]
+  });
+
+  const blob = await Packer.toBlob(doc);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const safeName = (ci.name || "Private_Company").replace(/[^a-zA-Z0-9]/g, '_');
+  a.download = `${safeName}_Organized_Financials.docx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
-function EPSChart({ data, sym }) {
-  const hasData = data.eps?.some(v => v != null);
-  if (!hasData) return null;
-  const chartData = data.years.map((y, i) => ({ year: String(y), EPS: data.eps?.[i], growth: calcGrowth(data.eps, i) }));
-  const axisStyle = { fontSize: 11, fill: C.textMuted };
-  const gridStyle = { strokeDasharray: "4 4", stroke: C.border };
-  const dataLen = chartData.length;
-  const latestEPS = data.eps?.[dataLen - 1], firstEPS = data.eps?.[0];
-  let quickRead, quickColor;
-  if (dataLen === 1) quickRead = `EPS of ${sym}${Number(latestEPS || 0).toFixed(2)}.`;
-  else if (firstEPS != null && latestEPS != null && firstEPS !== 0) {
-    const totalGrowth = ((latestEPS - firstEPS) / Math.abs(firstEPS)) * 100;
-    if (totalGrowth > 50) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% — strong compounding.`; quickColor = C.greenBg; }
-    else if (totalGrowth > 0) { quickRead = `EPS grew ${totalGrowth.toFixed(0)}% — steady value creation.`; quickColor = C.greenBg; }
-    else if (totalGrowth > -10) quickRead = "EPS broadly flat.";
-    else { quickRead = `EPS declined ${Math.abs(totalGrowth).toFixed(0)}%.`; quickColor = C.redBg; }
-  } else quickRead = "Consistent EPS growth = shareholder wealth.";
+async function processPrivateCompanyDoc(file, onProgress) {
+  try {
+    onProgress?.("Reading your document...");
+    const extractedText = await extractWordContent(file);
 
-  return (
-    <ChartFrame icon="📈" title="Earnings Per Share (EPS)" subtitle="What each share earned in profits. Consistent growth = real value creation." quickRead={quickRead} quickReadColor={quickColor}>
-      <ResponsiveContainer width="100%" height={260}>
-        <BarChart data={chartData} margin={{ top: 30, right: 10, left: 0, bottom: 5 }}>
-          <defs><linearGradient id="epsGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.chartD} stopOpacity={.9}/><stop offset="100%" stopColor={C.chartD} stopOpacity={.55}/></linearGradient></defs>
-          <CartesianGrid {...gridStyle} />
-          <XAxis dataKey="year" tick={axisStyle} axisLine={false} tickLine={false} />
-          <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={v => `${sym}${v}`} width={50} />
-          <Tooltip content={({ active, payload, label }) => {
-            if (!active || !payload?.length) return null;
-            return (
-              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 16px", boxShadow: C.shadowMd }}>
-                <div style={{ color: C.textMuted, fontSize: 12, marginBottom: 6, fontWeight: 500 }}>{label}</div>
-                <div style={{ color: C.chartD, fontSize: 13, fontFamily: "'DM Mono', monospace" }}>EPS: {sym}{Number(payload[0].value).toFixed(2)}</div>
-                {payload[0].payload.growth != null && <div style={{ color: payload[0].payload.growth >= 0 ? C.green : C.red, fontSize: 12, marginTop: 3 }}>{payload[0].payload.growth >= 0 ? "↑" : "↓"} {Math.abs(payload[0].payload.growth).toFixed(1)}%</div>}
-              </div>
-            );
-          }} />
-          <Bar dataKey="EPS" fill="url(#epsGrad)" radius={[6, 6, 0, 0]} barSize={dataLen <= 2 ? 60 : dataLen <= 4 ? 45 : 35}>
-            {dataLen <= 5 && <LabelList dataKey="EPS" position="top" content={({ x, y, width, value, index }) => {
-              const growth = chartData[index]?.growth;
-              return (
-                <g>
-                  <text x={x + width / 2} y={y - 18} textAnchor="middle" style={{ fill: C.textPrimary, fontSize: 11, fontWeight: 700 }}>{sym}{Number(value).toFixed(2)}</text>
-                  {growth != null && <text x={x + width / 2} y={y - 4} textAnchor="middle" style={{ fill: growth >= 0 ? C.green : C.red, fontSize: 10, fontWeight: 600 }}>{growth >= 0 ? "↑" : "↓"} {Math.abs(growth).toFixed(1)}%</text>}
-                </g>
-              );
-            }} />}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-    </ChartFrame>
-  );
+    if (!extractedText || extractedText.trim().length < 100) {
+      throw new Error("Document appears to be empty or unreadable. Please check the file.");
+    }
+
+    onProgress?.("AI is organizing the data...");
+    const systemPrompt = buildPrivateCompanyPrompt();
+    const aiResponse = await callClaude({
+      system: systemPrompt,
+      userMsg: `Here is the raw text from a private company financial document. Please extract and organize the data:\n\n${extractedText}`,
+      maxTokens: 8000
+    });
+
+    onProgress?.("Structuring the output...");
+    let cleanResponse = aiResponse.trim();
+    if (cleanResponse.startsWith('```json')) {
+      cleanResponse = cleanResponse.replace(/^```json\s*/, '').replace(/```\s*$/, '');
+    } else if (cleanResponse.startsWith('```')) {
+      cleanResponse = cleanResponse.replace(/^```\s*/, '').replace(/```\s*$/, '');
+    }
+
+    let data;
+    try {
+      data = JSON.parse(cleanResponse);
+    } catch (e) {
+      throw new Error("AI response could not be parsed. Please try with a clearer document.");
+    }
+
+    onProgress?.("Generating your professional Word document...");
+    const partial = await generatePrivateCompanyDoc(data, file.name);
+    await finalizePrivateCompanyDoc(partial);
+
+    return { success: true, data, fileName: file.name };
+  } catch (error) {
+    console.error("Private company doc processing error:", error);
+    throw error;
+  }
 }
 
-function AnalysisSection({ icon, title, accentColor, paragraphs }) {
-  let parts = [];
-  if (Array.isArray(paragraphs)) parts = paragraphs.filter(Boolean);
-  else if (typeof paragraphs === "string") { parts = paragraphs.split(/\n\n+/).filter(Boolean); if (parts.length === 0) parts = [paragraphs]; }
-  if (parts.length === 0) return null;
-  return (
-    <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 22, boxShadow: C.shadow }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
-        <div style={{ width: 34, height: 34, borderRadius: 8, background: `${accentColor}15`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{icon}</div>
-        <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15.5, color: C.textPrimary }}>{title}</div>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {parts.map((para, i) => (
-          <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-            <div style={{ flexShrink: 0, width: 24, height: 24, borderRadius: "50%", background: `${accentColor}15`, color: accentColor, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Mono', monospace", fontSize: 11, fontWeight: 700, marginTop: 2 }}>{i + 1}</div>
-            <p style={{ color: C.textSec, lineHeight: 1.75, fontSize: 13.5, flex: 1, margin: 0 }}>{para}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+function PrivateDocUploadZone({ onProcess, isProcessing, progress, error }) {
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef(null);
 
-function InsightCard({ title, items, color, icon, badgeColor }) {
-  return (
-    <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: 22, boxShadow: C.shadow }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
-        <div style={{ width: 32, height: 32, borderRadius: 8, background: badgeColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: color, fontWeight: 700, flexShrink: 0 }}>{icon}</div>
-        <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14.5, color: color }}>{title}</div>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {items.map((item, i) => (
-          <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-            <div style={{ flexShrink: 0, width: 20, height: 20, borderRadius: "50%", background: badgeColor, color: color, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Mono', monospace", fontSize: 10, fontWeight: 700, marginTop: 2 }}>{i + 1}</div>
-            <div style={{ color: C.textSec, fontSize: 13, lineHeight: 1.65, flex: 1 }}>{item}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
 
-function PeriodDropdown({ value, onChange }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-  const selected = PERIODS.find(p => p.id === value) || PERIODS[2];
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    handleFile(files[0]);
+  };
+
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files);
+    handleFile(files[0]);
+  };
+
+  const handleFile = (file) => {
+    if (!file) return;
+    if (!file.name.match(/\.(docx?|doc)$/i)) {
+      alert("Please upload a Word document (.docx or .doc)");
+      return;
+    }
+    onProcess(file);
+  };
+
+  const handleClick = () => {
+    fileInputRef.current?.click();
+  };
+
   return (
-    <div ref={ref} className="fs-dropdown" style={{ position: "relative" }}>
-      <button type="button" onClick={() => setOpen(!open)} className="fs-dropdown-btn" style={{ display: "flex", alignItems: "center", gap: 10, background: C.bgCard, border: `1.5px solid ${open ? C.accent : C.border}`, borderRadius: 14, padding: "0 16px", height: 52, minWidth: 150, fontSize: 14, fontWeight: 600, color: C.textPrimary, fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", boxShadow: C.shadow, transition: "border-color .15s", whiteSpace: "nowrap", justifyContent: "space-between", width: "100%" }}>
-        <span>{selected.short}</span>
-        <span style={{ fontSize: 10, color: C.textMuted, transform: open ? "rotate(180deg)" : "rotate(0)", transition: "transform .2s", marginLeft: 4 }}>▼</span>
-      </button>
-      {open && (
-        <div className="fs-dropdown-menu" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, width: "max(100%, 220px)", background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, boxShadow: C.shadowMd, zIndex: 50, overflow: "hidden", animation: "fs-dropdown-in .15s ease" }}>
-          {PERIODS.map(p => {
-            const isActive = p.id === value;
-            return (
-              <button key={p.id} type="button" onClick={() => { onChange(p.id); setOpen(false); }} style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, width: "100%", background: isActive ? C.accentLight : "transparent", border: "none", padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", textAlign: "left", transition: "background .12s" }}
-                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = C.bgSidebar; }}
-                onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
-              >
-                <span style={{ fontSize: 13.5, fontWeight: 600, color: isActive ? C.accent : C.textPrimary, display: "flex", alignItems: "center", gap: 6 }}>{p.label}{isActive && <span style={{ fontSize: 11, color: C.accent }}>✓</span>}</span>
-                <span style={{ fontSize: 11, color: C.textMuted }}>{p.desc}</span>
-              </button>
-            );
-          })}
+    <div style={{ width: "100%", maxWidth: 720, margin: "16px auto 0" }}>
+      <div
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        onClick={!isProcessing ? handleClick : undefined}
+        style={{
+          padding: "24px 20px",
+          background: isDragging ? C.brownLight : (isProcessing ? "#F5F5F5" : "#FAFAFA"),
+          border: `2px dashed ${isDragging ? C.brown : C.border}`,
+          borderRadius: 12,
+          cursor: isProcessing ? "wait" : "pointer",
+          transition: "all 0.2s",
+          textAlign: "center",
+          opacity: isProcessing ? 0.7 : 1,
+        }}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".doc,.docx"
+          onChange={handleFileSelect}
+          style={{ display: "none" }}
+          disabled={isProcessing}
+        />
+
+        {!isProcessing ? (
+          <>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>📄</div>
+            <div style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: C.textPrimary,
+              marginBottom: 4
+            }}>
+              Upload Private Company Financials
+            </div>
+            <div style={{ fontSize: 12, color: C.textSec, marginBottom: 8 }}>
+              Drag & drop your Word document here, or click to browse
+            </div>
+            <div style={{
+              fontSize: 11,
+              color: C.textMuted,
+              fontStyle: "italic"
+            }}>
+              Supports .docx and .doc files • Get organized output in seconds
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{
+              fontSize: 22,
+              marginBottom: 12,
+              animation: "spin 2s linear infinite"
+            }}>⚙️</div>
+            <div style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: C.brown,
+              marginBottom: 4
+            }}>
+              {progress || "Processing..."}
+            </div>
+            <div style={{ fontSize: 11, color: C.textMuted }}>
+              This usually takes 20-40 seconds
+            </div>
+          </>
+        )}
+      </div>
+
+      {error && (
+        <div style={{
+          marginTop: 12,
+          padding: "10px 14px",
+          background: C.redBg,
+          border: `1px solid ${C.red}`,
+          borderRadius: 8,
+          fontSize: 12,
+          color: C.red,
+        }}>
+          ⚠ {error}
         </div>
       )}
     </div>
   );
 }
 
-const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');`;
-
-const GLOBAL_CSS = `
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: ${C.bgPage}; overflow-x: hidden; }
-  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: ${C.bgPage}; }
-  ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }
-  .fs-input:focus { outline: none; border-color: ${C.accent} !important; box-shadow: 0 0 0 3px rgba(207,107,78,.15) !important; }
-  .fs-chip { transition: all .18s; }
-  .fs-chip:hover { background: ${C.accentLight} !important; border-color: ${C.accent} !important; color: ${C.accent} !important; }
-  .fs-btn-primary:hover { background: ${C.accentDark} !important; }
-  .fs-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
-  .fs-chart-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
-  .fs-act:hover { opacity: .88 !important; transform: translateY(-1px); }
-  .fs-act:disabled { opacity: .55 !important; cursor: not-allowed !important; transform: none !important; }
-  .fs-dropdown-btn:hover { border-color: ${C.accent} !important; }
-  @keyframes fs-fade { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:none;} }
-  @keyframes fs-spin { to { transform: rotate(360deg); } }
-  @keyframes fs-step { from{opacity:0;transform:translateX(-8px);} to{opacity:1;transform:none;} }
-  @keyframes fs-dropdown-in { from{opacity:0;transform:translateY(-4px);} to{opacity:1;transform:none;} }
-  .cl-internal-b3fm6y, .cl-formButtonPrimary { background-color: ${C.accent} !important; }
-  .cl-formButtonPrimary:hover { background-color: ${C.accentDark} !important; }
-  .cl-card { box-shadow: ${C.shadowMd} !important; border: 1px solid ${C.border} !important; }
-  .fs-search-row { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 580px; }
-  @media (min-width: 640px) { .fs-search-row { flex-direction: row; align-items: stretch; max-width: 740px; } }
-  .fs-search-bar { flex: 1; display: flex; gap: 8px; background: ${C.bgCard}; border: 1.5px solid ${C.border}; border-radius: 14px; padding: 6px 6px 6px 14px; box-shadow: ${C.shadow}; min-height: 52px; align-items: center; }
-  .fs-metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  @media (min-width: 640px) { .fs-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } }
-  @media (min-width: 1024px) { .fs-metrics-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; } }
-  .fs-charts-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
-  @media (min-width: 1024px) { .fs-charts-grid { grid-template-columns: 1fr 1fr; gap: 18px; } }
-  .fs-analysis-sections { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 20px; }
-  @media (min-width: 1024px) { .fs-analysis-sections { grid-template-columns: 1fr 1fr; gap: 16px; } }
-  .fs-insights-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 24px; }
-  @media (min-width: 768px) { .fs-insights-grid { grid-template-columns: 1fr 1fr; gap: 16px; } }
-  @media (min-width: 1024px) { .fs-insights-grid { grid-template-columns: 1fr 1fr 1fr; gap: 16px; } }
-  .fs-header-dashboard { position: sticky; top: 0; z-index: 100; min-height: 60px; background: ${C.bgCard}; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; gap: 10px; flex-wrap: wrap; }
-  @media (min-width: 1024px) { .fs-header-dashboard { padding: 0 28px; gap: 16px; flex-wrap: nowrap; } }
-  .fs-header-landing { height: auto; min-height: 56px; border-bottom: 1px solid ${C.border}; display: flex; align-items: center; padding: 10px 14px; background: ${C.bgCard}; gap: 10px; flex-wrap: wrap; }
-  @media (min-width: 640px) { .fs-header-landing { padding: 0 28px; flex-wrap: nowrap; height: 56px; } }
-  .fs-dash-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; width: 100%; order: 3; }
-  @media (min-width: 1024px) { .fs-dash-meta { gap: 8px; order: 0; width: auto; } }
-  .fs-header-divider { display: none; }
-  @media (min-width: 1024px) { .fs-header-divider { display: block; width: 1px; height: 24px; background: ${C.border}; } }
-  .fs-company-name { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 14px; font-weight: 700; color: ${C.textPrimary}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-  @media (min-width: 640px) { .fs-company-name { font-size: 15px; max-width: none; } }
-  .fs-header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-  .fs-main-container { max-width: 1180px; margin: 0 auto; padding: 20px 14px; }
-  @media (min-width: 640px) { .fs-main-container { padding: 28px 20px 22px; } }
-  @media (min-width: 1024px) { .fs-main-container { padding: 32px 24px 24px; } }
-  .fs-description { color: ${C.textSec}; font-size: 14px; line-height: 1.7; max-width: 680px; margin-bottom: 20px; }
-  @media (min-width: 640px) { .fs-description { font-size: 14.5px; line-height: 1.75; margin-bottom: 28px; } }
-  .fs-action-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
-  .fs-action-btn { padding: 12px 20px; font-size: 14px; font-weight: 600; border-radius: 12px; font-family: 'Plus Jakarta Sans', sans-serif; cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-  @media (min-width: 640px) { .fs-action-btn { padding: 13px 28px; font-size: 14.5px; } }
-  .fs-landing-main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 18px 28px; animation: fs-fade .6s ease both; }
-  @media (min-width: 640px) { .fs-landing-main { padding: 48px 24px 32px; } }
-  .fs-landing-hero { font-family: 'Plus Jakarta Sans', sans-serif; font-size: clamp(26px, 7vw, 48px); font-weight: 800; color: ${C.textPrimary}; letter-spacing: -1px; text-align: center; line-height: 1.15; margin-bottom: 14px; }
-  .fs-chip-row-label { font-size: 11px; color: ${C.textMuted}; font-weight: 500; min-width: 60px; text-align: right; }
-  @media (min-width: 640px) { .fs-chip-row-label { font-size: 12px; min-width: 70px; } }
-  .fs-section-heading { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; font-size: 17px; color: ${C.textPrimary}; margin-bottom: 14px; display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-  .fs-section-heading::before { content: ''; width: 4px; height: 20px; background: ${C.accent}; border-radius: 2px; }
-`;
-
-function LoginScreen() {
+function Byline({ size = "small" }) {
+  const sizes = {
+    tiny:   { font: 9,  weight: 500 },
+    small:  { font: 11, weight: 500 },
+    medium: { font: 12, weight: 600 },
+    large:  { font: 14, weight: 600 },
+  };
+  const s = sizes[size] || sizes.small;
   return (
-    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <style>{FONTS + GLOBAL_CSS}</style>
-      <div style={{ marginBottom: 24, textAlign: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, marginBottom: 16 }}>
-          <FinSightLogo size={56} />
-          <div style={{ textAlign: "left" }}>
-            <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 800, fontSize: 28, color: C.textPrimary, letterSpacing: "-.8px", lineHeight: 1 }}>FinSight AI</div>
-            <div style={{ fontSize: 12, color: C.textMuted, marginTop: 4 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>Aashni Shah</span></div>
+    <div style={{
+      fontSize: s.font,
+      fontWeight: s.weight,
+      color: C.textMuted,
+      letterSpacing: "0.02em",
+      fontFamily: "ui-sans-serif,system-ui,-apple-system,sans-serif",
+    }}>
+      by Pallav Shah
+    </div>
+  );
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState("signin");
+  return (
+    <div style={{
+      minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+      background: C.bgPage, padding: 20, fontFamily: "ui-sans-serif,system-ui,sans-serif"
+    }}>
+      <div style={{ width: "100%", maxWidth: 480, textAlign: "center" }}>
+        <div style={{ marginBottom: 32 }}>
+          <div style={{ fontSize: 36, fontWeight: 700, color: C.accent, marginBottom: 6 }}>
+            FinSight AI
+          </div>
+          <Byline size="medium" />
+          <div style={{ fontSize: 14, color: C.textSec, marginTop: 12 }}>
+            Financial intelligence, one company at a time
           </div>
         </div>
-        <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 20, color: C.textPrimary, marginBottom: 6, padding: "0 10px" }}>Welcome to financial intelligence</h2>
-        <p style={{ color: C.textSec, fontSize: 14, padding: "0 10px" }}>Sign in to analyze any company's financials</p>
+        <div style={{
+          background: C.bgCard, borderRadius: 16, padding: 24,
+          boxShadow: C.shadowMd, border: `1px solid ${C.border}`
+        }}>
+          {mode === "signin" ? (
+            <SignIn afterSignInUrl="/" signUpUrl="#" />
+          ) : (
+            <SignUp afterSignUpUrl="/" signInUrl="#" />
+          )}
+          <div style={{ marginTop: 16, fontSize: 13, color: C.textSec }}>
+            {mode === "signin" ? (
+              <>New here? <button onClick={() => setMode("signup")} style={{ background: "none", border: "none", color: C.accent, cursor: "pointer", fontWeight: 600 }}>Sign up</button></>
+            ) : (
+              <>Already have an account? <button onClick={() => setMode("signin")} style={{ background: "none", border: "none", color: C.accent, cursor: "pointer", fontWeight: 600 }}>Sign in</button></>
+            )}
+          </div>
+        </div>
       </div>
-      <SignIn appearance={{ elements: { rootBox: { width: "100%", maxWidth: 400 }, card: { background: C.bgCard, border: `1px solid ${C.border}`, boxShadow: C.shadow }, formButtonPrimary: { background: C.accent, "&:hover": { background: C.accentDark } } } }} />
-      <div style={{ marginTop: 24, color: C.textMuted, fontSize: 12, textAlign: "center", padding: "0 20px" }}>By continuing, you agree to our Terms & Privacy Policy</div>
     </div>
   );
 }
 
 function FinSightApp() {
   const { user } = useUser();
-  const [screen, setScreen] = useState("landing");
-  const [q, setQ] = useState("");
-  const [period, setPeriod] = useState(DEFAULT_PERIOD);
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState("");
-  const [stepIdx, setStepIdx] = useState(0);
-  const [excelLoading, setExcelLoading] = useState(false);
-  const [pptLoading, setPptLoading] = useState(false);
+  const [view, setView] = useState("landing");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedPeriod, setSelectedPeriod] = useState(DEFAULT_PERIOD);
+  const [showPeriodDropdown, setShowPeriodDropdown] = useState(false);
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
-  useEffect(() => {
-    if (user) {
-      fetch("/api/track-user", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: user.id, email: user.primaryEmailAddress?.emailAddress, phone: user.primaryPhoneNumber?.phoneNumber, name: user.fullName, firstName: user.firstName, lastName: user.lastName, signedUpAt: user.createdAt, provider: user.externalAccounts?.[0]?.provider || "email" }) }).catch(() => {});
-    }
-  }, [user]);
+  const [privateDocLoading, setPrivateDocLoading] = useState(false);
+  const [privateDocProgress, setPrivateDocProgress] = useState("");
+  const [privateDocError, setPrivateDocError] = useState("");
 
-  useEffect(() => {
-    if (screen !== "loading") return;
-    setStepIdx(0);
-    const t = setInterval(() => setStepIdx(i => Math.min(i + 1, STEPS.length - 1)), 2800);
-    return () => clearInterval(t);
-  }, [screen]);
-
-  const analyze = async (company) => {
-    setScreen("loading"); setErr("");
-    if (user) fetch("/api/track-activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: user.id, email: user.primaryEmailAddress?.emailAddress, action: "analyze", company, period, timestamp: new Date().toISOString() }) }).catch(() => {});
-    const periodLabel = PERIODS.find(p => p.id === period)?.label || "1 Year";
+  const handleSearch = async () => {
+    const q = searchQuery.trim();
+    if (!q) return;
+    setLoading(true);
+    setSearchError("");
     try {
-      const raw = await callClaude({
-        system: buildSystemPrompt(period),
-        userMsg: `Analyze LATEST financial data for: ${company}. Period: ${periodLabel} (${period}). Use web search for recent numbers. Include cost structure and EPS. Provide 4 segmented analysis sections, each 3 paragraphs. Return ONLY clean JSON with no citation tags.`,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-        maxTokens: 6000,
+      const period = PERIODS.find(p => p.id === selectedPeriod) || PERIODS[2];
+      const sysPrompt = `You are FinSight AI. Generate a brief financial summary for: ${q}. Period: ${period.label}.`;
+      const result = await callClaude({
+        system: sysPrompt,
+        userMsg: `Provide a financial overview of ${q} for ${period.label}.`,
+        maxTokens: 2000
       });
-      let json = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
-      const s = json.indexOf("{"), e = json.lastIndexOf("}");
-      if (s >= 0 && e >= 0) json = json.slice(s, e + 1);
-      const parsed = JSON.parse(json);
-      parsed.analysisRevenue = cleanText(parsed.analysisRevenue);
-      parsed.analysisProfitability = cleanText(parsed.analysisProfitability);
-      parsed.analysisCashFlow = cleanText(parsed.analysisCashFlow);
-      parsed.analysisOutlook = cleanText(parsed.analysisOutlook);
-      parsed.analysis = cleanText(parsed.analysis);
-      parsed.keyStrengths = cleanText(parsed.keyStrengths);
-      parsed.keyRisks = cleanText(parsed.keyRisks);
-      parsed.outlookReason = cleanText(parsed.outlookReason);
-      parsed.description = cleanText(parsed.description);
-      setData(parsed);
-      setScreen("dashboard");
-    } catch (ex) {
-      setErr(ex.message || "Analysis failed. Please try again.");
-      setScreen("error");
+      setReport({ companyName: q, content: result, period: period.label });
+      setView("dashboard");
+    } catch (e) {
+      setSearchError(e.message || "Search failed. Please try again.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const downloadExcel = async () => {
-    if (!data) return;
-    setExcelLoading(true);
+  const handlePrivateDocProcess = async (file) => {
+    setPrivateDocLoading(true);
+    setPrivateDocError("");
+    setPrivateDocProgress("");
     try {
-      const periodLabel = PERIODS.find(p => p.id === (data.periodType || period))?.label || "1 Year";
-      await generateExcel(data, periodLabel);
-      if (user) fetch("/api/track-activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: user.id, email: user.primaryEmailAddress?.emailAddress, action: "download_excel", company: data.company, period, timestamp: new Date().toISOString() }) }).catch(() => {});
-    } catch (ex) {
-      alert("Excel download failed. Error: " + (ex.message || "Unknown"));
+      await processPrivateCompanyDoc(file, (msg) => setPrivateDocProgress(msg));
+      setPrivateDocProgress("Done! Your document has been downloaded.");
+      setTimeout(() => {
+        setPrivateDocLoading(false);
+        setPrivateDocProgress("");
+      }, 2000);
+    } catch (e) {
+      setPrivateDocError(e.message || "Failed to process document. Please try again.");
+      setPrivateDocLoading(false);
+      setPrivateDocProgress("");
     }
-    setExcelLoading(false);
   };
 
-  const downloadPPT = async () => {
-    if (!data) return;
-    setPptLoading(true);
-    try {
-      const periodLabel = PERIODS.find(p => p.id === (data.periodType || period))?.label || "1 Year";
-      await new Promise(r => setTimeout(r, 500));
-      await generatePPTFull(data, periodLabel);
-      if (user) fetch("/api/track-activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: user.id, email: user.primaryEmailAddress?.emailAddress, action: "download_ppt", company: data.company, period, timestamp: new Date().toISOString() }) }).catch(() => {});
-    } catch (ex) {
-      alert("PPT generation failed. Error: " + (ex.message || "Unknown"));
-      console.error(ex);
-    }
-    setPptLoading(false);
-  };
-
-  if (screen === "landing") return (
-    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
-      <style>{FONTS + GLOBAL_CSS}</style>
-      <header className="fs-header-landing">
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <FinSightLogo size={28} />
-          <div style={{ display: "flex", flexDirection: "column" }}>
-            <span style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, color: C.textPrimary, letterSpacing: "-.3px", lineHeight: 1 }}>FinSight AI</span>
-            <span style={{ fontSize: 9.5, color: C.textMuted, letterSpacing: ".4px", marginTop: 2 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>Aashni Shah</span></span>
-          </div>
-        </div>
-        <div style={{ flex: 1 }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}><UserButton afterSignOutUrl="/" /></div>
-      </header>
-      <main className="fs-landing-main">
-        <div style={{ marginBottom: 24 }}><FinSightLogo size={64} /></div>
-        <h1 className="fs-landing-hero">Financial intelligence,<br /><span style={{ color: C.accent }}>one company at a time.</span></h1>
-        <p style={{ color: C.textSec, fontSize: 15, lineHeight: 1.7, textAlign: "center", maxWidth: 540, marginBottom: 32, padding: "0 8px" }}>Type any company name. Get AI-powered financial analysis with interactive charts, Excel reports, and professional PPT decks.</p>
-        <div className="fs-search-row" style={{ marginBottom: 32 }}>
-          <PeriodDropdown value={period} onChange={setPeriod} />
-          <div className="fs-search-bar">
-            <input className="fs-input" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && q.trim() && analyze(q.trim())} placeholder="e.g. Apple, Reliance, Tesla..." style={{ flex: 1, background: "none", border: "none", outline: "none", color: C.textPrimary, fontSize: 15, fontFamily: "inherit", minWidth: 0 }} />
-            <button className="fs-btn-primary" onClick={() => q.trim() && analyze(q.trim())} disabled={!q.trim()} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 600, fontFamily: "'Plus Jakarta Sans', sans-serif", cursor: "pointer", whiteSpace: "nowrap", opacity: q.trim() ? 1 : .55 }}>Analyze →</button>
-          </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", marginBottom: 40, width: "100%" }}>
-          {[{ flag: "🇺🇸", label: "US", items: US_EX }, { flag: "🇮🇳", label: "India", items: IN_EX }].map(row => (
-            <div key={row.flag} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center", maxWidth: "100%" }}>
-              <span className="fs-chip-row-label">{row.flag} {row.label}</span>
-              {row.items.map(c => <button key={c} className="fs-chip" onClick={() => analyze(c)} style={{ background: C.bgCard, border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 20, padding: "5px 12px", fontSize: 12.5, fontFamily: "inherit", cursor: "pointer" }}>{c}</button>)}
-            </div>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", justifyContent: "center", padding: "0 16px" }}>
-          {[{ icon: "📈", text: "Flexible Periods" }, { icon: "📗", text: "Excel Reports" }, { icon: "📊", text: "Professional PPT" }, { icon: "🌍", text: "US + India" }].map(f => (
-            <div key={f.text} style={{ display: "flex", alignItems: "center", gap: 6, color: C.textSec, fontSize: 12.5 }}><span style={{ fontSize: 14 }}>{f.icon}</span><span>{f.text}</span></div>
-          ))}
-        </div>
-      </main>
-      <footer style={{ padding: "18px 20px", textAlign: "center", borderTop: `1px solid ${C.border}`, background: C.bgCard }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ color: C.textMuted, fontSize: 11.5 }}>FinSight AI · Research & education only · Not investment advice</span>
-          <span style={{ color: C.border }}>·</span><Byline />
-        </div>
-      </footer>
-    </div>
-  );
-
-  if (screen === "loading") return (
-    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <style>{FONTS + GLOBAL_CSS}</style>
-      <div style={{ marginBottom: 24 }}><FinSightLogo size={52} /></div>
-      <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 20, fontWeight: 700, color: C.textPrimary, marginBottom: 6, textAlign: "center" }}>Analyzing financials…</h2>
-      <p style={{ color: C.textSec, fontSize: 13.5, marginBottom: 36, textAlign: "center", padding: "0 20px" }}>Period: {PERIODS.find(p => p.id === period)?.label} · Takes about 20–30 seconds</p>
-      <div style={{ width: "100%", maxWidth: 320, padding: "0 16px" }}>
-        {STEPS.map((s, i) => {
-          const done = i < stepIdx, active = i === stepIdx, pending = i > stepIdx;
-          return (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, opacity: pending ? .32 : 1, transition: "opacity .4s", animation: active ? "fs-step .3s ease" : "none" }}>
-              <div style={{ width: 24, height: 24, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: done ? C.green : active ? C.accent : C.border }}>
-                {done ? <span style={{ color: "#fff", fontSize: 12 }}>✓</span> : active ? <Spinner /> : null}
-              </div>
-              <span style={{ fontSize: 13.5, color: done ? C.green : active ? C.accent : C.textMuted, fontWeight: active ? 600 : 400 }}>{s}</span>
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ marginTop: 40 }}><Byline /></div>
-    </div>
-  );
-
-  if (screen === "error") return (
-    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center" }}>
-      <style>{FONTS + GLOBAL_CSS}</style>
-      <div style={{ width: 56, height: 56, borderRadius: 16, background: C.redBg, border: `1px solid ${C.red}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, marginBottom: 18 }}>⚠️</div>
-      <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 19, fontWeight: 700, color: C.red, marginBottom: 10 }}>Analysis failed</h2>
-      <p style={{ color: C.textSec, maxWidth: 440, lineHeight: 1.7, marginBottom: 24, fontSize: 14 }}>{err}</p>
-      <button onClick={() => setScreen("landing")} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "11px 26px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "'Plus Jakarta Sans', sans-serif" }}>← Try again</button>
-    </div>
-  );
-
-  if (screen === "dashboard" && data) {
-    const sym = data.currencySymbol || "$";
-    const OUTLOOK = { Positive: { color: C.green, bg: C.greenBg }, Mixed: { color: C.amber, bg: C.amberBg }, Caution: { color: C.red, bg: C.redBg }, Bullish: { color: C.green, bg: C.greenBg }, Neutral: { color: C.amber, bg: C.amberBg }, Bearish: { color: C.red, bg: C.redBg } };
-    const oc = OUTLOOK[data.outlook] || OUTLOOK.Mixed;
-    const lastIdx = (data.years?.length || 1) - 1;
-    const latestRev = data.revenue?.[lastIdx], latestNI = data.netIncome?.[lastIdx];
-    const latestFCF = data.freeCashFlow?.[lastIdx], latestNM = data.netMargin?.[lastIdx];
-    const latestLabel = data.years?.[lastIdx] || "Latest";
-    const periodLabel = PERIODS.find(p => p.id === data.periodType)?.label || "Analysis";
-    const analysisRev = data.analysisRevenue || (data.analysis ? [data.analysis] : null);
-    const analysisProf = data.analysisProfitability || null;
-    const analysisCash = data.analysisCashFlow || null;
-    const analysisOut = data.analysisOutlook || null;
-
+  if (view === "landing") {
     return (
-      <div style={{ minHeight: "100vh", background: C.bgPage, color: C.textPrimary, fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-        <style>{FONTS + GLOBAL_CSS}</style>
-        <header className="fs-header-dashboard">
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            <FinSightLogo size={24} />
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              <span style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 13, color: C.textPrimary, lineHeight: 1 }}>FinSight AI</span>
-              <span style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>Aashni Shah</span></span>
-            </div>
+      <div style={{
+        minHeight: "100vh", background: C.bgPage,
+        fontFamily: "ui-sans-serif,system-ui,-apple-system,sans-serif",
+        display: "flex", flexDirection: "column"
+      }}>
+        <div style={{
+          padding: "16px 24px", display: "flex", justifyContent: "space-between",
+          alignItems: "center", borderBottom: `1px solid ${C.border}`, background: C.bgCard
+        }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: C.accent }}>FinSight AI</div>
+            <Byline size="tiny" />
           </div>
-          <div className="fs-header-divider" />
-          <div className="fs-dash-meta">
-            <span className="fs-company-name">{data.company}</span>
-            <span style={{ background: C.bgSidebar, color: C.textSec, fontSize: 10.5, fontFamily: "'DM Mono', monospace", padding: "2px 7px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.ticker}</span>
-            <span style={{ background: C.bgSidebar, color: C.textMuted, fontSize: 10.5, padding: "2px 7px", borderRadius: 5, border: `1px solid ${C.border}` }}>{data.exchange}</span>
-            <span style={{ background: C.accentLight, color: C.accent, fontSize: 10.5, fontWeight: 600, padding: "2px 9px", borderRadius: 5 }}>{periodLabel}</span>
-            <span style={{ background: oc.bg, color: oc.color, fontSize: 10.5, fontWeight: 600, padding: "2px 9px", borderRadius: 5 }}>{data.outlook}</span>
-          </div>
-          <div className="fs-header-actions">
-            <button onClick={() => setScreen("landing")} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap", fontFamily: "inherit" }}>← New</button>
-            <UserButton afterSignOutUrl="/" />
-          </div>
-        </header>
-
-        <div className="fs-main-container">
-          <p className="fs-description">{data.description}</p>
-          {data.dataAsOf && <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 14 }}>📅 Data as of: <strong style={{ color: C.textSec }}>{data.dataAsOf}</strong> · Period: <strong style={{ color: C.accent }}>{periodLabel}</strong></div>}
-          <div className="fs-metrics-grid" style={{ marginBottom: 24 }}>
-            {[
-              { label: `${latestLabel} Revenue`, value: fmtMoney(latestRev, sym), sub: data.revenueCAGR ? `CAGR ${Number(data.revenueCAGR).toFixed(1)}%` : "Latest" },
-              { label: `${latestLabel} Net Income`, value: fmtMoney(latestNI, sym), sub: latestNM ? `Margin ${Number(latestNM).toFixed(1)}%` : "Latest" },
-              { label: "Market Cap", value: fmtMoney(data.marketCap, sym), sub: data.exchange },
-              { label: "P/E Ratio", value: data.peRatio ? `${Number(data.peRatio).toFixed(1)}×` : "N/A", sub: "Current" },
-              { label: "Free Cash Flow", value: fmtMoney(latestFCF, sym), sub: latestLabel },
-              { label: "Revenue Growth", value: data.revenueCAGR ? `${Number(data.revenueCAGR).toFixed(1)}%` : "N/A", sub: periodLabel, accent: C.accent },
-            ].map(m => <MetricCard key={m.label} {...m} />)}
-          </div>
-
-          <div className="fs-section-heading">Financial Analysis</div>
-          <div className="fs-charts-grid" style={{ marginBottom: 24 }}>
-            <GrowthQualityChart data={data} sym={sym} />
-            <CashQualityChart data={data} sym={sym} />
-            <ProfitStructureChart data={data} sym={sym} />
-            <EPSChart data={data} sym={sym} />
-          </div>
-
-          <div className="fs-section-heading">AI Financial Analysis</div>
-          <div className="fs-analysis-sections">
-            {analysisRev && <AnalysisSection icon="📈" title="Revenue & Growth Story" accentColor={C.chartA} paragraphs={analysisRev} />}
-            {analysisProf && <AnalysisSection icon="💰" title="Profitability Performance" accentColor={C.chartB} paragraphs={analysisProf} />}
-            {analysisCash && <AnalysisSection icon="💵" title="Cash Flow Analysis" accentColor={C.chartC} paragraphs={analysisCash} />}
-            {analysisOut && <AnalysisSection icon="🎯" title="Competitive & Strategic Outlook" accentColor={C.chartD} paragraphs={analysisOut} />}
-          </div>
-
-          <div className="fs-section-heading">Key Insights</div>
-          <div className="fs-insights-grid">
-            <InsightCard title="Key Strengths" icon="✓" color={C.green} badgeColor={C.greenBg} items={data.keyStrengths || []} />
-            <InsightCard title="Key Risks" icon="⚠" color={C.red} badgeColor={C.redBg} items={data.keyRisks || []} />
-            <div style={{ background: oc.bg, border: `1px solid ${oc.color}33`, borderRadius: 14, padding: 22, display: "flex", flexDirection: "column", justifyContent: "center" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, paddingBottom: 12, borderBottom: `1px solid ${oc.color}22` }}>
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: oc.color + "20", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, color: oc.color, fontWeight: 700 }}>◎</div>
-                <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 14.5, color: oc.color }}>{data.outlook} Outlook</div>
-              </div>
-              <div style={{ color: C.textSec, fontSize: 13, lineHeight: 1.7 }}>{data.outlookReason}</div>
-            </div>
-          </div>
-
-          <div className="fs-action-row">
-            <button className="fs-act fs-action-btn" onClick={downloadPPT} disabled={pptLoading} style={{ background: C.accent, color: "#fff", border: "none" }}>
-              {pptLoading ? <><Spinner /> Creating PPT…</> : <>📊 Download PPT</>}
-            </button>
-            <button className="fs-act fs-action-btn" onClick={downloadExcel} disabled={excelLoading} style={{ background: C.chartB, color: "#fff", border: "none" }}>
-              {excelLoading ? <><Spinner /> Generating…</> : <>📗 Download Excel</>}
-            </button>
-            <button className="fs-act fs-action-btn" onClick={() => setScreen("landing")} style={{ background: "transparent", color: C.textSec, border: `1px solid ${C.border}` }}>← New search</button>
-          </div>
-
-          <div style={{ background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", marginBottom: 20, fontSize: 11.5, color: C.textMuted, lineHeight: 1.6 }}>
-            <strong style={{ color: C.textSec }}>Disclaimer:</strong> FinSight AI provides research and educational content only. This is not investment advice. We are not a SEBI-registered Investment Advisor. Verify information with original sources and consult a qualified financial advisor before making any investment decisions.
-          </div>
-          <div style={{ textAlign: "center", paddingTop: 20, borderTop: `1px solid ${C.border}` }}><Byline /></div>
+          <UserButton afterSignOutUrl="/" />
         </div>
+
+        <div style={{
+          flex: 1, display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center", padding: "40px 20px"
+        }}>
+          <div style={{ textAlign: "center", marginBottom: 32 }}>
+            <h1 style={{
+              fontSize: 42, fontWeight: 800, color: C.textPrimary,
+              margin: "0 0 12px 0", letterSpacing: "-0.02em"
+            }}>
+              FinSight AI
+            </h1>
+            <Byline size="medium" />
+            <p style={{ fontSize: 16, color: C.textSec, marginTop: 12, maxWidth: 600 }}>
+              AI-powered financial intelligence. Public companies + Private company document organizer.
+            </p>
+          </div>
+
+          <div style={{ width: "100%", maxWidth: 720 }}>
+            <div style={{
+              display: "flex", gap: 8, padding: 6,
+              background: C.bgCard, border: `1px solid ${C.border}`,
+              borderRadius: 12, boxShadow: C.shadow
+            }}>
+              <button
+                onClick={() => setShowPeriodDropdown(v => !v)}
+                style={{
+                  padding: "10px 14px", border: `1px solid ${C.border}`,
+                  borderRadius: 8, background: C.bgSidebar, fontSize: 13,
+                  fontWeight: 600, color: C.textPrimary, cursor: "pointer",
+                  display: "flex", alignItems: "center", gap: 6
+                }}
+              >
+                {PERIODS.find(p => p.id === selectedPeriod)?.short || "Period"}
+                <span style={{ fontSize: 10 }}>▼</span>
+              </button>
+              <input
+                type="text"
+                placeholder="Search any public company (e.g., Reliance, Apple, TCS)..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleSearch()}
+                style={{
+                  flex: 1, padding: "10px 14px", border: "none",
+                  background: "transparent", fontSize: 14, color: C.textPrimary,
+                  outline: "none"
+                }}
+              />
+              <button
+                onClick={handleSearch}
+                disabled={loading || !searchQuery.trim()}
+                style={{
+                  padding: "10px 20px", border: "none", borderRadius: 8,
+                  background: C.accent, color: "#fff", fontSize: 14, fontWeight: 600,
+                  cursor: loading ? "wait" : "pointer", opacity: !searchQuery.trim() ? 0.5 : 1
+                }}
+              >
+                {loading ? "..." : "Analyze"}
+              </button>
+            </div>
+            {showPeriodDropdown && (
+              <div style={{
+                marginTop: 4, padding: 8, background: C.bgCard,
+                border: `1px solid ${C.border}`, borderRadius: 8,
+                boxShadow: C.shadowMd
+              }}>
+                {PERIODS.map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => { setSelectedPeriod(p.id); setShowPeriodDropdown(false); }}
+                    style={{
+                      width: "100%", padding: "8px 12px", border: "none",
+                      background: selectedPeriod === p.id ? C.accentLight : "transparent",
+                      textAlign: "left", borderRadius: 6, cursor: "pointer",
+                      display: "flex", justifyContent: "space-between", marginBottom: 2
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary }}>{p.label}</span>
+                    <span style={{ fontSize: 12, color: C.textMuted }}>{p.desc}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {searchError && (
+              <div style={{
+                marginTop: 8, padding: "8px 12px", background: C.redBg,
+                border: `1px solid ${C.red}`, borderRadius: 8, fontSize: 12, color: C.red
+              }}>
+                {searchError}
+              </div>
+            )}
+          </div>
+
+          <div style={{
+            width: "100%", maxWidth: 720, margin: "24px auto 16px",
+            display: "flex", alignItems: "center", gap: 12
+          }}>
+            <div style={{ flex: 1, height: 1, background: C.border }}></div>
+            <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 600, letterSpacing: "0.05em" }}>
+              OR ORGANIZE PRIVATE COMPANY DOCS
+            </div>
+            <div style={{ flex: 1, height: 1, background: C.border }}></div>
+          </div>
+
+          <PrivateDocUploadZone
+            onProcess={handlePrivateDocProcess}
+            isProcessing={privateDocLoading}
+            progress={privateDocProgress}
+            error={privateDocError}
+          />
+
+          <div style={{
+            marginTop: 20,
+            fontSize: 11,
+            color: C.textMuted,
+            textAlign: "center",
+            maxWidth: 600
+          }}>
+            <strong>How it works:</strong> Upload a messy private company Word doc (balance sheet, P&L, cash flow, etc.).
+            AI organizes the data into a professional, statutory-style Word document.
+            <em> Your data, your numbers — just organized.</em>
+          </div>
+        </div>
+
+        <div style={{
+          padding: "16px 24px", borderTop: `1px solid ${C.border}`,
+          background: C.bgCard, fontSize: 11, color: C.textMuted,
+          textAlign: "center"
+        }}>
+          FinSight AI • by Pallav Shah • finsightai.org
+        </div>
+
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     );
   }
-  return null;
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: C.bgPage,
+      fontFamily: "ui-sans-serif,system-ui,-apple-system,sans-serif"
+    }}>
+      <div style={{
+        padding: "16px 24px", display: "flex", justifyContent: "space-between",
+        alignItems: "center", borderBottom: `1px solid ${C.border}`, background: C.bgCard
+      }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.accent }}>FinSight AI</div>
+          <Byline size="tiny" />
+        </div>
+        <button
+          onClick={() => { setView("landing"); setReport(null); }}
+          style={{
+            padding: "8px 16px", border: `1px solid ${C.border}`, borderRadius: 8,
+            background: C.bgCard, fontSize: 13, fontWeight: 600, cursor: "pointer"
+          }}
+        >
+          ← New Search
+        </button>
+      </div>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px" }}>
+        <h1 style={{ fontSize: 32, fontWeight: 800, color: C.textPrimary }}>
+          {report?.companyName || "Analysis"}
+        </h1>
+        <div style={{ fontSize: 14, color: C.textSec, marginTop: 4 }}>
+          Period: {report?.period}
+        </div>
+        <div style={{
+          marginTop: 24, padding: 24, background: C.bgCard,
+          borderRadius: 12, border: `1px solid ${C.border}`,
+          fontSize: 14, lineHeight: 1.6, color: C.textPrimary, whiteSpace: "pre-wrap"
+        }}>
+          {report?.content}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
-  if (!CLERK_PUB_KEY) return <div style={{ padding: 40, textAlign: "center", fontFamily: "sans-serif" }}><h2 style={{ color: "#C04040" }}>⚠️ Clerk Key Missing</h2><p>Please add VITE_CLERK_PUBLISHABLE_KEY to your Vercel environment variables.</p></div>;
+  if (!CLERK_PUB_KEY) {
+    return (
+      <div style={{ padding: 40, textAlign: "center", fontFamily: "system-ui" }}>
+        <h2>Clerk publishable key missing</h2>
+        <p>Set VITE_CLERK_PUBLISHABLE_KEY in your environment.</p>
+      </div>
+    );
+  }
   return (
     <ClerkProvider publishableKey={CLERK_PUB_KEY}>
-      <SignedOut><LoginScreen /></SignedOut>
-      <SignedIn><FinSightApp /></SignedIn>
+      <SignedIn>
+        <FinSightApp />
+      </SignedIn>
+      <SignedOut>
+        <AuthScreen />
+      </SignedOut>
     </ClerkProvider>
   );
 }
