@@ -1187,7 +1187,7 @@ function PrivateDocUploadZone({ onProcess, isProcessing, progress, error }) {
             <div style={{ fontSize: 32, marginBottom: 10 }}>📄</div>
             <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Upload Private Company Financials</div>
             <div style={{ fontSize: 12.5, color: C.textSec, marginBottom: 8 }}>Drag & drop your Word document here, or click to browse</div>
-            <div style={{ fontSize: 11, color: C.textMuted, fontStyle: "italic" }}>Multi-pass AI processing • B Braun-style format • Full preservation</div>
+            <div style={{ fontSize: 11, color: C.textMuted, fontStyle: "italic" }}>Multi-pass AI processing • Professionally organised financial analysis • Full preservation</div>
           </>
         ) : (
           <>
