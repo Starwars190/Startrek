@@ -1216,7 +1216,7 @@ async function generatePPTFull(data, periodLabel) {
   s3.addText('VERDICT', { x: 0.6, y: 0.8, w: 12, h: 0.5, fontSize: 22, fontFace: 'Calibri', bold: true });
   s3.addText(`${(data.outlook || 'Mixed').toUpperCase()} OUTLOOK`, { x: 0.6, y: 1.8, w: 12.1, h: 0.6, fontSize: 28, bold: true, color: outlookColor, align: 'center' });
   s3.addText(cleanText(data.outlookReason) || '', { x: 1.5, y: 2.6, w: 10.3, h: 1.2, fontSize: 15, color: PC.textSec, align: 'center' });
-  s3.addText(`Public companies. Private documents. Smarter decisions.  •  by ${AUTHOR_NAME}  •  finsightai.org`, { x: 0.6, y: 7.2, w: 12, h: 0.25, fontSize: 10, color: PC.textMuted, align: 'center' });
+  s3.addText(`Where finance meets intelligence  •  by ${AUTHOR_NAME}  •  finsightai.org`, { x: 0.6, y: 7.2, w: 12, h: 0.25, fontSize: 10, color: PC.textMuted, align: 'center' });
 
   const cleanCompany = (data.company || "Company").replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
   await pptx.writeFile({ fileName: `FinSight_${cleanCompany}_${new Date().toISOString().split('T')[0]}.pptx` });
