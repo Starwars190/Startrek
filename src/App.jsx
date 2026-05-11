@@ -1216,7 +1216,7 @@ async function generatePPTFull(data, periodLabel) {
   s3.addText('VERDICT', { x: 0.6, y: 0.8, w: 12, h: 0.5, fontSize: 22, fontFace: 'Calibri', bold: true });
   s3.addText(`${(data.outlook || 'Mixed').toUpperCase()} OUTLOOK`, { x: 0.6, y: 1.8, w: 12.1, h: 0.6, fontSize: 28, bold: true, color: outlookColor, align: 'center' });
   s3.addText(cleanText(data.outlookReason) || '', { x: 1.5, y: 2.6, w: 10.3, h: 1.2, fontSize: 15, color: PC.textSec, align: 'center' });
-  s3.addText(`Where finance meets intelligence  •  Public companies. Private documents. Smarter decisions.  •  by ${AUTHOR_NAME}  •  finsightai.org`, { x: 0.6, y: 7.2, w: 12, h: 0.25, fontSize: 10, color: PC.textMuted, align: 'center' });
+  s3.addText(`Where finance meets intelligence.  •  by ${AUTHOR_NAME}  •  finsightai.org`, { x: 0.6, y: 7.2, w: 12, h: 0.25, fontSize: 10, color: PC.textMuted, align: 'center' });
 
   const cleanCompany = (data.company || "Company").replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
   await pptx.writeFile({ fileName: `FinSight_${cleanCompany}_${new Date().toISOString().split('T')[0]}.pptx` });
@@ -1726,12 +1726,9 @@ function FinSightApp() {
 
       <main style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 24px 32px", animation: "fs-fade .6s ease both" }}>
         <div style={{ marginBottom: 24 }}><FinSightLogo size={64} /></div>
-        <h1 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: "clamp(28px, 7.5vw, 52px)", fontWeight: 800, color: C.textPrimary, letterSpacing: "-1.2px", textAlign: "center", lineHeight: 1.15, marginBottom: 10 }}>
+        <h1 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: "clamp(28px, 7.5vw, 52px)", fontWeight: 800, color: C.textPrimary, letterSpacing: "-1.2px", textAlign: "center", lineHeight: 1.15, marginBottom: 14 }}>
           Where finance meets <span style={{ color: C.accent }}>intelligence.</span>
         </h1>
-        <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: "clamp(13px, 2.4vw, 17px)", fontWeight: 600, color: C.textSec, textAlign: "center", marginBottom: 14, letterSpacing: "0.01em" }}>
-          Public companies. Private documents. Smarter decisions.
-        </div>
         <p style={{ color: C.textSec, fontSize: 15, lineHeight: 1.7, textAlign: "center", maxWidth: 540, marginBottom: 32 }}>
           Type any company name. Get AI-powered financial analysis with interactive charts, Excel reports, and professional PPT decks.
         </p>
