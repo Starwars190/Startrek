@@ -227,6 +227,28 @@ async function extractWordContent(file) {
   return result.value;
 }
 
+async function loadPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  const mod = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs');
+  const lib = mod.default ?? mod;
+  lib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
+  window.pdfjsLib = lib;
+  return lib;
+}
+
+async function extractPdfContent(file) {
+  const pdfjsLib = await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pageTexts = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    pageTexts.push(content.items.map((item) => item.str).join(' '));
+  }
+  return pageTexts.join('\n\n');
+}
+
 function chunkText(text, maxCharsPerChunk = 18000, overlap = 800) {
   const chunks = [];
   const paragraphs = text.split(/\n\s*\n/);
@@ -1080,7 +1102,8 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
 async function processPrivateCompanyDoc(file, onProgress) {
   try {
     onProgress?.("Reading your document...");
-    const extractedText = await extractWordContent(file);
+    const isPdf = file.name.match(/\.pdf$/i);
+    const extractedText = isPdf ? await extractPdfContent(file) : await extractWordContent(file);
     if (!extractedText || extractedText.trim().length < 100) {
       throw new Error("Document appears to be empty or unreadable.");
     }
@@ -1551,19 +1574,19 @@ function PrivateDocUploadZone({ onProcess, isProcessing, progress, error }) {
   const handleDrop = (e) => { e.preventDefault(); setIsDragging(false); handleFile(e.dataTransfer.files[0]); };
   const handleFile = (file) => {
     if (!file) return;
-    if (!file.name.match(/\.(docx?|doc)$/i)) { alert("Please upload a Word document (.docx or .doc)"); return; }
+    if (!file.name.match(/\.(pdf|docx?|doc)$/i)) { alert("Please upload a PDF or Word document (.pdf, .docx, or .doc)"); return; }
     onProcess(file);
   };
   return (
     <div style={{ width: "100%", maxWidth: 720, margin: "16px auto 0" }}>
       <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={!isProcessing ? () => fileInputRef.current?.click() : undefined}
         style={{ padding: "28px 24px", background: isDragging ? C.brownLight : (isProcessing ? "#F5F5F5" : C.bgCard), border: `2px dashed ${isDragging ? C.brown : C.border}`, borderRadius: 14, cursor: isProcessing ? "wait" : "pointer", transition: "all 0.2s", textAlign: "center", opacity: isProcessing ? 0.85 : 1, boxShadow: C.shadow }}>
-        <input ref={fileInputRef} type="file" accept=".doc,.docx" onChange={(e) => handleFile(e.target.files[0])} style={{ display: "none" }} disabled={isProcessing} />
+        <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx" onChange={(e) => handleFile(e.target.files[0])} style={{ display: "none" }} disabled={isProcessing} />
         {!isProcessing ? (
           <>
             <div style={{ fontSize: 32, marginBottom: 10 }}>📄</div>
             <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Upload Private Company Financials</div>
-            <div style={{ fontSize: 12.5, color: C.textSec, marginBottom: 8 }}>Drag & drop your Word document here, or click to browse</div>
+            <div style={{ fontSize: 12.5, color: C.textSec, marginBottom: 8 }}>Upload PDF or Word document — drag & drop here, or click to browse</div>
             <div style={{ fontSize: 11, color: C.textMuted, fontStyle: "italic" }}>Clean XBRL output · Times New Roman · Page borders · Bar charts · SWOT · Ratio interpretations</div>
           </>
         ) : (
