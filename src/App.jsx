@@ -1099,6 +1099,302 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   URL.revokeObjectURL(url);
 }
 
+async function loadPdfMake() {
+  if (window.pdfMake?.vfs) return window.pdfMake;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/pdfmake@0.2.10/build/pdfmake.min.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Failed to load PDF library'));
+    document.head.appendChild(s);
+  });
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/pdfmake@0.2.10/build/vfs_fonts.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Failed to load PDF fonts'));
+    document.head.appendChild(s);
+  });
+  return window.pdfMake;
+}
+
+async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages) {
+  const pdfMake = await loadPdfMake();
+
+  // A4 content width: 595.28 - 56 (left) - 56 (right) = 483.28 pt
+  const CW = 483;
+  const BROWN = '#8B4513';
+  const LIGHT_BG = '#F5EFE7';
+
+  const tableLayout = {
+    hLineWidth: (i, node) => (i === 0 || i === node.table.body.length) ? 0.75 : 0.4,
+    vLineWidth: () => 0.4,
+    hLineColor: () => '#AAAAAA',
+    vLineColor: () => '#AAAAAA',
+    paddingLeft: (i) => i === 0 ? 5 : 4,
+    paddingRight: (i, node) => i === node.table.widths.length - 1 ? 5 : 4,
+    paddingTop: () => 3,
+    paddingBottom: () => 3,
+  };
+
+  const content = [];
+
+  const addDisclaimer = () => content.push({
+    text: `Unless otherwise specified, all monetary values are in ${companyInfo.rounding || 'Lakhs'} of INR`,
+    fontSize: 9, italics: true, color: BROWN, alignment: 'right', margin: [0, 3, 0, 6]
+  });
+
+  // ── TITLE PAGE ──────────────────────────────────────────────────────────────
+  content.push({ text: '', margin: [0, 160, 0, 0] });
+  content.push({
+    text: companyInfo.name || 'PRIVATE COMPANY',
+    fontSize: 28, bold: true, color: BROWN, alignment: 'center', margin: [0, 0, 0, 18]
+  });
+  if (companyInfo.period) {
+    content.push({ text: 'Standalone Financial Statements', fontSize: 14, italics: true, color: '#3C3C3C', alignment: 'center', margin: [0, 0, 0, 8] });
+    content.push({ text: `for the period ${preserveDateRanges(companyInfo.period)}`, fontSize: 12, italics: true, color: '#5A5A5A', alignment: 'center', margin: [0, 0, 0, 24] });
+  }
+  addDisclaimer();
+
+  // ── MAIN CONTENT SECTIONS ───────────────────────────────────────────────────
+  const seenHeadings = new Set();
+  const headingKey = (num, title) => `${(num || '').toLowerCase()}::${humanizeTitle(title || '').toLowerCase()}`;
+  let currentSectionTitle = '';
+
+  const pushSectionHeader = (num, title) => {
+    content.push({
+      text: `${num ? num + ' ' : ''}${humanizeTitle(title)}`,
+      fontSize: 16, bold: true, color: BROWN, alignment: 'center',
+      pageBreak: 'before', margin: [0, 0, 0, 6]
+    });
+    addDisclaimer();
+    content.push({ text: '', margin: [0, 4, 0, 0] });
+  };
+
+  for (const chunkResult of chunkResults) {
+    if (!chunkResult.blocks || chunkResult.blocks.length === 0) continue;
+    const newSection = chunkResult.sectionTitle || '';
+    if (newSection && newSection !== currentSectionTitle) {
+      const key = headingKey(chunkResult.sectionNumber, newSection);
+      if (!seenHeadings.has(key)) {
+        seenHeadings.add(key);
+        pushSectionHeader(chunkResult.sectionNumber, newSection);
+        currentSectionTitle = newSection;
+      }
+    }
+
+    for (const block of chunkResult.blocks) {
+      if (block.type === 'section_break') {
+        const key = headingKey(block.sectionNumber, block.title);
+        if (seenHeadings.has(key)) continue;
+        seenHeadings.add(key);
+        pushSectionHeader(block.sectionNumber || '', block.title || '');
+        currentSectionTitle = block.title || currentSectionTitle;
+
+      } else if (block.type === 'heading') {
+        content.push({ text: humanizeTitle(block.title || ''), fontSize: 13, bold: true, color: BROWN, margin: [0, 14, 0, 4] });
+
+      } else if (block.type === 'subheading') {
+        content.push({ text: humanizeTitle(block.title || ''), fontSize: 11, bold: true, color: BROWN, margin: [0, 8, 0, 3] });
+
+      } else if (block.type === 'paragraph_block') {
+        if (block.title) content.push({ text: humanizeTitle(block.title), fontSize: 11, bold: true, color: BROWN, margin: [0, 8, 0, 3] });
+        const paragraphs = Array.isArray(block.paragraphs)
+          ? block.paragraphs
+          : (block.content ? splitNarrativeIntoParagraphs(block.content) : []);
+        for (const p of paragraphs) {
+          if (!p || !p.trim()) continue;
+          const cleanP = fullClean(p.trim());
+          if (!cleanP) continue;
+          content.push({ text: cleanP, fontSize: 11, alignment: 'justify', lineHeight: 1.4, margin: [0, 0, 0, 6] });
+        }
+
+      } else if (block.type === 'bullet_list' && Array.isArray(block.items)) {
+        if (block.title) content.push({ text: humanizeTitle(block.title), fontSize: 11, bold: true, color: BROWN, margin: [0, 8, 0, 3] });
+        for (const item of block.items) {
+          if (!item || !item.trim()) continue;
+          const clean = fullClean(item.trim());
+          if (!clean) continue;
+          content.push({ text: `•  ${clean}`, fontSize: 11, lineHeight: 1.4, margin: [14, 1, 0, 1] });
+        }
+
+      } else if (block.type === 'key_value_table' && block.pairs && block.pairs.length > 0) {
+        if (block.title) content.push({ text: humanizeTitle(block.title), fontSize: 11, bold: true, color: BROWN, margin: [0, 8, 0, 3] });
+        const rows = block.pairs
+          .filter(p => p && p.label)
+          .map(p => [
+            { text: fullClean(p.label) || '', bold: true, fontSize: 10 },
+            { text: p.value == null ? '—' : fullClean(String(p.value)) || '—', fontSize: 10 }
+          ]);
+        if (rows.length > 0) {
+          content.push({ table: { widths: [CW * 0.42, CW * 0.58], body: rows }, layout: tableLayout, margin: [0, 4, 0, 10] });
+        }
+
+      } else if (block.type === 'table' && block.headers && block.headers.length > 0) {
+        if (block.title) content.push({ text: humanizeTitle(block.title), fontSize: 11, bold: true, color: BROWN, margin: [0, 8, 0, 3] });
+        const numCols = block.headers.length;
+        const isWide = numCols >= 5;
+        const fs = isWide ? 8 : 10;
+        const pad = isWide ? 2 : 3;
+        const firstW = isWide ? CW * 0.24 : CW * 0.34;
+        const restW = (CW - firstW) / Math.max(1, numCols - 1);
+        const widths = [firstW, ...Array(numCols - 1).fill(restW)];
+
+        const headerRow = block.headers.map(h => ({
+          text: fullClean(String(h || '')), bold: true, color: BROWN, fillColor: LIGHT_BG,
+          fontSize: fs, alignment: 'center', margin: [pad, pad, pad, pad]
+        }));
+
+        const bodyRows = (Array.isArray(block.rows) ? block.rows : [])
+          .filter(row => Array.isArray(row) && isRowMeaningful(row, 0))
+          .map(row => {
+            const isTotal = String(row[0] || '').toLowerCase().includes('total');
+            return row.map((val, ci) => ({
+              text: ci === 0 ? fullClean(val || '') || '—' : formatCellValue(val),
+              fontSize: fs, bold: isTotal,
+              fillColor: isTotal ? '#FAF7F2' : null,
+              alignment: ci > 0 ? 'right' : 'left',
+              margin: [pad, pad, pad, pad]
+            }));
+          });
+
+        if (bodyRows.length > 0) {
+          content.push({ table: { widths, headerRows: 1, body: [headerRow, ...bodyRows] }, layout: tableLayout, margin: [0, 4, 0, 10] });
+        }
+
+      } else if (block.type === 'page_break') {
+        content.push({ text: '', pageBreak: 'after' });
+      }
+    }
+  }
+
+  // ── CHARTS ──────────────────────────────────────────────────────────────────
+  if (chartImages && chartImages.length > 0) {
+    content.push({
+      text: 'Financial Performance Charts',
+      fontSize: 16, bold: true, color: BROWN, alignment: 'center', pageBreak: 'before', margin: [0, 0, 0, 6]
+    });
+    content.push({ text: 'Visual representation of key financial metrics extracted from the financial statements.', fontSize: 10, italics: true, alignment: 'justify', margin: [0, 0, 0, 14] });
+    for (const chart of chartImages) {
+      try {
+        if (chart.caption) content.push({ text: chart.caption, fontSize: 11, bold: true, italics: true, color: BROWN, alignment: 'center', margin: [0, 10, 0, 4] });
+        content.push({ image: chart.dataURL, width: CW, alignment: 'center', margin: [0, 0, 0, 18] });
+      } catch (e) { console.error('Chart embed failed:', e); }
+    }
+  }
+
+  // ── RATIOS ──────────────────────────────────────────────────────────────────
+  if (ratios && ratios.length > 0) {
+    content.push({ text: 'Financial Ratios Analysis', fontSize: 16, bold: true, color: BROWN, alignment: 'center', pageBreak: 'before', margin: [0, 0, 0, 4] });
+    addDisclaimer();
+    content.push({ text: 'Ratios marked with — indicate insufficient data in the source document for calculation.', fontSize: 9.5, italics: true, margin: [0, 0, 0, 10] });
+    for (const category of ratios) {
+      content.push({ text: humanizeTitle(category.category), fontSize: 11, bold: true, color: BROWN, margin: [0, 10, 0, 4] });
+      const hRow = ['Ratio', 'Value', 'Formula', 'Interpretation'].map(h => ({
+        text: h, bold: true, color: BROWN, fillColor: LIGHT_BG, fontSize: 9, margin: [3, 3, 3, 3]
+      }));
+      const bRows = category.items.map(it => [
+        { text: it.name, bold: true, fontSize: 9, margin: [3, 3, 3, 3] },
+        { text: it.value, fontSize: 9, alignment: 'center', color: it.value === '—' ? '#AAAAAA' : '#000000', margin: [3, 3, 3, 3] },
+        { text: it.formula, italics: true, fontSize: 9, color: '#555555', margin: [3, 3, 3, 3] },
+        { text: it.interpretation, fontSize: 9, color: '#444444', margin: [3, 3, 3, 3] }
+      ]);
+      content.push({ table: { widths: [CW * 0.22, CW * 0.12, CW * 0.27, CW * 0.39], headerRows: 1, body: [hRow, ...bRows] }, layout: tableLayout, margin: [0, 0, 0, 10] });
+    }
+  }
+
+  // ── SWOT ─────────────────────────────────────────────────────────────────────
+  if (swot) {
+    content.push({ text: 'SWOT Analysis', fontSize: 16, bold: true, color: BROWN, alignment: 'center', pageBreak: 'before', margin: [0, 0, 0, 4] });
+    addDisclaimer();
+    content.push({ text: `Company-specific SWOT analysis for ${companyInfo.name || 'the Company'} based on extracted financial data.`, fontSize: 10, italics: true, alignment: 'justify', margin: [0, 0, 0, 12] });
+
+    const swotCell = (label, items, textColor, fillColor) => ({
+      fillColor,
+      stack: [
+        { text: label, bold: true, fontSize: 13, color: textColor, alignment: 'center', margin: [0, 4, 0, 8] },
+        ...(items && items.length > 0
+          ? items.map(s => ({ text: `•  ${s.trim()}`, fontSize: 10, color: textColor, lineHeight: 1.4, margin: [8, 1, 0, 1] }))
+          : [{ text: 'No data available', fontSize: 10, italics: true, color: '#999999', alignment: 'center' }])
+      ],
+      margin: [6, 6, 6, 6]
+    });
+
+    content.push({
+      table: {
+        widths: [CW / 2, CW / 2],
+        body: [
+          [swotCell('STRENGTHS', swot.strengths, '#2D7D5C', '#F0FAF5'), swotCell('WEAKNESSES', swot.weaknesses, '#C04040', '#FDF2F2')],
+          [swotCell('OPPORTUNITIES', swot.opportunities, '#3B82B0', '#F0F6FC'), swotCell('THREATS', swot.threats, '#A8761F', '#FEF7E6')]
+        ]
+      },
+      layout: tableLayout,
+      margin: [0, 0, 0, 14]
+    });
+
+    if (swot.ratioInterpretations && swot.ratioInterpretations.length > 0) {
+      content.push({ text: 'Company-Specific Ratio Interpretations', fontSize: 13, bold: true, color: BROWN, pageBreak: 'before', margin: [0, 0, 0, 4] });
+      content.push({ text: `What each ratio means specifically for ${companyInfo.name || 'the Company'}.`, fontSize: 10, italics: true, margin: [0, 0, 0, 10] });
+      const hRow = ['Ratio', 'Value', `What This Means for ${companyInfo.name || 'the Company'}`].map(h => ({
+        text: h, bold: true, color: BROWN, fillColor: LIGHT_BG, fontSize: 9, margin: [3, 3, 3, 3]
+      }));
+      const bRows = swot.ratioInterpretations.map(it => [
+        { text: it.ratio || '—', bold: true, fontSize: 9, margin: [3, 3, 3, 3] },
+        { text: it.value || '—', fontSize: 9, alignment: 'center', margin: [3, 3, 3, 3] },
+        { text: it.meaning || '—', fontSize: 9, margin: [3, 3, 3, 3] }
+      ]);
+      content.push({ table: { widths: [CW * 0.22, CW * 0.12, CW * 0.66], headerRows: 1, body: [hRow, ...bRows] }, layout: tableLayout, margin: [0, 0, 0, 10] });
+    }
+  }
+
+  // ── CLOSING PAGE ─────────────────────────────────────────────────────────────
+  content.push({ text: '', pageBreak: 'before' });
+  content.push({ text: `Generated by FinSight AI · by ${AUTHOR_NAME} · finsightai.org`, fontSize: 10, italics: true, color: '#888888', alignment: 'center', margin: [0, 240, 0, 0] });
+  content.push({ text: 'This document is for informational purposes only and does not constitute investment advice.', fontSize: 9, italics: true, color: '#999999', alignment: 'center', margin: [0, 14, 0, 0] });
+
+  // ── DOCUMENT DEFINITION ──────────────────────────────────────────────────────
+  const docDefinition = {
+    pageSize: 'A4',
+    pageMargins: [56, 72, 56, 56],
+    background: (currentPage, pageSize) => ({
+      canvas: [{
+        type: 'rect',
+        x: 18, y: 18,
+        w: pageSize.width - 36, h: pageSize.height - 36,
+        lineColor: '#8B4513',
+        lineWidth: 2
+      }]
+    }),
+    header: (currentPage) => {
+      if (currentPage === 1) return null;
+      return {
+        text: `${companyInfo.name || 'Private Company'}${companyInfo.period ? '   ·   ' + preserveDateRanges(companyInfo.period) : ''}`,
+        alignment: 'center', italics: true, bold: true,
+        color: BROWN, fontSize: 8,
+        margin: [56, 18, 56, 0]
+      };
+    },
+    footer: (currentPage, pageCount) => ({
+      text: `Page ${currentPage} of ${pageCount}`,
+      alignment: 'center', fontSize: 8, color: '#9E9890',
+      margin: [0, 8, 0, 18]
+    }),
+    defaultStyle: { font: 'Roboto', fontSize: 11, lineHeight: 1.4, color: '#000000' },
+    content,
+  };
+
+  const safeName = (companyInfo.name || 'Private_Company').replace(/[^a-zA-Z0-9]/g, '_');
+  const blob = await new Promise((resolve) => pdfMake.createPdf(docDefinition).getBlob(resolve));
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${safeName}_Organized_Financials.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 async function processPrivateCompanyDoc(file, onProgress) {
   try {
     onProgress?.("Reading your document...");
@@ -1185,8 +1481,8 @@ async function processPrivateCompanyDoc(file, onProgress) {
       } catch (e) { console.error("Chart 3 failed:", e); }
     }
     
-    onProgress?.("Generating your professional Word document...");
-    await generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot, chartImages, file.name);
+    onProgress?.("Generating your professional PDF document...");
+    await generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages);
     return { success: true, fileName: file.name, chunkCount: chunks.length };
   } catch (error) {
     console.error("Private company doc processing error:", error);
