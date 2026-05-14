@@ -681,26 +681,41 @@ function createFinancialBarChart(data) {
     ctx.fillText('Insufficient data to render this chart', canvas.width / 2, canvas.height / 2);
     return canvas.toDataURL('image/png');
   }
-  const maxVal = Math.max(...validValues, 0);
-  const minVal = Math.min(...validValues, 0);
-  const range = maxVal - minVal || Math.abs(maxVal) || 1;
-  const zeroY = padding.top + (maxVal / range) * chartH;
+  const isPercentage = (data.unit || '').includes('Percentage') || (data.unit || '').includes('%');
+  const formatBarLabel = (v) => {
+    if (isPercentage) return v.toFixed(2) + '%';
+    if (Math.abs(v) >= 100000) return (v / 100000).toFixed(1) + 'L';
+    if (Math.abs(v) >= 1000) return (v / 1000).toFixed(1) + 'K';
+    return v.toFixed(0);
+  };
+  const hasNegative = validValues.some(v => v < 0);
+  const dataMin = Math.min(0, ...validValues);
+  const dataMax = Math.max(0, ...validValues);
+  const axisPad = (dataMax - dataMin) * 0.2 || 1;
+  const yMin = dataMin - axisPad;
+  const yMax = dataMax + axisPad;
+  const range = yMax - yMin;
+  const zeroY = padding.top + ((yMax) / range) * chartH;
   ctx.strokeStyle = '#E5E5E5'; ctx.lineWidth = 1;
   ctx.fillStyle = '#666666';
   ctx.font = '16px "Times New Roman"'; ctx.textAlign = 'right';
   const gridSteps = 5;
   for (let i = 0; i <= gridSteps; i++) {
     const y = padding.top + (chartH * i / gridSteps);
-    const val = maxVal - (range * i / gridSteps);
+    const val = yMax - (range * i / gridSteps);
     ctx.beginPath(); ctx.moveTo(padding.left, y);
     ctx.lineTo(canvas.width - padding.right, y); ctx.stroke();
-    const label = Math.abs(val) >= 100000 ? (val / 100000).toFixed(1) + 'L' : Math.abs(val) >= 1000 ? (val / 1000).toFixed(1) + 'K' : val.toFixed(0);
+    const label = isPercentage ? val.toFixed(1) + '%'
+      : Math.abs(val) >= 100000 ? (val / 100000).toFixed(1) + 'L'
+      : Math.abs(val) >= 1000 ? (val / 1000).toFixed(1) + 'K'
+      : val.toFixed(0);
     ctx.fillText(label, padding.left - 12, y + 6);
   }
   ctx.strokeStyle = '#333333'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(padding.left, padding.top);
   ctx.lineTo(padding.left, padding.top + chartH);
   ctx.lineTo(canvas.width - padding.right, padding.top + chartH); ctx.stroke();
+  const xLabelY = padding.top + chartH + (hasNegative ? 60 : 35);
   const barWidth = (chartW / data.values.length) * 0.55;
   const barSpacing = chartW / data.values.length;
   const colors = data.colors || ['#CF6B4E', '#2D7D5C', '#3B82B0', '#7C5CB8', '#D9A441', '#8B6F47'];
@@ -710,24 +725,23 @@ function createFinancialBarChart(data) {
       ctx.fillText('N/A', padding.left + barSpacing * i + barSpacing / 2, zeroY);
     } else {
       const x = padding.left + (barSpacing * i) + (barSpacing - barWidth) / 2;
-      const barHeight = Math.abs((val / range) * chartH);
-      const y = val >= 0 ? zeroY - barHeight : zeroY;
-      const grad = ctx.createLinearGradient(x, y, x, y + barHeight);
+      const barH = Math.abs((val / range) * chartH);
+      const y = val >= 0 ? zeroY - barH : zeroY;
+      const grad = ctx.createLinearGradient(x, y, x, y + barH);
       grad.addColorStop(0, colors[i % colors.length]);
       grad.addColorStop(1, colors[i % colors.length] + 'AA');
-      ctx.fillStyle = grad; ctx.fillRect(x, y, barWidth, barHeight);
+      ctx.fillStyle = grad; ctx.fillRect(x, y, barWidth, barH);
       ctx.fillStyle = '#1F1B18'; ctx.font = 'bold 18px "Times New Roman"'; ctx.textAlign = 'center';
-      const label = Math.abs(val) >= 100000 ? (val / 100000).toFixed(1) + 'L' : Math.abs(val) >= 1000 ? (val / 1000).toFixed(1) + 'K' : val.toFixed(0);
-      ctx.fillText(label, x + barWidth / 2, val >= 0 ? y - 12 : y + barHeight + 25);
+      ctx.fillText(formatBarLabel(val), x + barWidth / 2, val >= 0 ? y - 12 : y + barH + 25);
     }
     ctx.fillStyle = '#333333'; ctx.font = '16px "Times New Roman"'; ctx.textAlign = 'center';
     const labelLines = (data.labels[i] || '').split(' ');
     if (labelLines.length > 2) {
       const mid = Math.ceil(labelLines.length / 2);
-      ctx.fillText(labelLines.slice(0, mid).join(' '), padding.left + barSpacing * i + barSpacing / 2, padding.top + chartH + 30);
-      ctx.fillText(labelLines.slice(mid).join(' '), padding.left + barSpacing * i + barSpacing / 2, padding.top + chartH + 55);
+      ctx.fillText(labelLines.slice(0, mid).join(' '), padding.left + barSpacing * i + barSpacing / 2, xLabelY);
+      ctx.fillText(labelLines.slice(mid).join(' '), padding.left + barSpacing * i + barSpacing / 2, xLabelY + 25);
     } else {
-      ctx.fillText(data.labels[i] || '', padding.left + barSpacing * i + barSpacing / 2, padding.top + chartH + 35);
+      ctx.fillText(data.labels[i] || '', padding.left + barSpacing * i + barSpacing / 2, xLabelY);
     }
   });
   return canvas.toDataURL('image/png');
@@ -1261,8 +1275,10 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
   const pdfMake = await loadPdfMake();
   console.log(`[generateOrganizedPdfDoc] pdfMake loaded at +${Date.now() - t0}ms`);
 
-  // A4 content width: 595.28 - 56 (left) - 56 (right) = 483.28 pt
-  const CW = 483;
+  // Portrait: 595.28 - 56*2 = 483pt  Landscape: 841.89 - 56*2 = 729pt
+  const CW_PORTRAIT = 483;
+  const CW_LANDSCAPE = 729;
+  const CW = CW_PORTRAIT;
   const BROWN = '#8B4513';
   const LIGHT_BG = '#F5EFE7';
 
@@ -1296,6 +1312,19 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
   }
   addDisclaimer();
 
+  // ── PROCESSING NOTICE (subtle, title-page level) ────────────────────────────
+  const noticeChunk = chunkResults.find(cr => cr.chunkSummary === "Processing notice");
+  if (noticeChunk) {
+    const noticeText = noticeChunk.blocks?.[0]?.paragraphs?.[0] || '';
+    if (noticeText) {
+      content.push({
+        text: noticeText.replace(/^NOTE:\s*/i, 'Processing notice: '),
+        fontSize: 9, italics: true, color: '#A8761F', alignment: 'center',
+        margin: [50, 20, 50, 30]
+      });
+    }
+  }
+
   // ── MAIN CONTENT SECTIONS ───────────────────────────────────────────────────
   const seenHeadings = new Set();
   const headingKey = (num, title) => `${(num || '').toLowerCase()}::${humanizeTitle(title || '').toLowerCase()}`;
@@ -1305,14 +1334,17 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
     content.push({
       text: `${num ? num + ' ' : ''}${humanizeTitle(title)}`,
       fontSize: 16, bold: true, color: BROWN, alignment: 'center',
-      pageBreak: 'before', margin: [0, 0, 0, 6]
+      pageBreak: 'before', margin: [0, 0, 0, 10]
     });
-    addDisclaimer();
-    content.push({ text: '', margin: [0, 4, 0, 0] });
   };
 
   for (const chunkResult of chunkResults) {
     if (!chunkResult.blocks || chunkResult.blocks.length === 0) continue;
+    if (chunkResult.chunkSummary === "Processing notice") continue;
+    const hasMeaningfulContent = chunkResult.blocks.some(b =>
+      ['paragraph_block', 'table', 'key_value_table', 'bullet_list'].includes(b.type)
+    );
+    if (!hasMeaningfulContent) continue;
     const newSection = chunkResult.sectionTitle || '';
     if (newSection && newSection !== currentSectionTitle) {
       const key = headingKey(chunkResult.sectionNumber, newSection);
@@ -1367,22 +1399,23 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
             { text: p.value == null ? '—' : fullClean(String(p.value)) || '—', fontSize: 10 }
           ]);
         if (rows.length > 0) {
-          content.push({ table: { widths: [CW * 0.42, CW * 0.58], body: rows }, layout: tableLayout, margin: [0, 4, 0, 10] });
+          content.push({ table: { widths: [CW * 0.42, CW * 0.58], dontBreakRows: true, body: rows }, layout: tableLayout, margin: [0, 4, 0, 10] });
         }
 
       } else if (block.type === 'table' && block.headers && block.headers.length > 0) {
         if (block.title) content.push({ text: humanizeTitle(block.title), fontSize: 11, bold: true, color: BROWN, margin: [0, 8, 0, 3] });
         const numCols = block.headers.length;
-        const isWide = numCols >= 5;
-        const fs = isWide ? 8 : 10;
-        const pad = isWide ? 2 : 3;
-        const firstW = isWide ? CW * 0.24 : CW * 0.34;
-        const restW = (CW - firstW) / Math.max(1, numCols - 1);
+        const useLandscape = numCols >= 6;
+        const activeCW = useLandscape ? CW_LANDSCAPE : CW_PORTRAIT;
+        const fs = numCols >= 7 ? 8 : numCols >= 5 ? 8 : 10;
+        const pad = numCols >= 5 ? 2 : 3;
+        const firstW = numCols >= 5 ? activeCW * 0.24 : activeCW * 0.34;
+        const restW = (activeCW - firstW) / Math.max(1, numCols - 1);
         const widths = [firstW, ...Array(numCols - 1).fill(restW)];
 
         const headerRow = block.headers.map(h => ({
           text: fullClean(String(h || '')), bold: true, color: BROWN, fillColor: LIGHT_BG,
-          fontSize: fs, alignment: 'center', margin: [pad, pad, pad, pad]
+          fontSize: fs, alignment: 'center', margin: [pad, pad, pad, pad], noWrap: false
         }));
 
         const bodyRows = (Array.isArray(block.rows) ? block.rows : [])
@@ -1394,12 +1427,13 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
               fontSize: fs, bold: isTotal,
               fillColor: isTotal ? '#FAF7F2' : null,
               alignment: ci > 0 ? 'right' : 'left',
-              margin: [pad, pad, pad, pad]
+              margin: [pad, pad, pad, pad], noWrap: false
             }));
           });
 
         if (bodyRows.length > 0) {
-          content.push({ table: { widths, headerRows: 1, body: [headerRow, ...bodyRows] }, layout: tableLayout, margin: [0, 4, 0, 10] });
+          const tableObj = { table: { widths, headerRows: 1, dontBreakRows: true, body: [headerRow, ...bodyRows] }, layout: tableLayout, margin: [0, 4, 0, 10] };
+          content.push(useLandscape ? { ...tableObj, pageOrientation: 'landscape' } : tableObj);
         }
 
       } else if (block.type === 'page_break') {
@@ -1452,25 +1486,16 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
     const swotCell = (label, items, textColor, fillColor) => ({
       fillColor,
       stack: [
-        { text: label, bold: true, fontSize: 13, color: textColor, alignment: 'center', margin: [0, 4, 0, 8] },
+        { text: label, bold: true, fontSize: 12, color: textColor, alignment: 'center', margin: [0, 4, 0, 8] },
         ...(items && items.length > 0
-          ? items.map(s => ({ text: `•  ${s.trim()}`, fontSize: 10, color: textColor, lineHeight: 1.4, margin: [8, 1, 0, 1] }))
-          : [{ text: 'No data available', fontSize: 10, italics: true, color: '#999999', alignment: 'center' }])
+          ? items.map(s => ({ text: `•  ${s.trim()}`, fontSize: 9, color: textColor, lineHeight: 1.4, margin: [8, 1, 0, 1] }))
+          : [{ text: 'No data available', fontSize: 9, italics: true, color: '#999999', alignment: 'center' }])
       ],
       margin: [6, 6, 6, 6]
     });
 
-    content.push({
-      table: {
-        widths: [CW / 2, CW / 2],
-        body: [
-          [swotCell('STRENGTHS', swot.strengths, '#2D7D5C', '#F0FAF5'), swotCell('WEAKNESSES', swot.weaknesses, '#C04040', '#FDF2F2')],
-          [swotCell('OPPORTUNITIES', swot.opportunities, '#3B82B0', '#F0F6FC'), swotCell('THREATS', swot.threats, '#A8761F', '#FEF7E6')]
-        ]
-      },
-      layout: tableLayout,
-      margin: [0, 0, 0, 14]
-    });
+    content.push({ unbreakable: true, stack: [{ table: { widths: [CW / 2, CW / 2], dontBreakRows: true, body: [[swotCell('STRENGTHS', swot.strengths, '#2D7D5C', '#F0FAF5'), swotCell('WEAKNESSES', swot.weaknesses, '#C04040', '#FDF2F2')]] }, layout: tableLayout, margin: [0, 0, 0, 6] }] });
+    content.push({ unbreakable: true, stack: [{ table: { widths: [CW / 2, CW / 2], dontBreakRows: true, body: [[swotCell('OPPORTUNITIES', swot.opportunities, '#3B82B0', '#F0F6FC'), swotCell('THREATS', swot.threats, '#A8761F', '#FEF7E6')]] }, layout: tableLayout, margin: [0, 0, 0, 14] }] });
 
     if (swot.ratioInterpretations && swot.ratioInterpretations.length > 0) {
       content.push({ text: 'Company-Specific Ratio Interpretations', fontSize: 13, bold: true, color: BROWN, pageBreak: 'before', margin: [0, 0, 0, 4] });
@@ -1488,19 +1513,39 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
   }
 
   // ── CLOSING PAGE ─────────────────────────────────────────────────────────────
-  content.push({ text: '', pageBreak: 'before' });
-  content.push({ text: `Generated by FinSight AI · by ${AUTHOR_NAME} · finsightai.org`, fontSize: 10, italics: true, color: '#888888', alignment: 'center', margin: [0, 240, 0, 0] });
-  content.push({ text: 'This document is for informational purposes only and does not constitute investment advice.', fontSize: 9, italics: true, color: '#999999', alignment: 'center', margin: [0, 14, 0, 0] });
+  const docId = Math.random().toString(36).substring(2, 10).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+  const generatedDate = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  content.push({ text: '', pageBreak: 'before', margin: [0, 60, 0, 0] });
+  content.push({ canvas: [{ type: 'rect', x: CW * 0.2, y: 0, w: CW * 0.6, h: 2, color: BROWN }], margin: [0, 0, 0, 20] });
+  content.push({ text: 'Document Information', fontSize: 14, bold: true, color: BROWN, alignment: 'center', margin: [0, 0, 0, 16] });
+  content.push({
+    table: {
+      widths: [CW * 0.35, CW * 0.65],
+      dontBreakRows: true,
+      body: [
+        [{ text: 'Generated by', bold: true, fontSize: 10, margin: [4, 4, 4, 4] }, { text: 'FinSight AI', fontSize: 10, margin: [4, 4, 4, 4] }],
+        [{ text: 'Authors', bold: true, fontSize: 10, margin: [4, 4, 4, 4] }, { text: AUTHOR_NAME, fontSize: 10, margin: [4, 4, 4, 4] }],
+        [{ text: 'Date Generated', bold: true, fontSize: 10, margin: [4, 4, 4, 4] }, { text: generatedDate, fontSize: 10, margin: [4, 4, 4, 4] }],
+        [{ text: 'Document ID', bold: true, fontSize: 10, margin: [4, 4, 4, 4] }, { text: docId, fontSize: 10, color: '#666666', margin: [4, 4, 4, 4] }],
+        [{ text: 'Company', bold: true, fontSize: 10, margin: [4, 4, 4, 4] }, { text: companyInfo.name || 'Private Company', fontSize: 10, margin: [4, 4, 4, 4] }],
+      ]
+    },
+    layout: tableLayout,
+    margin: [CW * 0.1, 0, CW * 0.1, 20]
+  });
+  content.push({ canvas: [{ type: 'rect', x: CW * 0.2, y: 0, w: CW * 0.6, h: 2, color: BROWN }], margin: [0, 0, 0, 24] });
+  content.push({ text: 'Visit finsightai.org for more AI-powered financial analysis tools', fontSize: 11, italics: true, color: BROWN, alignment: 'center', margin: [0, 0, 0, 16] });
+  content.push({ text: 'This document was generated from publicly available filings. For informational purposes only. Does not constitute investment advice.', fontSize: 9, italics: true, color: '#999999', alignment: 'center', margin: [40, 0, 40, 0] });
 
   // ── DOCUMENT DEFINITION ──────────────────────────────────────────────────────
   const docDefinition = {
     pageSize: 'A4',
-    pageMargins: [56, 72, 56, 56],
+    pageMargins: [56, 80, 56, 56],
     background: (currentPage, pageSize) => ({
       canvas: [{
         type: 'rect',
-        x: 18, y: 18,
-        w: pageSize.width - 36, h: pageSize.height - 36,
+        x: 24, y: 24,
+        w: pageSize.width - 48, h: pageSize.height - 48,
         lineColor: '#8B4513',
         lineWidth: 2
       }]
@@ -1513,7 +1558,7 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
           : (companyInfo.name || 'Private Company'),
         alignment: 'center', italics: true, bold: true,
         color: BROWN, fontSize: 8,
-        margin: [56, 18, 56, 0]
+        margin: [56, 32, 56, 2]
       };
     },
     footer: (currentPage, pageCount) => ({
