@@ -85,13 +85,13 @@ function humanizeTitle(title) {
   return t.replace(/\s+/g, ' ').trim();
 }
 
-// CRITICAL v6.0: Non-breaking dates - prevents "01/04/2024" and "to 31/03/2025" from wrapping separately
+// CRITICAL v6.0: Non-breaking dates - collapses "01/04/2024 to 31/03/2025" into a single
+// unbroken token using en-dash so pdfmake (which ignores \u00A0) cannot split it mid-range.
 function preserveDateRanges(text) {
   if (!text) return text;
   let s = String(text);
-  s = s.replace(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+to\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/g, '$1\u00A0to\u00A0$2');
-  s = s.replace(/(\d{1,2}-\d{1,2}-\d{2,4})\s+to\s+(\d{1,2}-\d{1,2}-\d{2,4})/g, '$1\u00A0to\u00A0$2');
-  s = s.replace(/(31\/03\/\d{4})/g, '31/03/$1'.replace('31/03/$1', '31\u200B/03\u200B/').replace(/(\d{2})\u200B\/(\d{2})\u200B\//, '$1/$2/'));
+  s = s.replace(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+to\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/g, '$1\u2013$2');
+  s = s.replace(/(\d{1,2}-\d{1,2}-\d{2,4})\s+to\s+(\d{1,2}-\d{1,2}-\d{2,4})/g, '$1\u2013$2');
   return s;
 }
 
@@ -1152,7 +1152,7 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
   });
   if (companyInfo.period) {
     content.push({ text: 'Standalone Financial Statements', fontSize: 14, italics: true, color: '#3C3C3C', alignment: 'center', margin: [0, 0, 0, 8] });
-    content.push({ text: `for the period ${preserveDateRanges(companyInfo.period)}`, fontSize: 12, italics: true, color: '#5A5A5A', alignment: 'center', margin: [0, 0, 0, 24] });
+    content.push({ text: ['for the period ', { text: companyInfo.period, noWrap: true }], fontSize: 12, italics: true, color: '#5A5A5A', alignment: 'center', margin: [0, 0, 0, 24] });
   }
   addDisclaimer();
 
@@ -1368,7 +1368,9 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
     header: (currentPage) => {
       if (currentPage === 1) return null;
       return {
-        text: `${companyInfo.name || 'Private Company'}${companyInfo.period ? '   ·   ' + preserveDateRanges(companyInfo.period) : ''}`,
+        text: companyInfo.period
+          ? [{ text: companyInfo.name || 'Private Company' }, { text: '   ·   ' + companyInfo.period, noWrap: true }]
+          : (companyInfo.name || 'Private Company'),
         alignment: 'center', italics: true, bold: true,
         color: BROWN, fontSize: 8,
         margin: [56, 18, 56, 0]
