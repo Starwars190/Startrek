@@ -298,6 +298,44 @@ NEVER include square-bracketed XBRL tags in your output. Strip them ALL.
 PART B — PRESERVE EVERY SECTION (MANDATORY)
 ═══════════════════════════════════════
 
+🔴 PRIORITY RULE — Director's Report Preamble (MANDATORY):
+
+Before processing any financial tables, scan the chunk for these phrases:
+  - "BOARD'S REPORT" / "DIRECTOR'S REPORT" / "DIRECTORS' REPORT"
+  - "FINANCIAL HIGHLIGHTS" (with table comparing standalone/consolidated years)
+  - "BOARD MEETINGS" / "Number of Board Meetings held during the year"
+  - "RISK MANAGEMENT" / "Risk Management Policy" / "Risk Management Committee"
+  - "SEXUAL HARASSMENT" / "POSH Act" / "Internal Complaints Committee" / "POSH compliance"
+  - "SECRETARIAL STANDARDS" / "Compliance with Secretarial Standards SS-1 and SS-2"
+  - "DIVIDEND" (in Director's Report preamble, NOT in financial statements)
+  - "TRANSFER TO RESERVES"
+  - "CHANGE IN NATURE OF BUSINESS"
+  - "MATERIAL CHANGES AND COMMITMENTS"
+  - "STATE OF AFFAIRS"
+  - "SIGNIFICANT AND MATERIAL ORDERS"
+  - "INTERNAL FINANCIAL CONTROLS"
+  - "PARTICULARS OF CONTRACTS WITH RELATED PARTIES"
+  - "ACKNOWLEDGEMENT" / "Acknowledgement" (closing section)
+
+WHENEVER YOU SEE ANY OF THESE, you MUST output them as:
+  {type: "heading", title: "<humanized title>"},
+  {type: "paragraph_block", paragraphs: [<full content from source>]}
+
+These are MANDATORY disclosures under Companies Act 2013 Section 134(3).
+Skipping them = INCOMPLETE filing = FAIL.
+
+CONCRETE EXAMPLE:
+If source contains:
+"1. FINANCIAL HIGHLIGHTS:
+ The Company achieved revenue of Rs. 73,698 Lakhs during the year compared
+ to Rs. 67,890 Lakhs in the previous year, growth of 8.5%."
+
+You MUST output:
+{type: "heading", title: "Financial Highlights"},
+{type: "paragraph_block", paragraphs: [
+  "The Company achieved revenue of Rs. 73,698 Lakhs during the year compared to Rs. 67,890 Lakhs in the previous year, growth of 8.5%."
+]}
+
 If chunk contains these sections, output them in FULL — do NOT skip, do NOT compress:
 
 PREAMBLE NARRATIVE SECTIONS (often numbered 1, 2, 3...):
@@ -355,6 +393,15 @@ PART C — OTHER FORMATTING RULES
 7. SECTION TRANSITIONS within chunk: use "section_break" block to mark new sections.
 
 ${companyContext ? `\nCOMPANY CONTEXT FROM EARLIER CHUNKS: ${companyContext}\n` : ''}
+
+FINAL VERIFICATION before returning JSON:
+Mental checklist — scan the source chunk one more time:
+  □ Does it mention 'FINANCIAL HIGHLIGHTS'? → Did I output that section?
+  □ Does it mention 'BOARD MEETINGS'? → Did I output that section?
+  □ Does it mention 'POSH' or 'SEXUAL HARASSMENT'? → Did I output it?
+  □ Does it mention 'SECRETARIAL STANDARDS'? → Did I output it?
+  □ Does it mention 'RISK MANAGEMENT'? → Did I output it?
+If ANY answer is 'no, I skipped it' — go back and add it before returning.
 
 ═══════════════════════════════════════
 OUTPUT JSON STRUCTURE (return ONLY this, no markdown)
