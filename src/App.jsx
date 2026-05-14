@@ -37,13 +37,49 @@ const PERIODS = [
 const DEFAULT_PERIOD = "1_year";
 
 async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
+  const RETRYABLE = new Set([429, 503, 529]);
+  const MAX_RETRIES = 3;
   const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: "user", content: userMsg }] };
   if (system) body.system = system;
   if (tools.length) body.tools = tools;
-  const res = await fetch(API_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const json = await res.json();
-  if (json.error) throw new Error(json.error.message || "API call failed");
-  return json.content.filter(b => b.type === "text").map(b => b.text).join("");
+
+  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90_000);
+    let res;
+    try {
+      res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === "AbortError") {
+        const isLastAttempt = attempt > MAX_RETRIES;
+        console.warn(`callClaude attempt ${attempt}: request timed out after 90s`);
+        if (isLastAttempt) throw new Error("Rate limit exceeded after 3 retries. Please try again in a few minutes.");
+        continue;
+      }
+      throw err;
+    }
+    clearTimeout(timeoutId);
+
+    if (RETRYABLE.has(res.status)) {
+      const isLastAttempt = attempt > MAX_RETRIES;
+      const baseWait = parseInt(res.headers.get("retry-after") || "60", 10);
+      const waitSeconds = baseWait * Math.pow(2, attempt - 1);
+      console.warn(`callClaude attempt ${attempt}: status ${res.status}, waiting ${waitSeconds}s before retry`);
+      if (isLastAttempt) throw new Error("Rate limit exceeded after 3 retries. Please try again in a few minutes.");
+      await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
+      continue;
+    }
+
+    const json = await res.json();
+    if (json.error) throw new Error(json.error.message || "API call failed");
+    return json.content.filter(b => b.type === "text").map(b => b.text).join("");
+  }
 }
 
 function cleanText(text) {
@@ -249,7 +285,7 @@ async function extractPdfContent(file) {
   return pageTexts.join('\n\n');
 }
 
-function chunkText(text, maxCharsPerChunk = 18000, overlap = 800) {
+function chunkText(text, maxCharsPerChunk = 12000, overlap = 500) {
   const chunks = [];
   const paragraphs = text.split(/\n\s*\n/);
   let currentChunk = "";
@@ -266,6 +302,8 @@ function chunkText(text, maxCharsPerChunk = 18000, overlap = 800) {
 
 function buildChunkOrganizationPrompt(chunkIndex, totalChunks, companyContext) {
   return `You are processing chunk ${chunkIndex} of ${totalChunks} from an Indian private company's MCA-compliant financial document. Output goes DIRECTLY to corporate users — they need clean, professional, complete content.
+
+IMPORTANT: Your response MUST fit within 8000 output tokens. Be complete but efficient. Use shorter paragraph rewrites where possible while preserving meaning.
 
 ═══════════════════════════════════════
 PART A — XBRL/MACHINE TAG CLEANING (MANDATORY)
@@ -469,7 +507,7 @@ async function processChunkWithAI(chunkTextStr, chunkIndex, totalChunks, company
   const aiResponse = await callClaude({
     system: systemPrompt,
     userMsg: `Process chunk ${chunkIndex} of ${totalChunks}. PRESERVE all content. STRIP all XBRL tags. Return JSON only:\n\n${chunkTextStr}`,
-    maxTokens: 24000
+    maxTokens: 8000
   });
   let cleanResponse = aiResponse.trim();
   if (cleanResponse.startsWith('```json')) cleanResponse = cleanResponse.replace(/^```json\s*/, '').replace(/```\s*$/, '');
@@ -1453,16 +1491,42 @@ async function processPrivateCompanyDoc(file, onProgress) {
       throw new Error("Document appears to be empty or unreadable.");
     }
     onProgress?.("Splitting document into sections...");
-    const chunks = chunkText(extractedText, 18000, 800);
+    const chunks = chunkText(extractedText, 12000, 500);
     onProgress?.(`Document has ${chunks.length} sections. Beginning AI processing (may take 3-5 minutes)...`);
     const chunkResults = [];
     let companyInfo = { name: "", period: "", rounding: "Lakhs", currency: "INR", sector: "" };
+    const loopStart = Date.now();
+    const chunkTimes = [];
+    let failedChunks = 0;
     for (let i = 0; i < chunks.length; i++) {
-      const chunkResult = await processChunkWithAI(
-        chunks[i], i + 1, chunks.length,
-        i > 0 ? `Company: ${companyInfo.name || "unknown"}, Period: ${companyInfo.period || "unknown"}, Sector: ${companyInfo.sector || "unknown"}` : null,
-        onProgress
-      );
+      const chunkStart = Date.now();
+      let chunkResult;
+      try {
+        chunkResult = await processChunkWithAI(
+          chunks[i], i + 1, chunks.length,
+          i > 0 ? `Company: ${companyInfo.name || "unknown"}, Period: ${companyInfo.period || "unknown"}, Sector: ${companyInfo.sector || "unknown"}` : null,
+          onProgress
+        );
+      } catch (chunkErr) {
+        failedChunks++;
+        console.error(`[processPrivateCompanyDoc] Chunk ${i + 1}/${chunks.length} failed:`, chunkErr);
+        chunkResult = {
+          chunkSummary: `Section ${i + 1} failed to process`,
+          sectionNumber: "",
+          sectionTitle: `Section ${i + 1} (Failed)`,
+          blocks: [{
+            type: "paragraph_block",
+            paragraphs: [
+              "This section could not be processed automatically due to a technical issue. The original content has been preserved below for manual review.",
+              chunks[i].substring(0, 5000) + "..."
+            ]
+          }],
+          companyInfoFound: {},
+          financialDataExtracted: {}
+        };
+      }
+      const chunkSecs = Math.round((Date.now() - chunkStart) / 1000);
+      chunkTimes.push(chunkSecs);
       chunkResults.push(chunkResult);
       if (chunkResult.companyInfoFound) {
         const ci = chunkResult.companyInfoFound;
@@ -1472,8 +1536,35 @@ async function processPrivateCompanyDoc(file, onProgress) {
         if (ci.currency) companyInfo.currency = ci.currency;
         if (ci.sector && !companyInfo.sector) companyInfo.sector = ci.sector;
       }
+      if (i < chunks.length - 1) {
+        onProgress?.(`Processed section ${i + 1} of ${chunks.length} (took ${chunkSecs}s). Waiting briefly before next...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
     }
-    onProgress?.("Calculating financial ratios...");
+    const totalSecs = Math.round((Date.now() - loopStart) / 1000);
+    const avgSecs = Math.round(chunkTimes.reduce((a, b) => a + b, 0) / chunkTimes.length);
+    const slowestSecs = Math.max(...chunkTimes);
+    console.log(`[processPrivateCompanyDoc] Total: ${totalSecs}s | Avg chunk: ${avgSecs}s | Slowest chunk: ${slowestSecs}s | Failed: ${failedChunks}`);
+    if (failedChunks > 0) {
+      chunkResults.unshift({
+        chunkSummary: "Processing notice",
+        sectionNumber: "",
+        sectionTitle: "Processing Notice",
+        blocks: [{
+          type: "paragraph_block",
+          paragraphs: [
+            `NOTE: ${failedChunks} of ${chunks.length} sections required manual processing. The original content for those sections is preserved verbatim in the document.`
+          ]
+        }],
+        companyInfoFound: {},
+        financialDataExtracted: {}
+      });
+    }
+    const successChunks = chunks.length - failedChunks;
+    const progressSuffix = failedChunks > 0
+      ? `Done: ${successChunks} sections processed, ${failedChunks} needed fallback. Generating PDF...`
+      : "Calculating financial ratios...";
+    onProgress?.(progressSuffix);
     const aggregated = aggregateFinancialData(chunkResults);
     let sectorHint = companyInfo.sector || "";
     if (!sectorHint) {
@@ -1532,7 +1623,7 @@ async function processPrivateCompanyDoc(file, onProgress) {
     
     onProgress?.("Generating your professional PDF document...");
     await generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages);
-    return { success: true, fileName: file.name, chunkCount: chunks.length };
+    return { success: true, fileName: file.name, chunkCount: chunks.length, failedChunks };
   } catch (error) {
     console.error("Private company doc processing error:", error);
     throw error;
@@ -1911,9 +2002,42 @@ function PeriodDropdown({ value, onChange }) {
   );
 }
 
+const ACTIVITY_LABELS = ["🧠 AI is reading...", "📝 Extracting data...", "🔍 Analyzing structure..."];
+
 function PrivateDocUploadZone({ onProcess, isProcessing, progress, error }) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
+
+  const [elapsedSecs, setElapsedSecs] = useState(0);
+  const [activityIdx, setActivityIdx] = useState(0);
+  const startTimeRef = useRef(null);
+
+  useEffect(() => {
+    if (!isProcessing) { setElapsedSecs(0); setActivityIdx(0); startTimeRef.current = null; return; }
+    startTimeRef.current = Date.now();
+    const elapsedTimer = setInterval(() => {
+      setElapsedSecs(Math.floor((Date.now() - startTimeRef.current) / 1000));
+    }, 1000);
+    const activityTimer = setInterval(() => {
+      setActivityIdx(idx => (idx + 1) % ACTIVITY_LABELS.length);
+    }, 2000);
+    return () => { clearInterval(elapsedTimer); clearInterval(activityTimer); };
+  }, [isProcessing]);
+
+  const chunkMatch = progress?.match(/section (\d+) of (\d+)/i);
+  const chunksComplete = chunkMatch ? parseInt(chunkMatch[1], 10) : 0;
+  const chunksTotal = chunkMatch ? parseInt(chunkMatch[2], 10) : 0;
+  const showBar = chunksTotal > 0;
+  const barPct = showBar ? Math.round((chunksComplete / chunksTotal) * 100) : 0;
+  const slowChunk = elapsedSecs > 0 && showBar && chunksComplete < chunksTotal &&
+    (elapsedSecs - chunksComplete * 3) > 60;
+
+  const elapsedMins = Math.floor(elapsedSecs / 60);
+  const elapsedRemSecs = elapsedSecs % 60;
+  const elapsedStr = elapsedMins > 0
+    ? `${elapsedMins}m ${String(elapsedRemSecs).padStart(2, "0")}s`
+    : `${elapsedSecs}s`;
+
   const handleDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
   const handleDragLeave = (e) => { e.preventDefault(); setIsDragging(false); };
   const handleDrop = (e) => { e.preventDefault(); setIsDragging(false); handleFile(e.dataTransfer.files[0]); };
@@ -1922,6 +2046,7 @@ function PrivateDocUploadZone({ onProcess, isProcessing, progress, error }) {
     if (!file.name.match(/\.(pdf|docx?|doc)$/i)) { alert("Please upload a PDF or Word document (.pdf, .docx, or .doc)"); return; }
     onProcess(file);
   };
+
   return (
     <div style={{ width: "100%", maxWidth: 720, margin: "16px auto 0" }}>
       <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={!isProcessing ? () => fileInputRef.current?.click() : undefined}
@@ -1936,9 +2061,33 @@ function PrivateDocUploadZone({ onProcess, isProcessing, progress, error }) {
           </>
         ) : (
           <>
-            <div style={{ fontSize: 24, marginBottom: 12, animation: "fs-spin 2s linear infinite", display: "inline-block" }}>⚙️</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: C.brown, marginBottom: 6 }}>{progress || "Processing..."}</div>
-            <div style={{ fontSize: 11, color: C.textMuted }}>Multi-pass processing — typically 3-5 minutes for large documents</div>
+            <div style={{ fontSize: 24, marginBottom: 10, animation: "fs-spin 2s linear infinite", display: "inline-block" }}>⚙️</div>
+
+            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginBottom: 8 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.brown }}>{progress || "Processing..."}</div>
+              <div style={{ fontSize: 12, color: C.textMuted, background: C.brownLight, borderRadius: 6, padding: "2px 8px", fontVariantNumeric: "tabular-nums" }}>Elapsed: {elapsedStr}</div>
+            </div>
+
+            {showBar && (
+              <div style={{ margin: "8px auto 4px", maxWidth: 400 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.textMuted, marginBottom: 4 }}>
+                  <span>Sections processed</span>
+                  <span>{chunksComplete} / {chunksTotal}</span>
+                </div>
+                <div style={{ height: 8, background: C.border, borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${barPct}%`, background: C.brown, borderRadius: 4, transition: "width 0.5s ease" }} />
+                </div>
+              </div>
+            )}
+
+            {slowChunk && (
+              <div style={{ marginTop: 10, padding: "6px 12px", background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 6, fontSize: 11.5, color: C.amber, display: "inline-block" }}>
+                ⚠ Large section detected — taking longer than usual, please wait...
+              </div>
+            )}
+
+            <div style={{ marginTop: 10, fontSize: 12, color: C.textSec, fontStyle: "italic" }}>{ACTIVITY_LABELS[activityIdx]}</div>
+            <div style={{ marginTop: 4, fontSize: 11, color: C.textMuted }}>Multi-pass processing — typically 3-5 minutes for large documents</div>
           </>
         )}
       </div>
@@ -2049,7 +2198,9 @@ function FinSightApp() {
     setPrivateDocLoading(true); setPrivateDocError(""); setPrivateDocProgress("");
     try {
       const result = await processPrivateCompanyDoc(file, (msg) => setPrivateDocProgress(msg));
-      setPrivateDocProgress(`Done! Processed ${result.chunkCount} sections. Document downloaded.`);
+      setPrivateDocProgress(result.failedChunks > 0
+        ? `Done! ${result.chunkCount - result.failedChunks} of ${result.chunkCount} sections processed (${result.failedChunks} used fallback). Document downloaded.`
+        : `Done! Processed ${result.chunkCount} sections. Document downloaded.`);
       setTimeout(() => { setPrivateDocLoading(false); setPrivateDocProgress(""); }, 3000);
     } catch (e) {
       setPrivateDocError(e.message || "Failed to process document.");
