@@ -1184,27 +1184,35 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   URL.revokeObjectURL(url);
 }
 
+function loadScriptWithTimeout(src, label) {
+  return Promise.race([
+    new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error(`Failed to load ${label}`));
+      document.head.appendChild(s);
+    }),
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error("PDF library could not be loaded. Please check your internet connection or try again.")),
+      30_000
+    )),
+  ]);
+}
+
 async function loadPdfMake() {
   if (window.pdfMake?.vfs) return window.pdfMake;
-  await new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/pdfmake@0.2.10/build/pdfmake.min.js';
-    s.onload = resolve;
-    s.onerror = () => reject(new Error('Failed to load PDF library'));
-    document.head.appendChild(s);
-  });
-  await new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/pdfmake@0.2.10/build/vfs_fonts.js';
-    s.onload = resolve;
-    s.onerror = () => reject(new Error('Failed to load PDF fonts'));
-    document.head.appendChild(s);
-  });
+  await loadScriptWithTimeout('https://cdn.jsdelivr.net/npm/pdfmake@0.2.10/build/pdfmake.min.js', 'PDF library');
+  await loadScriptWithTimeout('https://cdn.jsdelivr.net/npm/pdfmake@0.2.10/build/vfs_fonts.js', 'PDF fonts');
   return window.pdfMake;
 }
 
 async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages) {
+  const t0 = Date.now();
+  console.log(`[generateOrganizedPdfDoc] START ${new Date().toISOString()} | chunks=${chunkResults.length}`);
+  try {
   const pdfMake = await loadPdfMake();
+  console.log(`[generateOrganizedPdfDoc] pdfMake loaded at +${Date.now() - t0}ms`);
 
   // A4 content width: 595.28 - 56 (left) - 56 (right) = 483.28 pt
   const CW = 483;
@@ -1471,6 +1479,7 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
   };
 
   const safeName = (companyInfo.name || 'Private_Company').replace(/[^a-zA-Z0-9]/g, '_');
+  console.log(`[generateOrganizedPdfDoc] calling createPdf at +${Date.now() - t0}ms | content items=${content.length}`);
   const blob = await new Promise((resolve) => pdfMake.createPdf(docDefinition).getBlob(resolve));
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1480,6 +1489,11 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  console.log(`[generateOrganizedPdfDoc] DONE at +${Date.now() - t0}ms`);
+  } catch (pdfErr) {
+    console.error(`[generateOrganizedPdfDoc] FAILED at +${Date.now() - t0}ms:`, pdfErr);
+    throw new Error(`PDF generation failed: ${pdfErr.message}`);
+  }
 }
 
 async function processPrivateCompanyDoc(file, onProgress) {
@@ -1621,9 +1635,48 @@ async function processPrivateCompanyDoc(file, onProgress) {
       } catch (e) { console.error("Chart 3 failed:", e); }
     }
     
-    onProgress?.("Generating your professional PDF document...");
-    await generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages);
-    return { success: true, fileName: file.name, chunkCount: chunks.length, failedChunks };
+    const totalBlocks = chunkResults.reduce((sum, cr) => sum + (cr.blocks?.length || 0), 0);
+    if (totalBlocks > 500) {
+      console.warn(`[processPrivateCompanyDoc] Large document: ${totalBlocks} blocks — PDF may take 60-180s`);
+      onProgress?.(`Large document detected (${totalBlocks} blocks). PDF generation may take 60-180 seconds. Please wait...`);
+    } else {
+      onProgress?.("Generating your professional PDF document...");
+    }
+
+    const pdfStart = Date.now();
+    const pdfElapsedInterval = setInterval(() => {
+      const elapsed = Math.round((Date.now() - pdfStart) / 1000);
+      onProgress?.(`Generating PDF... (${elapsed} seconds elapsed)`);
+    }, 5000);
+
+    let pdfError = null;
+    try {
+      await Promise.race([
+        generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error("PDF generation timed out. Your data has been organized but the file is too large for browser rendering. Please contact support with your file.")),
+          180_000
+        )),
+      ]);
+    } catch (err) {
+      pdfError = err;
+    } finally {
+      clearInterval(pdfElapsedInterval);
+    }
+
+    if (pdfError) {
+      console.error("[processPrivateCompanyDoc] PDF failed, attempting Word fallback:", pdfError);
+      onProgress?.("PDF generation failed; generating a Word document instead — same content, just .docx format...");
+      try {
+        await generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot, chartImages, file.name);
+        return { success: true, fileName: file.name, chunkCount: chunks.length, failedChunks, format: "docx" };
+      } catch (wordErr) {
+        console.error("[processPrivateCompanyDoc] Word fallback also failed:", wordErr);
+        throw pdfError;
+      }
+    }
+
+    return { success: true, fileName: file.name, chunkCount: chunks.length, failedChunks, format: "pdf" };
   } catch (error) {
     console.error("Private company doc processing error:", error);
     throw error;
@@ -2199,8 +2252,8 @@ function FinSightApp() {
     try {
       const result = await processPrivateCompanyDoc(file, (msg) => setPrivateDocProgress(msg));
       setPrivateDocProgress(result.failedChunks > 0
-        ? `Done! ${result.chunkCount - result.failedChunks} of ${result.chunkCount} sections processed (${result.failedChunks} used fallback). Document downloaded.`
-        : `Done! Processed ${result.chunkCount} sections. Document downloaded.`);
+        ? `Done! ${result.chunkCount - result.failedChunks} of ${result.chunkCount} sections processed (${result.failedChunks} used fallback). ${result.format === "docx" ? "Word document" : "PDF"} downloaded.`
+        : `Done! Processed ${result.chunkCount} sections. ${result.format === "docx" ? "Word document (PDF fallback)" : "PDF"} downloaded.`);
       setTimeout(() => { setPrivateDocLoading(false); setPrivateDocProgress(""); }, 3000);
     } catch (e) {
       setPrivateDocError(e.message || "Failed to process document.");
