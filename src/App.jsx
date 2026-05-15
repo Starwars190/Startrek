@@ -82,6 +82,39 @@ async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
   }
 }
 
+async function callClaudeVision({ pageImages, extractionPrompt, maxTokens = 4000 }) {
+  const content = [
+    ...pageImages.map(img => ({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: img.base64 }
+    })),
+    { type: 'text', text: extractionPrompt }
+  ];
+  const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: 'user', content }] };
+  const RETRYABLE = new Set([429, 503, 529]);
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120_000);
+    let res;
+    try {
+      res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') { if (attempt > 3) throw new Error('Vision extraction timed out'); continue; }
+      throw err;
+    }
+    clearTimeout(timeoutId);
+    if (RETRYABLE.has(res.status)) {
+      if (attempt > 3) throw new Error('Rate limit on vision extraction');
+      await new Promise(r => setTimeout(r, 60000 * attempt));
+      continue;
+    }
+    const json = await res.json();
+    if (json.error) throw new Error(json.error.message || 'Vision API failed');
+    return json.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  }
+}
+
 function cleanText(text) {
   if (!text) return text;
   if (Array.isArray(text)) return text.map(cleanText);
@@ -267,11 +300,68 @@ async function loadDocx() {
   });
 }
 
+async function loadTesseract() {
+  if (window.Tesseract) return window.Tesseract;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    script.onload = () => resolve(window.Tesseract);
+    script.onerror = () => reject(new Error('Failed to load Tesseract OCR'));
+    document.head.appendChild(script);
+  });
+}
+
 async function extractWordContent(file) {
   const mammoth = await loadMammoth();
   const arrayBuffer = await file.arrayBuffer();
   const result = await mammoth.extractRawText({ arrayBuffer });
   return result.value;
+}
+
+async function extractXmlContent(file) {
+  const text = await file.text();
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(text, 'application/xml');
+  if (xmlDoc.querySelector('parsererror')) {
+    throw new Error('XML file is invalid or cannot be parsed.');
+  }
+  const lines = [];
+  const walk = (node) => {
+    const tag = node.nodeName.replace(/^[a-zA-Z]+:/, '');
+    if (tag.startsWith('#')) { for (const c of node.childNodes) walk(c); return; }
+    const hasChildElements = Array.from(node.childNodes).some(c => c.nodeType === 1);
+    if (!hasChildElements) {
+      const val = (node.textContent || '').trim();
+      if (val && val.length < 500) {
+        const ctx = node.getAttribute?.('contextRef') || '';
+        const period = /[Pp]rior|[Pp]rev|[Pp]Y/.test(ctx) ? ' (Prior)' : '';
+        lines.push(`${tag}${period}: ${val}`);
+      }
+    } else {
+      if (tag && tag !== 'xbrl') lines.push(`\n--- ${tag} ---`);
+      for (const c of node.childNodes) walk(c);
+    }
+  };
+  walk(xmlDoc.documentElement);
+  const extracted = lines.join('\n');
+  if (extracted.trim().length < 50) throw new Error('No readable data found in XML file.');
+  return { text: extracted, method: 'xml', warnings: [] };
+}
+
+async function extractExcelInputContent(file) {
+  const XLSX = await loadSheetJS();
+  const arrayBuffer = await file.arrayBuffer();
+  const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+  const lines = [];
+  for (const sheetName of workbook.SheetNames) {
+    lines.push(`\n=== Sheet: ${sheetName} ===`);
+    const sheet = workbook.Sheets[sheetName];
+    const csv = XLSX.utils.sheet_to_csv(sheet, { skipHidden: true });
+    if (csv.trim()) lines.push(csv);
+  }
+  const extracted = lines.join('\n');
+  if (extracted.trim().length < 50) throw new Error('No readable data found in Excel file.');
+  return { text: extracted, method: 'excel-input', warnings: [] };
 }
 
 async function loadPdfJs() {
@@ -303,17 +393,118 @@ async function checkPdfHasText(file) {
   }
 }
 
-async function extractPdfContent(file) {
+async function renderPdfPageToCanvas(pdfPage, scale = 2.0) {
+  const viewport = pdfPage.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+  const ctx = canvas.getContext('2d');
+  await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+  return canvas;
+}
+
+async function ocrPageWithTesseract(canvas) {
+  const Tesseract = await loadTesseract();
+  const worker = await Tesseract.createWorker('eng', 1, {
+    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+  });
+  const { data } = await worker.recognize(canvas);
+  await worker.terminate();
+  return { text: data.text || '', confidence: data.confidence || 0 };
+}
+
+async function extractPdfContent(file, onProgress) {
   const pdfjsLib = await loadPdfJs();
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+  // Layer 1: Open PDF — handle password and corrupt errors
+  let pdf;
+  try {
+    pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  } catch (err) {
+    const msg = (err.message || '').toLowerCase();
+    if (err.name === 'PasswordException' || msg.includes('password') || msg.includes('encrypt')) {
+      throw new Error('PASSWORD_PROTECTED');
+    }
+    throw new Error('CORRUPT_PDF');
+  }
+
+  // Layer 2: Text extraction — fast path
   const pageTexts = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    pageTexts.push(content.items.map((item) => item.str).join(' '));
+    pageTexts.push(content.items.map(item => item.str).join(' '));
   }
-  return pageTexts.join('\n\n');
+  const totalChars = pageTexts.reduce((s, t) => s + t.length, 0);
+  const charsPerPage = pdf.numPages > 0 ? totalChars / pdf.numPages : 0;
+
+  if (charsPerPage > 200) {
+    return { text: pageTexts.join('\n\n'), method: 'text', warnings: [] };
+  }
+
+  // Layer 3: Scanned PDF detected — OCR each low-quality page with Tesseract
+  console.log(`[Extraction] Scanned PDF (~${Math.round(charsPerPage)} chars/page). Starting OCR...`);
+  onProgress?.('Scanned PDF detected — running OCR (this may take a few minutes)...');
+
+  const ocrTexts = [...pageTexts];
+  const lowConfidencePageNums = [];
+  let tesseractOk = true;
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    if ((pageTexts[i - 1] || '').length > 200) continue;
+    if (tesseractOk) {
+      try {
+        const page = await pdf.getPage(i);
+        const canvas = await renderPdfPageToCanvas(page, 2.0);
+        const { text, confidence } = await ocrPageWithTesseract(canvas);
+        if (confidence >= 65 && text.trim().length > 50) {
+          ocrTexts[i - 1] = text;
+          continue;
+        }
+      } catch (tessErr) {
+        console.warn('[OCR] Tesseract unavailable:', tessErr.message);
+        tesseractOk = false;
+      }
+    }
+    lowConfidencePageNums.push(i);
+  }
+
+  // Layer 4: Claude Vision for pages Tesseract couldn't handle
+  if (lowConfidencePageNums.length > 0) {
+    console.log(`[Extraction] ${lowConfidencePageNums.length} page(s) escalated to Claude Vision`);
+    onProgress?.(`Running Claude Vision OCR on ${lowConfidencePageNums.length} page(s)...`);
+    const BATCH = 3;
+    for (let b = 0; b < lowConfidencePageNums.length; b += BATCH) {
+      const batchNums = lowConfidencePageNums.slice(b, b + BATCH);
+      try {
+        const pageImages = await Promise.all(batchNums.map(async (num) => {
+          const pg = await pdf.getPage(num);
+          const canvas = await renderPdfPageToCanvas(pg, 1.5);
+          return { base64: canvas.toDataURL('image/png').split(',')[1] };
+        }));
+        const visionText = await callClaudeVision({
+          pageImages,
+          extractionPrompt: `Extract ALL text from these ${batchNums.length} document page(s) exactly as shown. Include every number, table cell, header, label, and body text. Preserve table structure using spacing. No commentary — plain text only.`,
+          maxTokens: 4000,
+        });
+        ocrTexts[batchNums[0] - 1] = visionText;
+        for (let j = 1; j < batchNums.length; j++) ocrTexts[batchNums[j] - 1] = '';
+      } catch (visionErr) {
+        console.error('[Extraction] Claude Vision batch failed:', visionErr.message);
+      }
+    }
+  }
+
+  const finalText = ocrTexts.join('\n\n');
+  const method = lowConfidencePageNums.length > 0 ? 'vision' : 'ocr';
+  const warnings = finalText.trim().length < 500
+    ? ['Very limited text was extracted. Financial data may be incomplete or missing.']
+    : [];
+
+  return { text: finalText, method, warnings };
 }
 
 function chunkText(text, maxCharsPerChunk = 12000, overlap = 500) {
@@ -2136,8 +2327,7 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
     }],
   });
 
-  const buffer = await Packer.toBuffer(doc);
-  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  const blob = await Packer.toBlob(doc);
 
   // Filename: FinSight_BBraun_FY24-25_CompanyBrief.docx
   const slug = (companyInfo.name || 'Company').replace(/\b(Private|Pvt|Limited|Ltd|Public|Inc|Corp|Company|Co|LLP|Group|Holdings)\b/gi, '').replace(/[^a-zA-Z0-9 ]/g, '').trim().split(/\s+/).slice(0, 4).join('_').substring(0, 25) || 'Company';
@@ -2180,10 +2370,30 @@ function hasAnyFinancialData(agg) {
 async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
   try {
     onProgress?.("Reading your document...");
-    const isPdf = file.name.match(/\.pdf$/i);
-    const extractedText = isPdf ? await extractPdfContent(file) : await extractWordContent(file);
-    if (!extractedText || extractedText.trim().length < 100) {
-      throw new Error("Document appears to be empty or unreadable.");
+    const fname = (file.name || '').toLowerCase();
+    let extractionResult;
+    try {
+      if (fname.endsWith('.pdf')) {
+        extractionResult = await extractPdfContent(file, onProgress);
+      } else if (fname.endsWith('.xml') || fname.endsWith('.xbrl')) {
+        extractionResult = await extractXmlContent(file);
+      } else if (fname.endsWith('.xlsx') || fname.endsWith('.xls')) {
+        extractionResult = await extractExcelInputContent(file);
+      } else {
+        const wordText = await extractWordContent(file);
+        extractionResult = { text: wordText || '', method: 'word', warnings: [] };
+      }
+    } catch (extractErr) {
+      const msg = extractErr.message || '';
+      if (msg === 'PASSWORD_PROTECTED') throw new Error('This PDF is password-protected. Please provide an unlocked version.');
+      if (msg === 'CORRUPT_PDF') throw new Error('This PDF appears to be corrupt or uses an unsupported format. Please try converting it or using a different file.');
+      throw extractErr;
+    }
+    const extractedText = extractionResult.text || '';
+    const extractionMethod = extractionResult.method || 'text';
+    const extractionWarnings = extractionResult.warnings || [];
+    if (!extractedText || extractedText.trim().length < 50) {
+      throw new Error("Document appears to be empty or unreadable. If this is a scanned PDF, OCR could not extract sufficient text.");
     }
     onProgress?.("Splitting document into sections...");
     const chunks = chunkText(extractedText, 12000, 500);
@@ -2413,6 +2623,8 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       briefWordFileName: briefWordResult?.fileName || null,
       briefWordError: briefWordErr,
       noFinancialData,
+      extractionMethod,
+      extractionWarnings,
       companyInfo,
       chunkCount: chunks.length,
       failedChunks,
@@ -3171,7 +3383,9 @@ function PeriodDropdown({ value, onChange }) {
 function DocumentReadyScreen({ docReady, onReset }) {
   const { pdfBlob, pdfFileName, docxBlob, docxFileName, excelBlob, excelFileName,
     briefWordBlob, briefWordFileName, briefWordError, noFinancialData,
+    extractionWarnings = [],
     selectedOutputs = {}, companyName, summary } = docReady;
+  const METHOD_LABEL = { text: 'Text extraction', ocr: 'OCR (Tesseract)', vision: 'Claude Vision OCR', xml: 'XBRL/XML parsing', 'excel-input': 'Excel parsing', word: 'Word extraction' };
   const errBox = (msg) => (
     <div style={{ padding: '10px 14px', background: '#FEF3F2', border: '1px solid #F4B5B5', borderRadius: 8, color: '#9A3412', fontSize: 13, textAlign: 'left', lineHeight: 1.5 }}>
       ⚠ {msg} Other deliverables are unaffected.
@@ -3196,6 +3410,7 @@ function DocumentReadyScreen({ docReady, onReset }) {
       )}
       <div style={{ background: C.brownLight, borderRadius: 10, padding: "12px 16px", marginBottom: 20, textAlign: "left" }}>
         {[
+          summary.extractionMethod && `Extracted via: ${METHOD_LABEL[summary.extractionMethod] || summary.extractionMethod}`,
           summary.sectionCount > 0 && `${summary.sectionCount} sections organised`,
           summary.ratioCount > 0 && `${summary.ratioCount} financial ratios calculated`,
           summary.hasSWOT && "SWOT analysis included",
@@ -3204,6 +3419,11 @@ function DocumentReadyScreen({ docReady, onReset }) {
         ].filter(Boolean).map((line, i) => (
           <div key={i} style={{ fontSize: 12.5, color: C.textSec, lineHeight: 1.8, display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ color: C.green, fontWeight: 700 }}>•</span> {line}
+          </div>
+        ))}
+        {extractionWarnings.map((w, i) => (
+          <div key={`w${i}`} style={{ fontSize: 12, color: '#B45309', lineHeight: 1.7, display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 4 }}>
+            <span>⚠</span> {w}
           </div>
         ))}
       </div>
@@ -3296,7 +3516,7 @@ function PrivateDocUploadZone({ onFileSelected, isProcessing, progress, error })
   const handleDrop = (e) => { e.preventDefault(); setIsDragging(false); handleFile(e.dataTransfer.files[0]); };
   const handleFile = (file) => {
     if (!file) return;
-    if (!file.name.match(/\.(pdf|docx?|doc)$/i)) { alert("Please upload a PDF or Word document (.pdf, .docx, or .doc)"); return; }
+    if (!file.name.match(/\.(pdf|docx?|doc|xml|xbrl|xlsx?)$/i)) { alert("Please upload a PDF, Word document, XBRL XML, or Excel file (.pdf, .docx, .xml, .xlsx)"); return; }
     onFileSelected(file);
   };
 
@@ -3304,7 +3524,7 @@ function PrivateDocUploadZone({ onFileSelected, isProcessing, progress, error })
     <div style={{ width: "100%", maxWidth: 720, margin: "16px auto 0" }}>
       <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={!isProcessing ? () => fileInputRef.current?.click() : undefined}
         style={{ padding: "28px 24px", background: isDragging ? C.brownLight : (isProcessing ? "#F5F5F5" : C.bgCard), border: `2px dashed ${isDragging ? C.brown : C.border}`, borderRadius: 14, cursor: isProcessing ? "wait" : "pointer", transition: "all 0.2s", textAlign: "center", opacity: isProcessing ? 0.85 : 1, boxShadow: C.shadow }}>
-        <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx" onChange={(e) => handleFile(e.target.files[0])} style={{ display: "none" }} disabled={isProcessing} />
+        <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.xml,.xbrl,.xlsx,.xls" onChange={(e) => handleFile(e.target.files[0])} style={{ display: "none" }} disabled={isProcessing} />
         {!isProcessing ? (
           <>
             <div style={{ fontSize: 32, marginBottom: 10 }}>📄</div>
@@ -3597,6 +3817,8 @@ function FinSightApp() {
         briefWordFileName: result.briefWordFileName,
         briefWordError: result.briefWordError,
         noFinancialData: result.noFinancialData,
+        extractionMethod: result.extractionMethod,
+        extractionWarnings: result.extractionWarnings,
         selectedOutputs: outputs,
         companyName: result.companyInfo?.name || 'Private Company',
         summary: {
@@ -3606,6 +3828,7 @@ function FinSightApp() {
           hasCharts: result.hasCharts,
           fileSizeKB: result.pdfFileSizeKB,
           failedChunks: result.failedChunks,
+          extractionMethod: result.extractionMethod,
         }
       });
       setPrivateDocLoading(false);
