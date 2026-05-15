@@ -1689,7 +1689,7 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
   }
 }
 
-async function processPrivateCompanyDoc(file, onProgress) {
+async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
   try {
     onProgress?.("Reading your document...");
     const isPdf = file.name.match(/\.pdf$/i);
@@ -1769,7 +1769,7 @@ async function processPrivateCompanyDoc(file, onProgress) {
     }
     const successChunks = chunks.length - failedChunks;
     const progressSuffix = failedChunks > 0
-      ? `Done: ${successChunks} sections processed, ${failedChunks} needed fallback. Generating PDF...`
+      ? `Done: ${successChunks} sections processed, ${failedChunks} needed fallback. Building outputs...`
       : "Calculating financial ratios...";
     onProgress?.(progressSuffix);
     const aggregated = aggregateFinancialData(chunkResults);
@@ -1831,53 +1831,74 @@ async function processPrivateCompanyDoc(file, onProgress) {
       } catch (e) { console.error("Chart 3 failed:", e); }
     }
     
-    const totalBlocks = chunkResults.reduce((sum, cr) => sum + (cr.blocks?.length || 0), 0);
-    if (totalBlocks > 500) {
-      console.warn(`[processPrivateCompanyDoc] Large document: ${totalBlocks} blocks — PDF may take 60-180s`);
-      onProgress?.(`Large document detected (${totalBlocks} blocks). PDF generation may take 60-180 seconds. Please wait...`);
-    } else {
-      onProgress?.("Generating your professional PDF document...");
-    }
-
-    const pdfStart = Date.now();
-    const pdfElapsedInterval = setInterval(() => {
-      const elapsed = Math.round((Date.now() - pdfStart) / 1000);
-      onProgress?.(`Generating PDF... (${elapsed} seconds elapsed)`);
-    }, 5000);
-
+    // ─── Conditional document generation ──────────────────────────────────
     let pdfResult = null;
     let pdfError = null;
-    try {
-      pdfResult = await Promise.race([
-        generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages),
-        new Promise((_, reject) => setTimeout(
-          () => reject(new Error("PDF generation timed out. Your data has been organized but the file is too large for browser rendering. Please contact support with your file.")),
-          180_000
-        )),
-      ]);
-    } catch (err) {
-      pdfError = err;
-      console.error("[processPrivateCompanyDoc] PDF failed:", pdfError);
-    } finally {
-      clearInterval(pdfElapsedInterval);
-    }
-
-    onProgress?.("Generating Word document...");
     let docxResult = null;
-    try {
-      docxResult = await generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot, chartImages, file.name);
-    } catch (wordErr) {
-      console.error("[processPrivateCompanyDoc] Word generation failed:", wordErr);
+    let excelResult = null;
+    let briefWordResult = null;
+
+    if (selectedOutputs.detailedPdf) {
+      const totalBlocks = chunkResults.reduce((sum, cr) => sum + (cr.blocks?.length || 0), 0);
+      if (totalBlocks > 500) {
+        console.warn(`[processPrivateCompanyDoc] Large document: ${totalBlocks} blocks — PDF may take 60-180s`);
+        onProgress?.(`Large document detected (${totalBlocks} blocks). PDF generation may take 60-180 seconds. Please wait...`);
+      } else {
+        onProgress?.("Generating detailed PDF document...");
+      }
+      const pdfStart = Date.now();
+      const pdfElapsedInterval = setInterval(() => {
+        const elapsed = Math.round((Date.now() - pdfStart) / 1000);
+        onProgress?.(`Generating PDF... (${elapsed} seconds elapsed)`);
+      }, 5000);
+      try {
+        pdfResult = await Promise.race([
+          generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages),
+          new Promise((_, reject) => setTimeout(
+            () => reject(new Error("PDF generation timed out. Your data has been organized but the file is too large for browser rendering. Please contact support with your file.")),
+            180_000
+          )),
+        ]);
+      } catch (err) {
+        pdfError = err;
+        console.error("[processPrivateCompanyDoc] PDF failed:", pdfError);
+      } finally {
+        clearInterval(pdfElapsedInterval);
+      }
     }
 
-    if (!pdfResult && !docxResult) throw pdfError || new Error("Both PDF and Word generation failed.");
+    if (selectedOutputs.detailedWord) {
+      onProgress?.("Generating detailed Word document...");
+      try {
+        docxResult = await generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot, chartImages, file.name);
+      } catch (wordErr) {
+        console.error("[processPrivateCompanyDoc] Word generation failed:", wordErr);
+      }
+    }
 
-    onProgress?.("Generating Excel workbook...");
-    let excelResult = null;
-    try {
-      excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot);
-    } catch (excelErr) {
-      console.error("[processPrivateCompanyDoc] Excel generation failed:", excelErr);
+    if (selectedOutputs.excel) {
+      onProgress?.("Generating Excel workbook...");
+      try {
+        excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot);
+      } catch (excelErr) {
+        console.error("[processPrivateCompanyDoc] Excel generation failed:", excelErr);
+      }
+    }
+
+    if (selectedOutputs.briefWord && typeof generateBriefWordDoc === 'function') {
+      onProgress?.("Generating brief company note...");
+      try {
+        briefWordResult = await generateBriefWordDoc(chunkResults, companyInfo, ratios, swot);
+      } catch (briefErr) {
+        console.error("[processPrivateCompanyDoc] Brief Word generation failed:", briefErr);
+      }
+    }
+
+    const anyGenerated = pdfResult || docxResult || excelResult || briefWordResult;
+    const anyRequested = selectedOutputs.detailedPdf || selectedOutputs.detailedWord || selectedOutputs.excel ||
+      (selectedOutputs.briefWord && typeof generateBriefWordDoc === 'function');
+    if (anyRequested && !anyGenerated) {
+      throw pdfError || new Error("All document generation attempts failed.");
     }
 
     return {
@@ -1888,6 +1909,8 @@ async function processPrivateCompanyDoc(file, onProgress) {
       docxFileName: docxResult?.fileName || null,
       excelBlob: excelResult?.excelBlob || null,
       excelFileName: excelResult?.fileName || null,
+      briefWordBlob: briefWordResult?.blob || null,
+      briefWordFileName: briefWordResult?.fileName || null,
       companyInfo,
       chunkCount: chunks.length,
       failedChunks,
@@ -2644,12 +2667,12 @@ function PeriodDropdown({ value, onChange }) {
 }
 
 function DocumentReadyScreen({ docReady, onReset }) {
-  const { pdfBlob, pdfFileName, docxBlob, docxFileName, excelBlob, excelFileName, companyName, summary } = docReady;
+  const { pdfBlob, pdfFileName, docxBlob, docxFileName, excelBlob, excelFileName, briefWordBlob, briefWordFileName, companyName, summary } = docReady;
   const btn = (variant) => {
-    const base = { width: "100%", height: 48, borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, transition: "opacity 0.15s" };
-    if (variant === "primary")   return { ...base, border: "none", background: C.accent,   color: "#fff" };
+    const base = { width: "100%", height: 48, borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, transition: "opacity 0.15s", border: "none" };
+    if (variant === "primary")   return { ...base, background: C.brown,    color: "#fff" };
+    if (variant === "excel")     return { ...base, background: C.green,    color: "#fff" };
     if (variant === "secondary") return { ...base, border: `1.5px solid ${C.border}`, background: C.bgSidebar, color: C.textPrimary };
-    if (variant === "excel")     return { ...base, border: "none", background: C.green,    color: "#fff" };
     return base;
   };
   return (
@@ -2671,25 +2694,31 @@ function DocumentReadyScreen({ docReady, onReset }) {
         ))}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
-        {pdfBlob && (
-          <button style={btn("primary")} onClick={() => triggerBlobDownload(pdfBlob, pdfFileName)}>
-            <span>📄</span>
-            <span>Download PDF{summary.fileSizeKB > 0 ? ` · ${summary.fileSizeKB < 1024 ? summary.fileSizeKB + ' KB' : (summary.fileSizeKB / 1024).toFixed(1) + ' MB'}` : ''}</span>
-          </button>
-        )}
-        {docxBlob && (
-          <button style={btn("secondary")} onClick={() => triggerBlobDownload(docxBlob, docxFileName)}>
-            <span>📝</span>
-            <span>Download Word</span>
+        {briefWordBlob && (
+          <button style={btn("primary")} onClick={() => triggerBlobDownload(briefWordBlob, briefWordFileName)}>
+            <span>📄</span><span>Download Brief Word Note</span>
           </button>
         )}
         {excelBlob && (
           <button style={btn("excel")} onClick={() => triggerBlobDownload(excelBlob, excelFileName)}>
-            <span>📗</span>
-            <span>Download Excel</span>
+            <span>📊</span><span>Download Excel Workbook</span>
           </button>
         )}
-        {!pdfBlob && !docxBlob && !excelBlob && (
+        {(briefWordBlob || excelBlob) && (pdfBlob || docxBlob) && (
+          <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
+        )}
+        {pdfBlob && (
+          <button style={btn("secondary")} onClick={() => triggerBlobDownload(pdfBlob, pdfFileName)}>
+            <span>📕</span>
+            <span>Download Detailed PDF{summary.fileSizeKB > 0 ? ` · ${summary.fileSizeKB < 1024 ? summary.fileSizeKB + ' KB' : (summary.fileSizeKB / 1024).toFixed(1) + ' MB'}` : ''}</span>
+          </button>
+        )}
+        {docxBlob && (
+          <button style={btn("secondary")} onClick={() => triggerBlobDownload(docxBlob, docxFileName)}>
+            <span>📘</span><span>Download Detailed Word</span>
+          </button>
+        )}
+        {!briefWordBlob && !excelBlob && !pdfBlob && !docxBlob && (
           <div style={{ fontSize: 12.5, color: C.red }}>Document generation failed. Please try again.</div>
         )}
       </div>
@@ -2702,7 +2731,7 @@ function DocumentReadyScreen({ docReady, onReset }) {
 
 const ACTIVITY_LABELS = ["🧠 AI is reading...", "📝 Extracting data...", "🔍 Analyzing structure..."];
 
-function PrivateDocUploadZone({ onProcess, isProcessing, progress, error }) {
+function PrivateDocUploadZone({ onFileSelected, isProcessing, progress, error }) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -2742,7 +2771,7 @@ function PrivateDocUploadZone({ onProcess, isProcessing, progress, error }) {
   const handleFile = (file) => {
     if (!file) return;
     if (!file.name.match(/\.(pdf|docx?|doc)$/i)) { alert("Please upload a PDF or Word document (.pdf, .docx, or .doc)"); return; }
-    onProcess(file);
+    onFileSelected(file);
   };
 
   return (
@@ -2826,7 +2855,129 @@ const GLOBAL_CSS = `
   .fs-section-heading::before { content: ''; width: 4px; height: 20px; background: ${C.accent}; border-radius: 2px; }
   .cl-formButtonPrimary { background-color: ${C.accent} !important; }
   .cl-formButtonPrimary:hover { background-color: ${C.accentDark} !important; }
+  .fs-deliverable-row:hover { background: #EDE5D8 !important; border-color: ${C.brown} !important; }
 `;
+
+function DeliverableSelectionScreen({ file, selectedOutputs, onToggle, onCancel, onGenerate }) {
+  const hasBriefWordImpl = typeof generateBriefWordDoc === 'function';
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  const anySelected = Object.entries(selectedOutputs).some(([k, v]) => {
+    if (k === 'briefWord' && !hasBriefWordImpl) return false;
+    return v;
+  });
+
+  const estimatedMinutes =
+    3 +
+    (selectedOutputs.briefWord && hasBriefWordImpl ? 3 : 0) +
+    (selectedOutputs.excel ? 2 : 0) +
+    (selectedOutputs.detailedPdf ? 5 : 0) +
+    (selectedOutputs.detailedWord ? 5 : 0);
+
+  const mainOptions = [
+    { key: 'briefWord',   icon: '📄', label: 'Brief Company Note',      format: 'Word',  desc: '12–15 page executive brief — recommended', time: '~3 min', recommended: true,  comingSoon: !hasBriefWordImpl },
+    { key: 'excel',       icon: '📊', label: 'Financial Excel Workbook', format: 'Excel', desc: '3-tab analysis with all ratios — recommended', time: '~2 min', recommended: true,  comingSoon: false },
+  ];
+  const advancedOptions = [
+    { key: 'detailedPdf',  icon: '📕', label: 'Detailed Organised PDF',  format: 'PDF',  desc: 'Full 100+ page formatted document',  time: '~8 min', recommended: false, comingSoon: false },
+    { key: 'detailedWord', icon: '📘', label: 'Detailed Organised Word', format: 'Word', desc: 'Full 100+ page Word version',          time: '~8 min', recommended: false, comingSoon: false },
+  ];
+
+  const OptionRow = ({ opt }) => {
+    const checked = !opt.comingSoon && selectedOutputs[opt.key];
+    return (
+      <label
+        htmlFor={`opt-${opt.key}`}
+        className={opt.comingSoon ? '' : 'fs-deliverable-row'}
+        style={{
+          display: 'flex', alignItems: 'flex-start', gap: 14, padding: '14px 16px',
+          background: opt.recommended ? C.brownLight : C.bgCard,
+          border: `1.5px solid ${checked ? C.brown : C.border}`,
+          borderRadius: 10, cursor: opt.comingSoon ? 'default' : 'pointer',
+          opacity: opt.comingSoon ? 0.6 : 1, transition: 'border-color 0.15s',
+        }}
+      >
+        <input
+          id={`opt-${opt.key}`} type="checkbox"
+          checked={checked} disabled={opt.comingSoon}
+          onChange={() => !opt.comingSoon && onToggle(opt.key)}
+          style={{ marginTop: 3, accentColor: C.brown, width: 16, height: 16,
+            cursor: opt.comingSoon ? 'default' : 'pointer', flexShrink: 0 }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 3 }}>
+            <span style={{ fontSize: 15 }}>{opt.icon}</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary }}>{opt.label}</span>
+            <span style={{ fontSize: 10.5, fontWeight: 600, color: C.textMuted, background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 4, padding: '1px 6px' }}>{opt.format}</span>
+            {opt.comingSoon && <span style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 4, padding: '1px 6px' }}>COMING SOON</span>}
+            {opt.recommended && !opt.comingSoon && <span style={{ fontSize: 10, fontWeight: 700, color: C.green, background: C.greenBg, border: `1px solid ${C.green}`, borderRadius: 4, padding: '1px 6px' }}>RECOMMENDED</span>}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 12.5, color: C.textSec }}>{opt.desc}</span>
+            <span style={{ fontSize: 11.5, color: C.textMuted, flexShrink: 0 }}>{opt.time}</span>
+          </div>
+        </div>
+      </label>
+    );
+  };
+
+  return (
+    <div style={{ width: '100%', maxWidth: 600, margin: '16px auto 0', background: C.bgCard, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: '28px 28px 24px', boxShadow: C.shadowMd }}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, marginBottom: 4 }}>Choose Your Deliverables</div>
+        <div style={{ fontSize: 13.5, color: C.textSec }}>Pick what you want generated from this filing</div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: 20 }}>
+        <span style={{ fontSize: 16 }}>📁</span>
+        <span style={{ fontSize: 13, color: C.textSec, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file?.name}</span>
+        <button onClick={onCancel} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: C.accent, fontWeight: 600, flexShrink: 0, padding: 0 }}>Change File</button>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
+        {mainOptions.map(opt => <OptionRow key={opt.key} opt={opt} />)}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <div style={{ flex: 1, height: 1, background: C.border }} />
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: '0.08em' }}>ADVANCED OPTIONS</span>
+        <div style={{ flex: 1, height: 1, background: C.border }} />
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+        {advancedOptions.map(opt => <OptionRow key={opt.key} opt={opt} />)}
+      </div>
+
+      <div style={{ padding: '10px 14px', background: C.brownLight, border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: anySelected ? 20 : 10, fontSize: 13, color: C.brown, fontWeight: 500 }}>
+        ⏱ Estimated processing time: ~{estimatedMinutes} minutes
+      </div>
+
+      {!anySelected && (
+        <div style={{ marginBottom: 16, fontSize: 12.5, color: C.amber, textAlign: 'center', fontWeight: 500 }}>
+          Select at least one deliverable to continue
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button onClick={onCancel} style={{ flex: 1, height: 46, borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.bgSidebar, color: C.textPrimary, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+          Cancel
+        </button>
+        <button
+          onClick={anySelected ? onGenerate : undefined}
+          disabled={!anySelected}
+          style={{ flex: 2, height: 46, borderRadius: 10, border: 'none', background: anySelected ? C.brown : C.border, color: anySelected ? '#fff' : C.textMuted, fontSize: 14, fontWeight: 600, cursor: anySelected ? 'pointer' : 'default', transition: 'background 0.15s' }}
+        >
+          Generate Selected →
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function LoginScreen() {
   return (
@@ -2863,6 +3014,9 @@ function FinSightApp() {
   const [privateDocProgress, setPrivateDocProgress] = useState("");
   const [privateDocError, setPrivateDocError] = useState("");
   const [docReady, setDocReady] = useState(null);
+  const [selectedOutputs, setSelectedOutputs] = useState({ briefWord: true, excel: true, detailedPdf: false, detailedWord: false });
+  const [privateDocStage, setPrivateDocStage] = useState('idle');
+  const [privateDocFile, setPrivateDocFile] = useState(null);
 
   useEffect(() => {
     if (screen !== "loading") return;
@@ -2893,10 +3047,17 @@ function FinSightApp() {
     } catch (ex) { setErr(ex.message || "Analysis failed."); setScreen("error"); }
   };
 
-  const handlePrivateDocProcess = async (file) => {
+  const handlePrivateFileSelected = (file) => {
+    setPrivateDocFile(file);
+    setPrivateDocStage('uploaded');
+    setPrivateDocError("");
+  };
+
+  const handlePrivateDocProcess = async (file, outputs) => {
     setPrivateDocLoading(true); setPrivateDocError(""); setPrivateDocProgress(""); setDocReady(null);
+    setPrivateDocStage('processing');
     try {
-      const result = await processPrivateCompanyDoc(file, (msg) => setPrivateDocProgress(msg));
+      const result = await processPrivateCompanyDoc(file, outputs, (msg) => setPrivateDocProgress(msg));
       setDocReady({
         pdfBlob: result.pdfBlob,
         pdfFileName: result.pdfFileName,
@@ -2904,6 +3065,8 @@ function FinSightApp() {
         docxFileName: result.docxFileName,
         excelBlob: result.excelBlob,
         excelFileName: result.excelFileName,
+        briefWordBlob: result.briefWordBlob,
+        briefWordFileName: result.briefWordFileName,
         companyName: result.companyInfo?.name || 'Private Company',
         summary: {
           sectionCount: result.sectionCount,
@@ -2918,7 +3081,9 @@ function FinSightApp() {
       setPrivateDocProgress("");
     } catch (e) {
       setPrivateDocError(e.message || "Failed to process document.");
-      setPrivateDocLoading(false); setPrivateDocProgress("");
+      setPrivateDocLoading(false);
+      setPrivateDocProgress("");
+      setPrivateDocStage('uploaded');
     }
   };
 
@@ -2997,8 +3162,21 @@ function FinSightApp() {
         </div>
 
         {docReady
-          ? <DocumentReadyScreen docReady={docReady} onReset={() => setDocReady(null)} />
-          : <PrivateDocUploadZone onProcess={handlePrivateDocProcess} isProcessing={privateDocLoading} progress={privateDocProgress} error={privateDocError} />
+          ? <DocumentReadyScreen docReady={docReady} onReset={() => { setDocReady(null); setPrivateDocStage('idle'); setPrivateDocFile(null); }} />
+          : (privateDocStage === 'uploaded' && !privateDocLoading)
+            ? <DeliverableSelectionScreen
+                file={privateDocFile}
+                selectedOutputs={selectedOutputs}
+                onToggle={(key) => setSelectedOutputs(prev => ({ ...prev, [key]: !prev[key] }))}
+                onCancel={() => { setPrivateDocStage('idle'); setPrivateDocFile(null); setPrivateDocError(""); }}
+                onGenerate={() => handlePrivateDocProcess(privateDocFile, selectedOutputs)}
+              />
+            : <PrivateDocUploadZone
+                onFileSelected={handlePrivateFileSelected}
+                isProcessing={privateDocLoading}
+                progress={privateDocProgress}
+                error={privateDocError}
+              />
         }
 
         <div style={{ marginTop: 16, fontSize: 11.5, color: C.textMuted, textAlign: "center", maxWidth: 640, lineHeight: 1.6 }}>
