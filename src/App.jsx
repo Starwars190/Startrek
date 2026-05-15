@@ -259,7 +259,7 @@ async function loadSheetJS() {
   if (window.XLSX) return window.XLSX;
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    script.src = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
     script.onload = () => resolve(window.XLSX);
     script.onerror = () => reject(new Error('Failed to load Excel library'));
     document.head.appendChild(script);
@@ -2450,26 +2450,15 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
 }
 
 function validateExtractedData(agg) {
-  const warnings = [];
-  if (agg.tax != null && agg.netIncome != null && agg.tax === agg.netIncome)
-    warnings.push(`Tax equals Net Income exactly (${agg.tax}) — likely extraction error`);
-  if (agg.revenue != null && agg.cogs != null && agg.grossProfit != null) {
-    const computed = agg.revenue - agg.cogs;
-    if (Math.abs(agg.grossProfit - computed) > 1)
-      warnings.push(`Gross Profit mismatch: extracted ${agg.grossProfit} vs computed ${computed.toFixed(2)}`);
+  try {
+    const { years, sortedYears } = wrapAggToYears(agg, null);
+    const vRes = validateFinancialData(years, sortedYears);
+    const all = [...vRes.errors, ...vRes.warnings];
+    if (all.length > 0) console.warn('[FinSight] Extraction warnings:', all);
+    return all;
+  } catch (e) {
+    return [];
   }
-  if (agg.pbt != null && agg.netIncome != null && agg.tax != null) {
-    const expectedPbt = agg.netIncome + agg.tax;
-    if (Math.abs(agg.pbt - expectedPbt) > 1)
-      warnings.push(`PBT mismatch: extracted ${agg.pbt} vs (NI+Tax)=${expectedPbt.toFixed(2)}`);
-  }
-  if (agg.totalAssets != null && agg.totalLiabilities != null && agg.totalEquity != null) {
-    const expectedAssets = agg.totalLiabilities + agg.totalEquity;
-    if (agg.totalAssets > 0 && Math.abs(agg.totalAssets - expectedAssets) / agg.totalAssets > 0.05)
-      warnings.push(`Balance Sheet gap: Assets=${agg.totalAssets}, L+E=${expectedAssets.toFixed(2)}`);
-  }
-  if (warnings.length > 0) console.warn('[FinSight] Extraction warnings:', warnings);
-  return warnings;
 }
 
 function hasAnyFinancialData(agg) {
@@ -2804,18 +2793,8 @@ async function extractFinancialsWithTesseract(file, onProgress) {
   for (const yr of sortedYears) onProgress?.(`✅ ${yr} data extracted`);
 
   // Layer 5: Validation
-  const validationWarnings = validateScannedData(parsed.years, sortedYears);
-
-  // Chronological order check
-  if (sortedYears.length > 1) {
-    const nums = sortedYears.map(y => parseInt(y.replace('FY', ''), 10));
-    for (let i = 1; i < nums.length; i++) {
-      if (nums[i] <= nums[i - 1]) {
-        validationWarnings.push(`Years not in chronological order: ${sortedYears.join(', ')}`);
-        break;
-      }
-    }
-  }
+  const vResult5 = validateFinancialData(parsed.years, sortedYears);
+  const validationWarnings = [...vResult5.errors, ...vResult5.warnings];
 
   if (validationWarnings.length > 0) {
     validationWarnings.forEach(w => console.warn('[Tesseract Validation]', w));
@@ -2836,35 +2815,187 @@ async function extractFinancialsWithTesseract(file, onProgress) {
   };
 }
 
-function validateScannedData(years, sortedYears) {
+function validateFinancialData(years, sortedYears) {
+  const errors = [];
   const warnings = [];
+  const rowFlags = {}; // { yr: { section: { field: 'error'|'warning' } } }
+
+  function flag(yr, section, field, type) {
+    if (!rowFlags[yr]) rowFlags[yr] = {};
+    if (!rowFlags[yr][section]) rowFlags[yr][section] = {};
+    if (rowFlags[yr][section][field] !== 'error') rowFlags[yr][section][field] = type;
+  }
+
+  // Year-level: chronological order, duplicates, gap detection
+  const seen = new Set();
+  for (const yr of sortedYears) {
+    if (seen.has(yr)) errors.push(`Duplicate year: ${yr}`);
+    seen.add(yr);
+  }
+  for (let i = 1; i < sortedYears.length; i++) {
+    const pn = parseInt(sortedYears[i - 1].replace(/\D/g, '').slice(-4));
+    const cn = parseInt(sortedYears[i].replace(/\D/g, '').slice(-4));
+    if (!isNaN(pn) && !isNaN(cn)) {
+      if (cn < pn) errors.push(`Years out of order: ${sortedYears[i - 1]} appears before ${sortedYears[i]}`);
+      else if (cn - pn > 1) warnings.push(`Year gap: missing data between ${sortedYears[i - 1]} and ${sortedYears[i]}`);
+    }
+  }
+
+  // Per-year checks
+  let cfoNegStreak = 0;
   for (const yr of sortedYears) {
     const data = years[yr];
     if (!data) continue;
     const bs = data.balance_sheet || {};
+    const pl = data.profit_loss || {};
+    const cf = data.cash_flow || {};
+
+    // Balance sheet equation: Assets = L + E (±5%)
     if (bs.total_assets != null && bs.total_liabilities != null && bs.total_equity != null) {
-      const computed = (bs.total_liabilities || 0) + (bs.total_equity || 0);
+      const lpe = (bs.total_liabilities || 0) + (bs.total_equity || 0);
       if (bs.total_assets !== 0) {
-        const diff = Math.abs((bs.total_assets - computed) / bs.total_assets);
+        const diff = Math.abs((bs.total_assets - lpe) / bs.total_assets);
         if (diff > 0.05) {
-          warnings.push(`[${yr}] Balance sheet gap: Assets=${bs.total_assets} vs L+E=${computed.toFixed(0)} (${(diff * 100).toFixed(1)}% difference)`);
+          errors.push(`[${yr}] Balance sheet equation fails: Assets=${bs.total_assets} ≠ L+E=${lpe.toFixed(0)} (${(diff * 100).toFixed(1)}% gap)`);
+          flag(yr, 'balance_sheet', 'total_assets', 'error');
+          flag(yr, 'balance_sheet', 'total_liabilities', 'error');
+          flag(yr, 'balance_sheet', 'total_equity', 'error');
         }
       }
     }
-    const pl = data.profit_loss || {};
-    if (pl.revenue != null && pl.revenue < 0) {
-      warnings.push(`[${yr}] Negative revenue (${pl.revenue}) — may be extraction error`);
+
+    // Current < total checks
+    if (bs.current_assets != null && bs.total_assets != null && bs.current_assets > bs.total_assets) {
+      errors.push(`[${yr}] Current assets (${bs.current_assets}) exceed total assets (${bs.total_assets})`);
+      flag(yr, 'balance_sheet', 'current_assets', 'error');
     }
-    const cf = data.cash_flow || {};
+    if (bs.current_liabilities != null && bs.total_liabilities != null && bs.current_liabilities > bs.total_liabilities) {
+      errors.push(`[${yr}] Current liabilities (${bs.current_liabilities}) exceed total liabilities (${bs.total_liabilities})`);
+      flag(yr, 'balance_sheet', 'current_liabilities', 'error');
+    }
+
+    // P&L: no negative revenue
+    if (pl.revenue != null && pl.revenue < 0) {
+      errors.push(`[${yr}] Negative revenue (${pl.revenue}) — likely extraction error`);
+      flag(yr, 'profit_loss', 'revenue', 'error');
+    }
+
+    // P&L: PBT waterfall (PBT ≈ NI + tax, ±5%)
+    if (pl.pbt != null && pl.net_income != null && pl.tax_expense != null) {
+      const computed = pl.net_income + pl.tax_expense;
+      if (pl.pbt !== 0 && Math.abs((pl.pbt - computed) / Math.abs(pl.pbt)) > 0.05) {
+        warnings.push(`[${yr}] PBT waterfall mismatch: PBT=${pl.pbt} vs NI+Tax=${computed.toFixed(0)}`);
+        flag(yr, 'profit_loss', 'pbt', 'warning');
+        flag(yr, 'profit_loss', 'tax_expense', 'warning');
+        flag(yr, 'profit_loss', 'net_income', 'warning');
+      }
+    }
+
+    // P&L: net margin outside [-50%, +80%]
+    if (pl.revenue != null && pl.revenue > 0 && pl.net_income != null) {
+      const margin = pl.net_income / pl.revenue;
+      if (margin < -0.5) {
+        warnings.push(`[${yr}] Very negative net margin (${(margin * 100).toFixed(1)}%) — verify extraction`);
+        flag(yr, 'profit_loss', 'net_income', 'warning');
+      } else if (margin > 0.8) {
+        warnings.push(`[${yr}] Unusually high net margin (${(margin * 100).toFixed(1)}%) — verify extraction`);
+        flag(yr, 'profit_loss', 'net_income', 'warning');
+      }
+    }
+
+    // Cash flow: CFO+CFI+CFF ≈ net change (±10%)
     if (cf.cfo != null && cf.cfi != null && cf.cff != null && cf.net_change_in_cash != null && cf.net_change_in_cash !== 0) {
       const computed = (cf.cfo || 0) + (cf.cfi || 0) + (cf.cff || 0);
       const diff = Math.abs(computed - cf.net_change_in_cash) / Math.abs(cf.net_change_in_cash);
       if (diff > 0.1) {
-        warnings.push(`[${yr}] Cash flow components sum to ${computed.toFixed(0)} vs stated net change ${cf.net_change_in_cash}`);
+        warnings.push(`[${yr}] CF components sum to ${computed.toFixed(0)} vs stated net change ${cf.net_change_in_cash}`);
+        flag(yr, 'cash_flow', 'net_change_in_cash', 'warning');
+      }
+    }
+
+    // Multi-year: CFO negative streak
+    if (cf.cfo != null) {
+      if (cf.cfo < 0) {
+        cfoNegStreak++;
+        if (cfoNegStreak >= 3) flag(yr, 'cash_flow', 'cfo', 'warning');
+      } else {
+        cfoNegStreak = 0;
       }
     }
   }
-  return warnings;
+  if (cfoNegStreak >= 3) warnings.push(`CFO has been negative for ${cfoNegStreak} consecutive years — cash burn concern`);
+
+  return { valid: errors.length === 0, errors, warnings, rowFlags };
+}
+
+function applyValidationStyles(ws, rowFieldMap, colToYrKey, rowFlags, XLSX) {
+  const C_ERR  = 'FFDCDC'; // light red
+  const C_WARN = 'FFFACD'; // light yellow
+  for (const [rowStr, { section, field }] of Object.entries(rowFieldMap)) {
+    const r = parseInt(rowStr);
+    for (const [colStr, yr] of Object.entries(colToYrKey)) {
+      const severity = rowFlags?.[yr]?.[section]?.[field];
+      if (!severity) continue;
+      const addr = XLSX.utils.encode_cell({ r, c: parseInt(colStr) });
+      if (!ws[addr]) ws[addr] = { v: null, t: 'z' };
+      ws[addr].s = { fill: { patternType: 'solid', fgColor: { rgb: severity === 'error' ? C_ERR : C_WARN } } };
+    }
+  }
+}
+
+function buildValidationSheet(vResult, XLSX) {
+  const { errors = [], warnings = [] } = vResult;
+  const rows = [['Data Validation Results'], [''], ['Severity', 'Issue']];
+  if (!errors.length && !warnings.length) {
+    rows.push(['OK', 'No validation issues found']);
+  } else {
+    for (const e of errors)   rows.push(['ERROR',   e]);
+    for (const w of warnings) rows.push(['WARNING', w]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 12 }, { wch: 90 }];
+  for (let i = 3; i < rows.length; i++) {
+    const sev = rows[i][0];
+    const rgb = sev === 'ERROR' ? 'FFDCDC' : sev === 'WARNING' ? 'FFFACD' : null;
+    if (!rgb) continue;
+    const fontColor = sev === 'ERROR' ? 'C00000' : '7B6600';
+    for (const c of [0, 1]) {
+      const addr = XLSX.utils.encode_cell({ r: i, c });
+      if (!ws[addr]) ws[addr] = { v: rows[i][c] ?? '', t: 's' };
+      ws[addr].s = { fill: { patternType: 'solid', fgColor: { rgb } }, ...(c === 0 ? { font: { bold: true, color: { rgb: fontColor } } } : {}) };
+    }
+  }
+  return ws;
+}
+
+function wrapAggToYears(aggregated, aggregatedPrior) {
+  const a = aggregated || {};
+  const p = aggregatedPrior || {};
+  const hasPrior = Object.values(p).some(v => v != null);
+  function toEntry(agg) {
+    return {
+      profit_loss: {
+        revenue: agg.revenue ?? null, gross_profit: agg.grossProfit ?? null,
+        ebitda: agg.ebitda ?? null, ebit: agg.operatingProfit ?? null,
+        depreciation: agg.depreciation ?? null, interest_expense: agg.interestExpense ?? null,
+        pbt: agg.pbt ?? null, tax_expense: agg.tax ?? null, net_income: agg.netIncome ?? null,
+      },
+      balance_sheet: {
+        total_assets: agg.totalAssets ?? null, current_assets: agg.currentAssets ?? null,
+        non_current_assets: agg.nonCurrentAssets ?? null, fixed_assets: agg.fixedAssets ?? null,
+        cash_and_equivalents: agg.cash ?? null, total_equity: agg.totalEquity ?? null,
+        total_liabilities: agg.totalLiabilities ?? null, current_liabilities: agg.currentLiabilities ?? null,
+        total_debt: agg.totalDebt ?? null,
+      },
+      cash_flow: {
+        cfo: agg.operatingCashFlow ?? null, cfi: agg.investingCashFlow ?? null,
+        cff: agg.financingCashFlow ?? null, net_change_in_cash: null,
+      },
+    };
+  }
+  const years = { cur: toEntry(a) };
+  if (hasPrior) years.pri = toEntry(p);
+  return { years, sortedYears: hasPrior ? ['pri', 'cur'] : ['cur'] };
 }
 
 function buildNullFieldReport(years, sortedYears) {
@@ -2921,17 +3052,23 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
 
   const { years = {}, currency = 'INR', unit = 'Lakhs', pageMetadata = [], totalPages = 0 } = structuredData;
   const sortedYears = Object.keys(years).sort();
-  const warnings = validateScannedData(years, sortedYears);
+  const vResult = validateFinancialData(years, sortedYears);
   const nullReport = buildNullFieldReport(years, sortedYears);
   const trends = buildTrendSummary(years, sortedYears);
   const companyName = structuredData.company_name || companyInfo.name || 'Company';
+  const extractionMethod = structuredData.extractionMethod || 'tesseract';
+  const methodLabel = extractionMethod === 'tesseract' ? 'Tesseract OCR' : 'Scanned PDF OCR';
 
   const wb = XLSX.utils.book_new();
+
+  // col index → year key (col 0 = label, col 1+ = sortedYears)
+  const colToYr = {};
+  sortedYears.forEach((yr, i) => { colToYr[i + 1] = yr; });
 
   function makeHeader(title) {
     return [
       [`${companyName} — ${title}`],
-      [`Currency: ${currency} | Unit: ${unit} | Source: Scanned PDF (Claude Vision OCR)`],
+      [`Currency: ${currency} | Unit: ${unit} | Source: Scanned PDF (${methodLabel})`],
       [''],
     ];
   }
@@ -2947,15 +3084,10 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
     return row;
   }
 
-  function appendWarnings(ws_data) {
-    if (warnings.length) {
-      ws_data.push(['']);
-      ws_data.push(['DATA WARNINGS']);
-      for (const w of warnings) ws_data.push(['⚠ DATA WARNING', w]);
-    }
-  }
-
   // Sheet 1: P&L Summary
+  // Row indices: 0=title,1=subtitle,2=blank,3=colHdr,4=REVENUE,5=revenue,6=other_income,
+  //   7=total_income,8=blank,9=EXPENSES,10=cogs,11=employee,12=interest_expense,13=depreciation,
+  //   14=other_exp,15=total_exp,16=blank,17=PROFITABILITY,18=ebitda,19=pbt,20=tax,21=net_income
   const plData = [
     ...makeHeader('Profit & Loss Summary'),
     ['', ...sortedYears],
@@ -2967,7 +3099,7 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
     ['EXPENSES'],
     makeRow('Cost of Goods Sold', 'profit_loss.cost_of_goods'),
     makeRow('Employee Costs', 'profit_loss.employee_costs'),
-    makeRow('Finance Costs', 'profit_loss.finance_costs'),
+    makeRow('Finance Costs', 'profit_loss.interest_expense'),
     makeRow('Depreciation', 'profit_loss.depreciation'),
     makeRow('Other Expenses', 'profit_loss.other_expenses'),
     makeRow('Total Expenses', 'profit_loss.total_expenses'),
@@ -2975,13 +3107,27 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
     ['PROFITABILITY'],
     makeRow('EBITDA', 'profit_loss.ebitda'),
     makeRow('Profit Before Tax (PBT)', 'profit_loss.pbt'),
-    makeRow('Tax', 'profit_loss.tax'),
+    makeRow('Tax', 'profit_loss.tax_expense'),
     makeRow('Net Income / PAT', 'profit_loss.net_income'),
   ];
-  appendWarnings(plData);
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(plData), 'P&L Summary');
+  const wsPL = XLSX.utils.aoa_to_sheet(plData);
+  applyValidationStyles(wsPL, {
+    5:  { section: 'profit_loss', field: 'revenue' },
+    6:  { section: 'profit_loss', field: 'other_income' },
+    12: { section: 'profit_loss', field: 'interest_expense' },
+    13: { section: 'profit_loss', field: 'depreciation' },
+    18: { section: 'profit_loss', field: 'ebitda' },
+    19: { section: 'profit_loss', field: 'pbt' },
+    20: { section: 'profit_loss', field: 'tax_expense' },
+    21: { section: 'profit_loss', field: 'net_income' },
+  }, colToYr, vResult.rowFlags, XLSX);
+  XLSX.utils.book_append_sheet(wb, wsPL, 'P&L Summary');
 
   // Sheet 2: Balance Sheet
+  // Row indices: 0-3=header+colHdr,4=EQUITY&LIAB,5=share_cap,6=reserves,7=total_equity,
+  //   8=lt_debt,9=st_debt,10=total_debt,11=trade_payables,12=other_cur_liab,13=total_liabilities,
+  //   14=blank,15=ASSETS,16=fixed_assets,17=intangibles,18=investments,19=receivables,
+  //   20=inventory,21=cash,22=current_assets,23=total_assets
   const bsData = [
     ...makeHeader('Balance Sheet'),
     ['', ...sortedYears],
@@ -3002,14 +3148,24 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
     makeRow('Investments', 'balance_sheet.investments'),
     makeRow('Trade Receivables', 'balance_sheet.trade_receivables'),
     makeRow('Inventory', 'balance_sheet.inventory'),
-    makeRow('Cash & Equivalents', 'balance_sheet.cash'),
+    makeRow('Cash & Equivalents', 'balance_sheet.cash_and_equivalents'),
     makeRow('Current Assets', 'balance_sheet.current_assets'),
     makeRow('Total Assets', 'balance_sheet.total_assets'),
   ];
-  appendWarnings(bsData);
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(bsData), 'Balance Sheet');
+  const wsBS = XLSX.utils.aoa_to_sheet(bsData);
+  applyValidationStyles(wsBS, {
+    7:  { section: 'balance_sheet', field: 'total_equity' },
+    10: { section: 'balance_sheet', field: 'total_debt' },
+    13: { section: 'balance_sheet', field: 'total_liabilities' },
+    16: { section: 'balance_sheet', field: 'fixed_assets' },
+    21: { section: 'balance_sheet', field: 'cash_and_equivalents' },
+    22: { section: 'balance_sheet', field: 'current_assets' },
+    23: { section: 'balance_sheet', field: 'total_assets' },
+  }, colToYr, vResult.rowFlags, XLSX);
+  XLSX.utils.book_append_sheet(wb, wsBS, 'Balance Sheet');
 
   // Sheet 3: Cash Flow
+  // Row indices: 0-3=header+colHdr,4=cfo,5=cfi,6=cff,7=net_change,8=closing_cash
   const cfData = [
     ...makeHeader('Cash Flow Statement'),
     ['', ...sortedYears],
@@ -3019,8 +3175,14 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
     makeRow('Net Change in Cash', 'cash_flow.net_change_in_cash'),
     makeRow('Closing Cash Balance', 'cash_flow.closing_cash'),
   ];
-  appendWarnings(cfData);
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cfData), 'Cash Flow');
+  const wsCF = XLSX.utils.aoa_to_sheet(cfData);
+  applyValidationStyles(wsCF, {
+    4: { section: 'cash_flow', field: 'cfo' },
+    5: { section: 'cash_flow', field: 'cfi' },
+    6: { section: 'cash_flow', field: 'cff' },
+    7: { section: 'cash_flow', field: 'net_change_in_cash' },
+  }, colToYr, vResult.rowFlags, XLSX);
+  XLSX.utils.book_append_sheet(wb, wsCF, 'Cash Flow');
 
   // Sheet 4: Key Ratios (computed inline)
   const ratioData = [
@@ -3076,7 +3238,10 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
   ];
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ratioData), 'Key Ratios');
 
-  // Sheet 5: Analysis
+  // Sheet 5: Validation
+  XLSX.utils.book_append_sheet(wb, buildValidationSheet(vResult, XLSX), 'Validation');
+
+  // Sheet 6: Analysis
   const analysisData = [
     ...makeHeader('Analysis & Insights'),
     ['TREND SUMMARY'],
@@ -3088,11 +3253,11 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
     ['EXTRACTION DETAILS'],
     [`Pages processed: ${pageMetadata.length} of ${totalPages}`],
     [`Financial data years found: ${sortedYears.join(', ') || 'None detected'}`],
-    [`Extraction method: Claude Vision OCR`],
+    [`Extraction method: ${methodLabel}`],
   ];
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(analysisData), 'Analysis');
 
-  // Sheet 6: Metadata
+  // Sheet 7: Metadata
   const metaData = [
     ['Page', 'Method', 'OCR Confidence', 'Notes'],
     ...pageMetadata.map(m => [
@@ -3607,6 +3772,44 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   const wsSWOT = XLSX.utils.aoa_to_sheet(swotRows);
   wsSWOT['!cols'] = [{ wch: 90 }];
   XLSX.utils.book_append_sheet(wb, wsSWOT, 'SWOT');
+
+  // ── Validation sheet + cell highlighting ─────────────────────────────────
+  try {
+    const { years: vYears, sortedYears: vSorted } = wrapAggToYears(aggregated, aggregatedPrior);
+    const vRes = validateFinancialData(vYears, vSorted);
+    // col 1 = current ('cur'), col 2 = prior ('pri') when present
+    const colToYrFin = hasPrior ? { 1: 'cur', 2: 'pri' } : { 1: 'cur' };
+    applyValidationStyles(wsPL, {
+      5:  { section: 'profit_loss', field: 'revenue' },
+      7:  { section: 'profit_loss', field: 'gross_profit' },
+      10: { section: 'profit_loss', field: 'depreciation' },
+      11: { section: 'profit_loss', field: 'interest_expense' },
+      14: { section: 'profit_loss', field: 'ebitda' },
+      15: { section: 'profit_loss', field: 'ebit' },
+      16: { section: 'profit_loss', field: 'pbt' },
+      17: { section: 'profit_loss', field: 'tax_expense' },
+      18: { section: 'profit_loss', field: 'net_income' },
+    }, colToYrFin, vRes.rowFlags, XLSX);
+    applyValidationStyles(wsBS, {
+      5:  { section: 'balance_sheet', field: 'total_assets' },
+      6:  { section: 'balance_sheet', field: 'current_assets' },
+      7:  { section: 'balance_sheet', field: 'cash_and_equivalents' },
+      10: { section: 'balance_sheet', field: 'non_current_assets' },
+      11: { section: 'balance_sheet', field: 'fixed_assets' },
+      14: { section: 'balance_sheet', field: 'total_liabilities' },
+      15: { section: 'balance_sheet', field: 'current_liabilities' },
+      20: { section: 'balance_sheet', field: 'total_debt' },
+      23: { section: 'balance_sheet', field: 'total_equity' },
+    }, colToYrFin, vRes.rowFlags, XLSX);
+    applyValidationStyles(wsCF, {
+      4: { section: 'cash_flow', field: 'cfo' },
+      5: { section: 'cash_flow', field: 'cfi' },
+      6: { section: 'cash_flow', field: 'cff' },
+    }, colToYrFin, vRes.rowFlags, XLSX);
+    XLSX.utils.book_append_sheet(wb, buildValidationSheet(vRes, XLSX), 'Validation');
+  } catch (valErr) {
+    console.warn('[FinSight] Validation styling skipped:', valErr.message);
+  }
 
   // ── Serialize — pure Uint8Array, no Node Buffer ───────────────────────────
   // type:'array' tells SheetJS to return a plain Uint8Array (works in every browser).
