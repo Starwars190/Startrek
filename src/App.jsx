@@ -223,6 +223,20 @@ async function loadSheetJS() {
   });
 }
 
+async function loadXlsxStyle() {
+  if (window.XLSXStyle) return window.XLSXStyle;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
+    script.onload = () => {
+      window.XLSXStyle = window.XLSX;
+      resolve(window.XLSXStyle);
+    };
+    script.onerror = () => reject(new Error('Failed to load xlsx-js-style'));
+    document.head.appendChild(script);
+  });
+}
+
 async function loadPptxGenJS() {
   if (window.PptxGenJS) return window.PptxGenJS;
   return new Promise((resolve, reject) => {
@@ -487,6 +501,21 @@ OUTPUT JSON STRUCTURE (return ONLY this, no markdown)
     "totalEquity": null or number, "longTermDebt": null or number,
     "shortTermDebt": null or number, "inventory": null or number,
     "receivables": null or number, "cash": null or number, "fixedAssets": null or number,
+    "tradePayables": null or number,
+    "revenue": null or number, "grossProfit": null or number,
+    "operatingProfit": null or number, "ebitda": null or number,
+    "netIncome": null or number, "interestExpense": null or number,
+    "tax": null or number, "cogs": null or number,
+    "depreciation": null or number, "operatingCashFlow": null or number
+  },
+  "financialDataExtractedPrior": {
+    "totalAssets": null or number, "currentAssets": null or number,
+    "nonCurrentAssets": null or number, "totalLiabilities": null or number,
+    "currentLiabilities": null or number, "nonCurrentLiabilities": null or number,
+    "totalEquity": null or number, "longTermDebt": null or number,
+    "shortTermDebt": null or number, "inventory": null or number,
+    "receivables": null or number, "cash": null or number, "fixedAssets": null or number,
+    "tradePayables": null or number,
     "revenue": null or number, "grossProfit": null or number,
     "operatingProfit": null or number, "ebitda": null or number,
     "netIncome": null or number, "interestExpense": null or number,
@@ -498,7 +527,10 @@ OUTPUT JSON STRUCTURE (return ONLY this, no markdown)
 REMEMBER:
 - Apply XBRL CLEANING to every header, title, cell value before outputting.
 - PRESERVE every preamble narrative section (Financial Highlights, POSH, Secretarial Standards, etc.)
-- financialDataExtracted values: NUMBERS only (latest year), not strings. Convert "34,149.08" to 34149.08.`;
+- financialDataExtracted = CURRENT YEAR values (numbers only). Convert "34,149.08" to 34149.08.
+- financialDataExtractedPrior = PRIOR YEAR values (the comparative column, typically labeled "Previous Year" or the earlier date range).
+- COGS = Cost of Materials Consumed + Purchases of Stock-in-Trade + Changes in Inventory of Finished Goods/WIP. Do NOT include Employee Benefits, Finance Costs, Depreciation, Other Expenses, or Tax.
+- tradePayables = Trade Payables / Creditors for goods/services (from Balance Sheet Notes or current liabilities breakdown).`;
 }
 
 async function processChunkWithAI(chunkTextStr, chunkIndex, totalChunks, companyContext, onProgress) {
@@ -525,19 +557,18 @@ async function processChunkWithAI(chunkTextStr, chunkIndex, totalChunks, company
   }
 }
 
+const FINANCIAL_KEYS = [
+  "totalAssets","currentAssets","nonCurrentAssets","totalLiabilities","currentLiabilities",
+  "nonCurrentLiabilities","totalEquity","longTermDebt","shortTermDebt","inventory",
+  "receivables","cash","fixedAssets","tradePayables","revenue","grossProfit","operatingProfit",
+  "ebitda","netIncome","interestExpense","tax","cogs","depreciation","operatingCashFlow"
+];
+
 function aggregateFinancialData(chunkResults) {
-  const aggregated = {
-    totalAssets: null, currentAssets: null, nonCurrentAssets: null,
-    totalLiabilities: null, currentLiabilities: null, nonCurrentLiabilities: null,
-    totalEquity: null, longTermDebt: null, shortTermDebt: null,
-    inventory: null, receivables: null, cash: null, fixedAssets: null,
-    revenue: null, grossProfit: null, operatingProfit: null, ebitda: null,
-    netIncome: null, interestExpense: null, tax: null, cogs: null,
-    depreciation: null, operatingCashFlow: null
-  };
+  const aggregated = Object.fromEntries(FINANCIAL_KEYS.map(k => [k, null]));
   for (const chunk of chunkResults) {
     const data = chunk.financialDataExtracted || {};
-    for (const key of Object.keys(aggregated)) {
+    for (const key of FINANCIAL_KEYS) {
       if (aggregated[key] == null && data[key] != null && !isNaN(parseFloat(data[key]))) {
         aggregated[key] = parseFloat(data[key]);
       }
@@ -546,7 +577,30 @@ function aggregateFinancialData(chunkResults) {
   return aggregated;
 }
 
-function calculateRatios(fd, sectorHint = "general") {
+function aggregatePriorFinancialData(chunkResults) {
+  const aggregated = Object.fromEntries(FINANCIAL_KEYS.map(k => [k, null]));
+  for (const chunk of chunkResults) {
+    const data = chunk.financialDataExtractedPrior || {};
+    for (const key of FINANCIAL_KEYS) {
+      if (aggregated[key] == null && data[key] != null && !isNaN(parseFloat(data[key]))) {
+        aggregated[key] = parseFloat(data[key]);
+      }
+    }
+  }
+  return aggregated;
+}
+
+function computeDerivedFinancials(agg) {
+  if (agg.grossProfit == null && agg.revenue != null && agg.cogs != null)
+    agg.grossProfit = agg.revenue - agg.cogs;
+  if (agg.operatingProfit == null && agg.netIncome != null && agg.interestExpense != null && agg.tax != null)
+    agg.operatingProfit = agg.netIncome + agg.interestExpense + agg.tax;
+  if (agg.ebitda == null && agg.operatingProfit != null && agg.depreciation != null)
+    agg.ebitda = agg.operatingProfit + agg.depreciation;
+  return agg;
+}
+
+function calculateRatios(fd, sectorHint = "general", fdPrior = null) {
   const fmt = (val, decimals = 2, suffix = "") => {
     if (val == null || isNaN(val) || !isFinite(val)) return "—";
     const sign = val < 0 ? "(" : "";
@@ -555,61 +609,80 @@ function calculateRatios(fd, sectorHint = "general") {
   };
   const safe = (n, d) => (n != null && d != null && d !== 0 && !isNaN(n) && !isNaN(d)) ? (n / d) : null;
   const safeMul = (n, m) => (n != null && m != null && !isNaN(n) && !isNaN(m)) ? (n * m) : null;
+  const safeAdd = (...vals) => vals.every(v => v != null && !isNaN(v)) ? vals.reduce((a, b) => a + b, 0) : null;
+
+  const capitalEmployed = safeAdd(fd.totalEquity ?? null, fd.longTermDebt ?? null, fd.shortTermDebt ?? null);
+  const totalDebt = (fd.longTermDebt != null || fd.shortTermDebt != null)
+    ? (fd.longTermDebt ?? 0) + (fd.shortTermDebt ?? 0) : null;
+  const workingCapital = (fd.currentAssets != null && fd.currentLiabilities != null)
+    ? fd.currentAssets - fd.currentLiabilities : null;
+  const avgInventory = (fdPrior?.inventory != null && fd.inventory != null)
+    ? (fd.inventory + fdPrior.inventory) / 2 : fd.inventory;
+  const dso = safeMul(safe(fd.receivables, fd.revenue), 365);
+  const dio = safeMul(safe(avgInventory, fd.cogs), 365);
+  const dpo = fd.tradePayables != null ? safeMul(safe(fd.tradePayables, fd.cogs), 365) : null;
+  const ccc = (dso != null && dio != null && dpo != null) ? dso + dio - dpo : null;
+
+  const r = (name, rawValue, type, formula, interpretation) => ({
+    name, formula, interpretation, type,
+    rawValue,
+    value: rawValue == null || isNaN(rawValue) || !isFinite(rawValue) ? "—"
+      : type === "percent" ? fmt(rawValue, 2, "%")
+      : type === "multiple" ? fmt(rawValue, 2, "x")
+      : type === "days" ? fmt(rawValue, 0, " days")
+      : fmt(rawValue, 2),
+  });
+
   const ratios = [];
-  ratios.push({
-    category: "Profitability Ratios",
-    items: [
-      { name: "Gross Margin", value: fmt(safeMul(safe(fd.grossProfit, fd.revenue), 100), 2, "%"), rawValue: safeMul(safe(fd.grossProfit, fd.revenue), 100), formula: "Gross Profit / Revenue × 100", interpretation: "Higher is better. Pricing power and cost efficiency." },
-      { name: "Operating Margin", value: fmt(safeMul(safe(fd.operatingProfit, fd.revenue), 100), 2, "%"), rawValue: safeMul(safe(fd.operatingProfit, fd.revenue), 100), formula: "Operating Profit / Revenue × 100", interpretation: "Operating efficiency excluding interest and tax." },
-      { name: "Net Margin", value: fmt(safeMul(safe(fd.netIncome, fd.revenue), 100), 2, "%"), rawValue: safeMul(safe(fd.netIncome, fd.revenue), 100), formula: "Net Income / Revenue × 100", interpretation: "Bottom-line profitability after all costs." },
-      { name: "Return on Equity (ROE)", value: fmt(safeMul(safe(fd.netIncome, fd.totalEquity), 100), 2, "%"), rawValue: safeMul(safe(fd.netIncome, fd.totalEquity), 100), formula: "Net Income / Total Equity × 100", interpretation: "Returns for shareholders." },
-      { name: "Return on Assets (ROA)", value: fmt(safeMul(safe(fd.netIncome, fd.totalAssets), 100), 2, "%"), rawValue: safeMul(safe(fd.netIncome, fd.totalAssets), 100), formula: "Net Income / Total Assets × 100", interpretation: "Asset utilization efficiency." }
-    ]
-  });
-  ratios.push({
-    category: "Liquidity Ratios",
-    items: [
-      { name: "Current Ratio", value: fmt(safe(fd.currentAssets, fd.currentLiabilities), 2, "x"), rawValue: safe(fd.currentAssets, fd.currentLiabilities), formula: "Current Assets / Current Liabilities", interpretation: "Above 1.5 is healthy. Short-term solvency." },
-      { name: "Quick Ratio", value: fmt(safe((fd.currentAssets || 0) - (fd.inventory || 0), fd.currentLiabilities), 2, "x"), rawValue: safe((fd.currentAssets || 0) - (fd.inventory || 0), fd.currentLiabilities), formula: "(Current Assets − Inventory) / Current Liabilities", interpretation: "Above 1.0 is healthy. Excludes inventory." }
-    ]
-  });
-  ratios.push({
-    category: "Leverage Ratios",
-    items: [
-      { name: "Debt-to-Equity", value: fmt(safe(fd.longTermDebt, fd.totalEquity), 2, "x"), rawValue: safe(fd.longTermDebt, fd.totalEquity), formula: "Long-term Debt / Total Equity", interpretation: "Lower is safer. Below 1.0 is healthy." },
-      { name: "Debt-to-Assets", value: fmt(safe(fd.longTermDebt, fd.totalAssets), 2, "x"), rawValue: safe(fd.longTermDebt, fd.totalAssets), formula: "Long-term Debt / Total Assets", interpretation: "Portion of assets debt-financed." },
-      { name: "Interest Coverage", value: fmt(safe(fd.operatingProfit, fd.interestExpense), 2, "x"), rawValue: safe(fd.operatingProfit, fd.interestExpense), formula: "Operating Profit / Interest Expense", interpretation: "Above 3x is healthy." }
-    ]
-  });
-  ratios.push({
-    category: "Efficiency Ratios",
-    items: [
-      { name: "Asset Turnover", value: fmt(safe(fd.revenue, fd.totalAssets), 2, "x"), rawValue: safe(fd.revenue, fd.totalAssets), formula: "Revenue / Total Assets", interpretation: "Efficiency of asset use." },
-      { name: "Inventory Turnover", value: fmt(safe(fd.cogs, fd.inventory), 2, "x"), rawValue: safe(fd.cogs, fd.inventory), formula: "COGS / Inventory", interpretation: "Higher = faster inventory turnover." },
-      { name: "Receivables Days (DSO)", value: fmt(safeMul(safe(fd.receivables, fd.revenue), 365), 0, " days"), rawValue: safeMul(safe(fd.receivables, fd.revenue), 365), formula: "(Receivables / Revenue) × 365", interpretation: "Lower is better." }
-    ]
-  });
+
+  ratios.push({ category: "Profitability Ratios", items: [
+    r("Gross Margin",          safeMul(safe(fd.grossProfit, fd.revenue), 100),     "percent",   "Gross Profit / Revenue × 100",               "Pricing power and cost efficiency."),
+    r("EBITDA Margin",         safeMul(safe(fd.ebitda, fd.revenue), 100),          "percent",   "EBITDA / Revenue × 100",                     "Operating cash generation as % of revenue."),
+    r("Operating Margin",      safeMul(safe(fd.operatingProfit, fd.revenue), 100), "percent",   "Operating Profit / Revenue × 100",           "Operating efficiency before interest and tax."),
+    r("Net Margin",            safeMul(safe(fd.netIncome, fd.revenue), 100),       "percent",   "Net Income / Revenue × 100",                 "Bottom-line profitability after all costs."),
+    r("Return on Equity (ROE)",safeMul(safe(fd.netIncome, fd.totalEquity), 100),   "percent",   "Net Income / Total Equity × 100",            "Returns generated for shareholders."),
+    r("Return on Assets (ROA)",safeMul(safe(fd.netIncome, fd.totalAssets), 100),   "percent",   "Net Income / Total Assets × 100",            "Asset utilization efficiency."),
+    r("ROCE",                  safeMul(safe(fd.operatingProfit, capitalEmployed), 100), "percent","Operating Profit / Capital Employed × 100", "Return on all capital deployed (equity + debt)."),
+  ]});
+
+  ratios.push({ category: "Liquidity Ratios", items: [
+    r("Current Ratio", safe(fd.currentAssets, fd.currentLiabilities),                              "multiple", "Current Assets / Current Liabilities",              "Above 1.5 is healthy. Short-term solvency."),
+    r("Quick Ratio",   safe((fd.currentAssets ?? 0) - (fd.inventory ?? 0), fd.currentLiabilities), "multiple", "(Current Assets − Inventory) / Current Liabilities", "Above 1.0 is healthy. Excludes inventory."),
+  ]});
+
+  ratios.push({ category: "Leverage Ratios", items: [
+    r("Debt-to-Equity (LT)",   safe(fd.longTermDebt, fd.totalEquity),  "multiple", "Long-term Debt / Total Equity",              "Long-term leverage. Below 1.0 is healthy."),
+    r("Total Debt / Equity",   safe(totalDebt, fd.totalEquity),        "multiple", "(LT Debt + ST Debt) / Total Equity",         "Total leverage including short-term debt."),
+    r("Total Debt / Assets",   safe(totalDebt, fd.totalAssets),        "multiple", "(LT Debt + ST Debt) / Total Assets",         "Portion of all assets financed by debt."),
+    r("Interest Coverage",     safe(fd.operatingProfit, fd.interestExpense), "multiple", "Operating Profit / Interest Expense",   "Above 3x is healthy. Debt-service capacity."),
+    r("DSCR (Approx)",         safe(fd.operatingProfit, fd.interestExpense), "multiple", "Operating Profit / Interest Expense (proxy)", "Approximation using interest only. Above 1.25x is healthy."),
+  ]});
+
+  const effItems = [
+    r("Asset Turnover",          safe(fd.revenue, fd.totalAssets),    "multiple", "Revenue / Total Assets",                          "Efficiency of total asset base."),
+    r("Inventory Turnover",      safe(fd.cogs, avgInventory),         "multiple", `COGS / ${fdPrior?.inventory != null ? "Avg " : ""}Inventory`, "Higher = faster stock movement."),
+    r("Inventory Days (DIO)",    dio,                                  "days",     `(${fdPrior?.inventory != null ? "Avg " : ""}Inventory / COGS) × 365`, "Days stock is held before sale."),
+    r("Receivables Days (DSO)",  dso,                                  "days",     "(Receivables / Revenue) × 365",                   "Lower is better. Collection efficiency."),
+    r("Working Capital",         workingCapital,                       "number",   "Current Assets − Current Liabilities",            "Absolute working capital in reporting units."),
+    r("Working Capital Days",    safeMul(safe(workingCapital, fd.revenue), 365), "days", "(Working Capital / Revenue) × 365",         "Days of revenue tied up in working capital."),
+  ];
+  if (dpo != null) {
+    effItems.push(r("Payable Days (DPO)", dpo, "days", "(Trade Payables / COGS) × 365", "Days to pay suppliers. Higher can improve cash flow."));
+  }
+  if (ccc != null) {
+    effItems.push(r("Cash Conversion Cycle", ccc, "days", "DSO + DIO − DPO", "Days to convert investments into cash. Lower is better."));
+  }
+  ratios.push({ category: "Efficiency Ratios", items: effItems });
+
   const sector = (sectorHint || "").toLowerCase();
-  const sectorRatios = [];
+  const sectorItems = [];
   if (sector.includes("medical") || sector.includes("pharma") || sector.includes("health")) {
-    sectorRatios.push({
-      name: "Working Capital Intensity",
-      value: fmt(safeMul(safe((fd.currentAssets || 0) - (fd.currentLiabilities || 0), fd.revenue), 100), 2, "%"),
-      rawValue: safeMul(safe((fd.currentAssets || 0) - (fd.currentLiabilities || 0), fd.revenue), 100),
-      formula: "Working Capital / Revenue × 100",
-      interpretation: "Capital tied up in operations."
-    });
+    sectorItems.push(r("Working Capital Intensity", safeMul(safe(workingCapital, fd.revenue), 100), "percent", "Working Capital / Revenue × 100", "Capital intensity of operations."));
   }
   if (sector.includes("manufactur") || sector.includes("medical") || sector.includes("pharma")) {
-    sectorRatios.push({
-      name: "Fixed Asset Turnover",
-      value: fmt(safe(fd.revenue, fd.fixedAssets), 2, "x"),
-      rawValue: safe(fd.revenue, fd.fixedAssets),
-      formula: "Revenue / Fixed Assets",
-      interpretation: "Fixed asset utilization efficiency."
-    });
+    sectorItems.push(r("Fixed Asset Turnover", safe(fd.revenue, fd.fixedAssets), "multiple", "Revenue / Fixed Assets", "Fixed asset utilization efficiency."));
   }
-  if (sectorRatios.length > 0) ratios.push({ category: "Sector-Specific Ratios", items: sectorRatios });
+  if (sectorItems.length > 0) ratios.push({ category: "Sector-Specific Ratios", items: sectorItems });
   return ratios;
 }
 
@@ -624,6 +697,7 @@ Output ONLY JSON:
   "weaknesses": ["4-5 specific weaknesses"],
   "opportunities": ["4-5 specific opportunities"],
   "threats": ["4-5 specific threats"],
+  "outlookSummary": "2-3 sentences: executive outlook for this company. Reference actual numbers, sector dynamics, and net assessment. Must be company-specific, not generic.",
   "ratioInterpretations": [
     {"ratio": "Gross Margin", "value": "X%", "meaning": "1-2 lines specific to THIS company in its sector"}
   ]
@@ -1695,13 +1769,16 @@ async function processPrivateCompanyDoc(file, onProgress) {
       : "Calculating financial ratios...";
     onProgress?.(progressSuffix);
     const aggregated = aggregateFinancialData(chunkResults);
+    computeDerivedFinancials(aggregated);
+    const aggregatedPrior = aggregatePriorFinancialData(chunkResults);
+    computeDerivedFinancials(aggregatedPrior);
     let sectorHint = companyInfo.sector || "";
     if (!sectorHint) {
       const nameLower = (companyInfo.name || "").toLowerCase();
       if (nameLower.includes("medical") || nameLower.includes("pharma") || nameLower.includes("health")) sectorHint = "medical";
       else if (nameLower.includes("steel") || nameLower.includes("manufact")) sectorHint = "manufacturing";
     }
-    const ratios = calculateRatios(aggregated, sectorHint);
+    const ratios = calculateRatios(aggregated, sectorHint, aggregatedPrior);
     const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress);
     
     onProgress?.("Building bar charts...");
@@ -1794,7 +1871,7 @@ async function processPrivateCompanyDoc(file, onProgress) {
     onProgress?.("Generating Excel workbook...");
     let excelResult = null;
     try {
-      excelResult = await generateFinancialExcel(companyInfo, aggregated, ratios, swot);
+      excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot);
     } catch (excelErr) {
       console.error("[processPrivateCompanyDoc] Excel generation failed:", excelErr);
     }
@@ -1821,270 +1898,253 @@ async function processPrivateCompanyDoc(file, onProgress) {
   }
 }
 
-async function generateFinancialExcel(companyInfo, aggregated, ratios, swot) {
-  const XLSX = await loadSheetJS();
+async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot) {
+  const XLSX = await loadXlsxStyle();
 
-  const BROWN_HEX = "8B4513";
-  const LIGHT_BROWN_HEX = "F5EFE7";
-  const WHITE_HEX = "FFFFFF";
-  const GREY_TEXT_HEX = "6B6158";
+  // ─── Color + border constants ─────────────────────────────────────────────
+  const BROWN = "8B4513", LT_BROWN = "F5EFE7", WHITE = "FFFFFF", GREY = "6B6158";
 
-  const headerFill = { patternType: "solid", fgColor: { rgb: LIGHT_BROWN_HEX } };
-  const brownFont = { bold: true, color: { rgb: BROWN_HEX } };
-  const boldFont = { bold: true };
-  const greyFont = { color: { rgb: GREY_TEXT_HEX } };
-
-  const thinBorder = {
-    top:    { style: "thin", color: { rgb: "CCCCCC" } },
-    bottom: { style: "thin", color: { rgb: "CCCCCC" } },
-    left:   { style: "thin", color: { rgb: "CCCCCC" } },
-    right:  { style: "thin", color: { rgb: "CCCCCC" } },
+  const bdr = {
+    top: { style: "thin", color: { rgb: "D3D3D3" } }, bottom: { style: "thin", color: { rgb: "D3D3D3" } },
+    left: { style: "thin", color: { rgb: "D3D3D3" } }, right: { style: "thin", color: { rgb: "D3D3D3" } },
+  };
+  const bdrTop = {
+    top: { style: "medium", color: { rgb: BROWN } }, bottom: { style: "thin", color: { rgb: "D3D3D3" } },
+    left: { style: "thin", color: { rgb: "D3D3D3" } }, right: { style: "thin", color: { rgb: "D3D3D3" } },
   };
 
-  const fmtNum = (val) => {
-    if (val == null || isNaN(val)) return "—";
-    if (val < 0) return `(${Math.abs(val).toLocaleString("en-IN", { maximumFractionDigits: 2 })})`;
-    return val.toLocaleString("en-IN", { maximumFractionDigits: 2 });
+  // Number format strings (FIX #1 + FIX #7)
+  const FMT_NUM  = "#,##0.00;(#,##0.00);\"—\"";
+  const FMT_PCT  = "0.00%;(0.00%);\"—\"";   // Excel multiplies stored value × 100 → store 0.2228 for 22.28%
+  const FMT_MULT = "0.00\"x\";(0.00\"x\");\"—\"";
+  const FMT_DAYS = "#,##0\" days\";(#,##0)\" days\";\"—\"";
+  const FMT_INT  = "#,##0;(#,##0);\"—\"";
+
+  // Style builder: mkSt(fill, fontOpts, alignOpts, border, numFmt)
+  const mkSt = (fill, font = {}, align = {}, border = null, numFmt = null) => {
+    const st = { font: { name: "Calibri", sz: 10, ...font } };
+    if (fill) st.fill = { patternType: "solid", fgColor: { rgb: fill } };
+    if (Object.keys(align).length) st.alignment = align;
+    if (border) st.border = border;
+    if (numFmt) st.numFmt = numFmt;
+    return st;
   };
 
+  // Cell builders
+  const sc = (v, st) => ({ v: v ?? "", t: "s", s: st || {} });           // string cell
+  const nc = (v, st) => ({ v, t: "n", s: st || {} });                     // number cell
+  const ec = ()       => ({ v: "", t: "s", s: {} });                      // empty cell
+  const dc = (st)     => sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr));
+
+  // Build worksheet from 2D array of cells
+  const buildSheet = (rows, colWidths, merges = []) => {
+    const ws = {};
+    let maxR = 0, maxC = 0;
+    rows.forEach((row, r) => {
+      (row || []).forEach((c, col) => {
+        if (c == null) return;
+        ws[XLSX.utils.encode_cell({ r, c: col })] = c;
+        if (r > maxR) maxR = r;
+        if (col > maxC) maxC = col;
+      });
+    });
+    ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
+    if (colWidths?.length) ws["!cols"] = colWidths.map(w => ({ wch: w }));
+    if (merges.length) ws["!merges"] = merges;
+    return ws;
+  };
+
+  // ─── Shared helpers ───────────────────────────────────────────────────────
   const today = new Date();
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const todayStr = `${String(today.getDate()).padStart(2,"0")} ${months[today.getMonth()]} ${today.getFullYear()}`;
+  const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const todayStr = `${String(today.getDate()).padStart(2,"0")} ${MON[today.getMonth()]} ${today.getFullYear()}`;
 
-  const makeCell = (v, opts = {}) => {
-    const cell = { v: v ?? "", t: typeof v === "number" ? "n" : "s" };
-    const style = {};
-    if (opts.fill) style.fill = opts.fill;
-    if (opts.font) style.font = opts.font;
-    if (opts.border) style.border = opts.border;
-    if (opts.alignment) style.alignment = opts.alignment;
-    if (Object.keys(style).length) cell.s = style;
-    return cell;
+  const fyLabels = (() => {
+    const m = (companyInfo.period || "").match(/\b(20\d{2})\b/g);
+    if (m?.length >= 2) return {
+      current: `FY ${m[0].slice(-2)}-${m[1].slice(-2)}`,
+      prior:   `FY ${(parseInt(m[0]) - 1).toString().slice(-2)}-${m[0].slice(-2)}`,
+    };
+    return { current: "Current Year", prior: "Prior Year" };
+  })();
+
+  const hasPrior = Object.values(aggregatedPrior || {}).some(v => v != null);
+  const nFinCols = hasPrior ? 4 : 2;
+
+  const yoyPct = (curr, prior) => {
+    if (curr == null || prior == null || prior === 0) return null;
+    return (curr - prior) / Math.abs(prior);    // decimal for FMT_PCT
   };
 
-  // ─── TAB 1: Summary ───────────────────────────────────────────────────────
-  const summaryData = [];
+  // Outlook text (FIX #5)
+  const outlookText = swot?.outlookSummary
+    || (swot?.strengths?.[0] && swot?.weaknesses?.[0]
+        ? `${swot.strengths[0].replace(/^[•\-]\s*/, "")} However, ${swot.weaknesses[0].replace(/^[•\-]\s*/, "")}`
+        : swot?.strengths?.[0] || "—");
 
-  // Row 1 — title (merged A1:B1)
-  summaryData.push([
-    makeCell("FINSIGHT AI — FINANCIAL ANALYSIS", {
-      font: { bold: true, sz: 16, color: { rgb: WHITE_HEX } },
-      fill: { patternType: "solid", fgColor: { rgb: BROWN_HEX } },
-      alignment: { horizontal: "center", vertical: "center" },
-    }),
-    makeCell(""),
-  ]);
-  summaryData.push([makeCell(""), makeCell("")]);
+  // ─── TAB 1: Summary (FIX #5, FIX #6) ─────────────────────────────────────
+  const sTitleSt = mkSt(BROWN, { bold: true, sz: 16, color: { rgb: WHITE } }, { horizontal: "center", vertical: "center" }, bdr);
+  const sHdrSt   = mkSt(LT_BROWN, { bold: true, sz: 11, color: { rgb: BROWN } }, {}, bdr);
+  const sLblSt   = mkSt(null, { bold: true }, {}, bdr);
+  const sValSt   = mkSt(null, {}, { wrapText: true }, bdr);
 
-  // Row 3 — section header
-  summaryData.push([
-    makeCell("COMPANY OVERVIEW", {
-      font: { bold: true, sz: 12, color: { rgb: BROWN_HEX } },
-      fill: headerFill,
-      border: thinBorder,
-    }),
-    makeCell("", { fill: headerFill, border: thinBorder }),
-  ]);
-
-  const overviewRows = [
-    ["Company Name", companyInfo.name],
-    ["Period",       companyInfo.period],
-    ["Sector",       companyInfo.sector],
-    ["Currency",     companyInfo.currency || "INR"],
-    ["Reporting Unit", companyInfo.rounding || "Lakhs"],
+  const summaryRows = [
+    [sc("FINSIGHT AI — FINANCIAL ANALYSIS", sTitleSt), sc("", sTitleSt)],
+    [ec(), ec()],
+    [sc("COMPANY OVERVIEW", sHdrSt), sc("", sHdrSt)],
+    [sc("Company Name",    sLblSt), sc(companyInfo.name    || "—", sValSt)],
+    [sc("Period",          sLblSt), sc(companyInfo.period   || "—", sValSt)],
+    [sc("Sector",          sLblSt), sc(companyInfo.sector   || "—", sValSt)],
+    [sc("Currency",        sLblSt), sc(companyInfo.currency || "INR", sValSt)],
+    [sc("Reporting Unit",  sLblSt), sc(companyInfo.rounding || "Lakhs", sValSt)],
+    [ec(), ec()],
+    [sc("OUTLOOK", sHdrSt), sc("", sHdrSt)],
+    [sc(outlookText, mkSt(null, {}, { wrapText: true }, bdr)), ec()],
+    [ec(), ec()],
+    [sc("ABOUT THIS REPORT", sHdrSt), sc("", sHdrSt)],
+    [sc("Generated by", sLblSt), sc("FinSight AI", sValSt)],
+    [sc("Generated on", sLblSt), sc(todayStr, sValSt)],
+    [sc("Source",       sLblSt), sc("finsightai.org", sValSt)],
   ];
-  for (const [label, val] of overviewRows) {
-    summaryData.push([
-      makeCell(label, { font: boldFont, border: thinBorder }),
-      makeCell(val || "—", { border: thinBorder }),
-    ]);
-  }
+  const wsSummary = buildSheet(summaryRows, [30, 60], [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }]);
 
-  summaryData.push([makeCell(""), makeCell("")]);
+  // ─── TAB 2: Financials (FIX #1, #3, #9) ──────────────────────────────────
+  const fTitleSt = mkSt(BROWN, { bold: true, sz: 13, color: { rgb: WHITE } }, { horizontal: "center" });
+  const fSubSt   = mkSt(null, { italic: true, color: { rgb: GREY } }, {});
+  const fSecSt   = mkSt(LT_BROWN, { bold: true, color: { rgb: BROWN } }, {}, bdr);
+  const fColHSt  = mkSt(BROWN, { bold: true, color: { rgb: WHITE } }, { horizontal: "center" }, bdr);
 
-  summaryData.push([
-    makeCell("OUTLOOK", {
-      font: { bold: true, sz: 12, color: { rgb: BROWN_HEX } },
-      fill: headerFill, border: thinBorder,
-    }),
-    makeCell("", { fill: headerFill, border: thinBorder }),
-  ]);
+  const emptyRow = () => Array(nFinCols).fill(null).map(() => ec());
 
-  const outlookText = (swot?.strengths?.[0]) || "—";
-  summaryData.push([
-    makeCell(outlookText, { border: thinBorder, alignment: { wrapText: true } }),
-    makeCell("", { border: thinBorder }),
-  ]);
-
-  summaryData.push([makeCell(""), makeCell("")]);
-
-  summaryData.push([
-    makeCell("ABOUT THIS REPORT", {
-      font: { bold: true, sz: 12, color: { rgb: BROWN_HEX } },
-      fill: headerFill, border: thinBorder,
-    }),
-    makeCell("", { fill: headerFill, border: thinBorder }),
-  ]);
-
-  const aboutRows = [
-    ["Generated by", "FinSight AI"],
-    ["Generated on", todayStr],
-    ["Source",       "finsightai.org"],
-  ];
-  for (const [label, val] of aboutRows) {
-    summaryData.push([
-      makeCell(label, { font: boldFont, border: thinBorder }),
-      makeCell(val, { border: thinBorder }),
-    ]);
-  }
-
-  const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
-  wsSummary["!cols"] = [{ wch: 30 }, { wch: 60 }];
-  wsSummary["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }];
-  wsSummary["!freeze"] = { xSplit: 0, ySplit: 1 };
-
-  // ─── TAB 2: Financials ────────────────────────────────────────────────────
-  const financialsData = [];
-
-  financialsData.push([
-    makeCell("FINANCIAL STATEMENTS", {
-      font: { bold: true, sz: 14, color: { rgb: BROWN_HEX } },
-      fill: { patternType: "solid", fgColor: { rgb: BROWN_HEX } },
-      alignment: { horizontal: "center" },
-    }),
-    makeCell(""),
-  ]);
-  financialsData.push([
-    makeCell(`Values in ${companyInfo.rounding || "Lakhs"} of ${companyInfo.currency || "INR"}`, {
-      font: { italic: true, color: { rgb: GREY_TEXT_HEX } },
-    }),
-    makeCell(""),
-  ]);
-  financialsData.push([makeCell(""), makeCell("")]);
-
-  const sectionHeader = (label) => [
-    makeCell(label, { font: { bold: true, color: { rgb: BROWN_HEX } }, fill: headerFill, border: thinBorder }),
-    makeCell("", { fill: headerFill, border: thinBorder }),
-  ];
-
-  const boldKeys = new Set(["Total Assets","Total Liabilities","Total Equity","Revenue","Net Income"]);
-
-  const finRow = (label, val) => {
-    const isBold = boldKeys.has(label);
-    return [
-      makeCell(label, { font: isBold ? boldFont : {}, border: thinBorder }),
-      makeCell(fmtNum(val), {
-        font: isBold ? boldFont : {},
-        border: thinBorder,
-        alignment: { horizontal: "right" },
-      }),
-    ];
+  const secRow = (label) => {
+    const row = [sc(label, fSecSt)];
+    for (let i = 1; i < nFinCols; i++) row.push(sc("", fSecSt));
+    return row;
   };
 
-  financialsData.push(sectionHeader("BALANCE SHEET"));
-  financialsData.push(finRow("Total Assets",           aggregated.totalAssets));
-  financialsData.push(finRow("Current Assets",         aggregated.currentAssets));
-  financialsData.push(finRow("Non-Current Assets",     aggregated.nonCurrentAssets));
-  financialsData.push(finRow("Fixed Assets",           aggregated.fixedAssets));
-  financialsData.push(finRow("Inventory",              aggregated.inventory));
-  financialsData.push(finRow("Receivables",            aggregated.receivables));
-  financialsData.push(finRow("Cash & Equivalents",     aggregated.cash));
-  financialsData.push([makeCell(""), makeCell("")]);
-  financialsData.push(finRow("Total Liabilities",      aggregated.totalLiabilities));
-  financialsData.push(finRow("Current Liabilities",    aggregated.currentLiabilities));
-  financialsData.push(finRow("Non-Current Liabilities",aggregated.nonCurrentLiabilities));
-  financialsData.push(finRow("Long-term Debt",         aggregated.longTermDebt));
-  financialsData.push(finRow("Short-term Debt",        aggregated.shortTermDebt));
-  financialsData.push([makeCell(""), makeCell("")]);
-  financialsData.push(finRow("Total Equity",           aggregated.totalEquity));
-  financialsData.push([makeCell(""), makeCell("")]);
+  const finRow = (label, curr, prior, isBold = false, isTotal = false) => {
+    const useBdr = isTotal ? bdrTop : bdr;
+    const lblSt = mkSt(null, isBold ? { bold: true } : {}, {}, useBdr);
+    const numSt = mkSt(null, isBold ? { bold: true } : {}, { horizontal: "right" }, useBdr, FMT_NUM);
+    const pctSt = (val) => mkSt(null,
+      isBold
+        ? { bold: true, color: { rgb: val >= 0 ? "2D7D5C" : "C04040" } }
+        : { color: { rgb: val >= 0 ? "2D7D5C" : "C04040" } },
+      { horizontal: "right" }, bdr, FMT_PCT);
 
-  financialsData.push(sectionHeader("PROFIT & LOSS"));
-  financialsData.push(finRow("Revenue",                aggregated.revenue));
-  financialsData.push(finRow("Cost of Goods Sold",     aggregated.cogs));
-  financialsData.push(finRow("Gross Profit",           aggregated.grossProfit));
-  financialsData.push(finRow("Operating Profit",       aggregated.operatingProfit));
-  financialsData.push(finRow("EBITDA",                 aggregated.ebitda));
-  financialsData.push(finRow("Depreciation",           aggregated.depreciation));
-  financialsData.push(finRow("Interest Expense",       aggregated.interestExpense));
-  financialsData.push(finRow("Tax",                    aggregated.tax));
-  financialsData.push(finRow("Net Income",             aggregated.netIncome));
-  financialsData.push([makeCell(""), makeCell("")]);
+    const row = [sc(label, lblSt)];
+    row.push(curr != null ? nc(curr, numSt) : sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, useBdr)));
+    if (hasPrior) {
+      row.push(prior != null ? nc(prior, numSt) : sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr)));
+      const chg = yoyPct(curr, prior);
+      row.push(chg != null ? nc(chg, pctSt(chg)) : sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr)));
+    }
+    return row;
+  };
 
-  financialsData.push(sectionHeader("CASH FLOW"));
-  financialsData.push(finRow("Operating Cash Flow",    aggregated.operatingCashFlow));
+  // Title row spans all fin columns
+  const fTitleArr  = [sc("FINANCIAL STATEMENTS", fTitleSt), ...Array(nFinCols - 1).fill(sc("", fTitleSt))];
+  const fSubArr    = [sc(`Values in ${companyInfo.rounding || "Lakhs"} of ${companyInfo.currency || "INR"}`, fSubSt), ...Array(nFinCols - 1).fill(ec())];
+  const fColHdrArr = [sc("Particulars", fColHSt), sc(fyLabels.current, fColHSt)];
+  if (hasPrior) fColHdrArr.push(sc(fyLabels.prior, fColHSt), sc("YoY Change", fColHSt));
 
-  const wsFinancials = XLSX.utils.aoa_to_sheet(financialsData);
-  wsFinancials["!cols"] = [{ wch: 40 }, { wch: 20 }];
-  wsFinancials["!merges"] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 1 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 1 } },
+  const a = aggregated, p = aggregatedPrior || {};
+  const financialsRows = [
+    fTitleArr,
+    fSubArr,
+    emptyRow(),
+    fColHdrArr,
+    secRow("BALANCE SHEET"),
+    finRow("Total Assets",              a.totalAssets,           p.totalAssets,           true, true),
+    finRow("  Current Assets",          a.currentAssets,         p.currentAssets),
+    finRow("  Non-Current Assets",      a.nonCurrentAssets,      p.nonCurrentAssets),
+    finRow("  Fixed Assets",            a.fixedAssets,           p.fixedAssets),
+    finRow("  Inventory",               a.inventory,             p.inventory),
+    finRow("  Receivables",             a.receivables,           p.receivables),
+    finRow("  Cash & Equivalents",      a.cash,                  p.cash),
+    emptyRow(),
+    finRow("Total Liabilities",         a.totalLiabilities,      p.totalLiabilities,      true, true),
+    finRow("  Current Liabilities",     a.currentLiabilities,    p.currentLiabilities),
+    finRow("  Non-Current Liabilities", a.nonCurrentLiabilities, p.nonCurrentLiabilities),
+    finRow("  Long-term Debt",          a.longTermDebt,          p.longTermDebt),
+    finRow("  Short-term Debt",         a.shortTermDebt,         p.shortTermDebt),
+    emptyRow(),
+    finRow("Total Equity",              a.totalEquity,           p.totalEquity,           true, true),
+    emptyRow(),
+    secRow("PROFIT & LOSS"),
+    finRow("Revenue",                   a.revenue,               p.revenue,               true, true),
+    finRow("  Cost of Goods Sold",      a.cogs,                  p.cogs),
+    finRow("  Gross Profit",            a.grossProfit,           p.grossProfit),
+    finRow("  Operating Profit",        a.operatingProfit,       p.operatingProfit),
+    finRow("  EBITDA",                  a.ebitda,                p.ebitda),
+    finRow("  Depreciation",            a.depreciation,          p.depreciation),
+    finRow("  Interest Expense",        a.interestExpense,       p.interestExpense),
+    finRow("  Tax",                     a.tax,                   p.tax),
+    finRow("Net Income",                a.netIncome,             p.netIncome,             true, true),
+    emptyRow(),
+    secRow("CASH FLOW"),
+    finRow("Operating Cash Flow",       a.operatingCashFlow,     p.operatingCashFlow),
   ];
 
-  // ─── TAB 3: Ratios ────────────────────────────────────────────────────────
-  const ratiosData = [];
+  const finMerges = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: nFinCols - 1 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: nFinCols - 1 } },
+  ];
+  const finColWidths = hasPrior ? [40, 20, 20, 15] : [40, 20];
+  const wsFinancials = buildSheet(financialsRows, finColWidths, finMerges);
 
-  ratiosData.push([
-    makeCell("FINANCIAL RATIOS", {
-      font: { bold: true, sz: 14, color: { rgb: WHITE_HEX } },
-      fill: { patternType: "solid", fgColor: { rgb: BROWN_HEX } },
-      alignment: { horizontal: "center" },
-    }),
-    makeCell(""), makeCell(""), makeCell(""),
-  ]);
-  ratiosData.push([makeCell(""), makeCell(""), makeCell(""), makeCell("")]);
+  // ─── TAB 3: Ratios (FIX #1, #4, #6) ──────────────────────────────────────
+  const rTitleSt = mkSt(BROWN, { bold: true, sz: 13, color: { rgb: WHITE } }, { horizontal: "center" });
+  const rColHSt  = mkSt(BROWN, { bold: true, color: { rgb: WHITE } }, {}, bdr);
+  const rSecSt   = mkSt(LT_BROWN, { bold: true, color: { rgb: BROWN } }, {}, bdr);
+  const rTxtSt   = mkSt(null, {}, { wrapText: true, vertical: "center" }, bdr);
+  const rRightSt = mkSt(null, {}, { horizontal: "right" }, bdr);
 
-  // Column headers row
-  ratiosData.push([
-    makeCell("Ratio Name",   { font: brownFont, fill: headerFill, border: thinBorder }),
-    makeCell("Value",        { font: brownFont, fill: headerFill, border: thinBorder, alignment: { horizontal: "right" } }),
-    makeCell("Formula",      { font: brownFont, fill: headerFill, border: thinBorder }),
-    makeCell("What It Means",{ font: brownFont, fill: headerFill, border: thinBorder }),
-  ]);
+  const ratioFmt = (type) => {
+    if (type === "percent")  return FMT_PCT;
+    if (type === "multiple") return FMT_MULT;
+    if (type === "days")     return FMT_DAYS;
+    return FMT_INT;
+  };
+
+  const ratioNum = (rawValue, type) => {
+    if (rawValue == null || isNaN(rawValue) || !isFinite(rawValue)) return null;
+    return type === "percent" ? rawValue / 100 : rawValue;
+  };
+
+  const ratiosRows = [
+    [sc("FINANCIAL RATIOS", rTitleSt), sc("", rTitleSt), sc("", rTitleSt), sc("", rTitleSt)],
+    [ec(), ec(), ec(), ec()],
+    [sc("Ratio Name", rColHSt), sc("Value", mkSt(BROWN, { bold: true, color: { rgb: WHITE } }, { horizontal: "right" }, bdr)),
+     sc("Formula", rColHSt), sc("What It Means", rColHSt)],
+  ];
 
   for (const cat of (ratios || [])) {
-    ratiosData.push([
-      makeCell(cat.category || "", { font: { bold: true, color: { rgb: BROWN_HEX } }, fill: headerFill, border: thinBorder }),
-      makeCell("", { fill: headerFill, border: thinBorder }),
-      makeCell("", { fill: headerFill, border: thinBorder }),
-      makeCell("", { fill: headerFill, border: thinBorder }),
-    ]);
+    ratiosRows.push([sc(cat.category || "", rSecSt), sc("", rSecSt), sc("", rSecSt), sc("", rSecSt)]);
     for (const item of (cat.items || [])) {
-      const isDash = !item.value || item.value === "—";
-      ratiosData.push([
-        makeCell(item.name || "", { border: thinBorder }),
-        makeCell(item.value || "—", {
-          font: isDash ? greyFont : {},
-          border: thinBorder,
-          alignment: { horizontal: "right" },
-        }),
-        makeCell(item.formula || "", { border: thinBorder, alignment: { wrapText: true } }),
-        makeCell(item.interpretation || "", { border: thinBorder, alignment: { wrapText: true } }),
-      ]);
+      const numV = ratioNum(item.rawValue, item.type);
+      const fmt  = ratioFmt(item.type);
+      const valCell = numV != null
+        ? nc(numV, mkSt(null, {}, { horizontal: "right" }, bdr, fmt))
+        : sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr));
+      ratiosRows.push([sc(item.name || "", rTxtSt), valCell, sc(item.formula || "", rTxtSt), sc(item.interpretation || "", rTxtSt)]);
     }
-    ratiosData.push([makeCell(""), makeCell(""), makeCell(""), makeCell("")]);
+    ratiosRows.push([ec(), ec(), ec(), ec()]);
   }
 
   if (swot?.ratioInterpretations?.length) {
-    ratiosData.push([
-      makeCell("Company-Specific Interpretations", { font: { bold: true, color: { rgb: BROWN_HEX } }, fill: headerFill, border: thinBorder }),
-      makeCell("", { fill: headerFill, border: thinBorder }),
-      makeCell("", { fill: headerFill, border: thinBorder }),
-      makeCell("", { fill: headerFill, border: thinBorder }),
-    ]);
+    ratiosRows.push([sc("Company-Specific Interpretations", rSecSt), sc("", rSecSt), sc("", rSecSt), sc("", rSecSt)]);
     for (const interp of swot.ratioInterpretations) {
-      ratiosData.push([
-        makeCell(interp.ratio || "", { border: thinBorder }),
-        makeCell(interp.value || "—", { border: thinBorder, alignment: { horizontal: "right" } }),
-        makeCell("—", { font: greyFont, border: thinBorder }),
-        makeCell(interp.meaning || "", { border: thinBorder, alignment: { wrapText: true } }),
+      ratiosRows.push([
+        sc(interp.ratio   || "", rTxtSt),
+        sc(interp.value   || "—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr)),
+        sc("—", mkSt(null, { color: { rgb: GREY } }, {}, bdr)),
+        sc(interp.meaning || "", rTxtSt),
       ]);
     }
   }
 
-  const wsRatios = XLSX.utils.aoa_to_sheet(ratiosData);
-  wsRatios["!cols"] = [{ wch: 30 }, { wch: 15 }, { wch: 35 }, { wch: 50 }];
-  wsRatios["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
+  const wsRatios = buildSheet(ratiosRows, [30, 15, 35, 50], [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }]);
 
   // ─── Assemble workbook ────────────────────────────────────────────────────
   const wb = XLSX.utils.book_new();
