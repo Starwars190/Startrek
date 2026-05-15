@@ -223,16 +223,13 @@ async function loadSheetJS() {
   });
 }
 
-async function loadXlsxStyle() {
-  if (window.XLSXStyle) return window.XLSXStyle;
+async function loadExcelJS() {
+  if (window.ExcelJS) return window.ExcelJS;
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
-    script.onload = () => {
-      window.XLSXStyle = window.XLSX;
-      resolve(window.XLSXStyle);
-    };
-    script.onerror = () => reject(new Error('Failed to load xlsx-js-style'));
+    script.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+    script.onload = () => resolve(window.ExcelJS);
+    script.onerror = () => reject(new Error('Failed to load ExcelJS library'));
     document.head.appendChild(script);
   });
 }
@@ -506,7 +503,8 @@ OUTPUT JSON STRUCTURE (return ONLY this, no markdown)
     "operatingProfit": null or number, "ebitda": null or number,
     "netIncome": null or number, "interestExpense": null or number,
     "tax": null or number, "cogs": null or number,
-    "depreciation": null or number, "operatingCashFlow": null or number
+    "depreciation": null or number, "operatingCashFlow": null or number,
+    "investingCashFlow": null or number, "financingCashFlow": null or number
   },
   "financialDataExtractedPrior": {
     "totalAssets": null or number, "currentAssets": null or number,
@@ -520,7 +518,8 @@ OUTPUT JSON STRUCTURE (return ONLY this, no markdown)
     "operatingProfit": null or number, "ebitda": null or number,
     "netIncome": null or number, "interestExpense": null or number,
     "tax": null or number, "cogs": null or number,
-    "depreciation": null or number, "operatingCashFlow": null or number
+    "depreciation": null or number, "operatingCashFlow": null or number,
+    "investingCashFlow": null or number, "financingCashFlow": null or number
   }
 }
 
@@ -561,7 +560,8 @@ const FINANCIAL_KEYS = [
   "totalAssets","currentAssets","nonCurrentAssets","totalLiabilities","currentLiabilities",
   "nonCurrentLiabilities","totalEquity","longTermDebt","shortTermDebt","inventory",
   "receivables","cash","fixedAssets","tradePayables","revenue","grossProfit","operatingProfit",
-  "ebitda","netIncome","interestExpense","tax","cogs","depreciation","operatingCashFlow"
+  "ebitda","netIncome","interestExpense","tax","cogs","depreciation",
+  "operatingCashFlow","investingCashFlow","financingCashFlow"
 ];
 
 function aggregateFinancialData(chunkResults) {
@@ -597,6 +597,10 @@ function computeDerivedFinancials(agg) {
     agg.operatingProfit = agg.netIncome + agg.interestExpense + agg.tax;
   if (agg.ebitda == null && agg.operatingProfit != null && agg.depreciation != null)
     agg.ebitda = agg.operatingProfit + agg.depreciation;
+  if (agg.currentAssets != null && agg.currentLiabilities != null)
+    agg.workingCapital = agg.currentAssets - agg.currentLiabilities;
+  if (agg.longTermDebt != null || agg.shortTermDebt != null)
+    agg.totalDebt = (agg.longTermDebt ?? 0) + (agg.shortTermDebt ?? 0);
   return agg;
 }
 
@@ -697,7 +701,7 @@ Output ONLY JSON:
   "weaknesses": ["4-5 specific weaknesses"],
   "opportunities": ["4-5 specific opportunities"],
   "threats": ["4-5 specific threats"],
-  "outlookSummary": "2-3 sentences: executive outlook for this company. Reference actual numbers, sector dynamics, and net assessment. Must be company-specific, not generic.",
+  "executiveOutlook": "2-3 sentences covering: overall financial health, primary concern or strength, and a forward-looking observation. Reference actual numbers and sector. Must be company-specific.",
   "ratioInterpretations": [
     {"ratio": "Gross Margin", "value": "X%", "meaning": "1-2 lines specific to THIS company in its sector"}
   ]
@@ -1899,268 +1903,369 @@ async function processPrivateCompanyDoc(file, onProgress) {
 }
 
 async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot) {
-  const XLSX = await loadXlsxStyle();
+  const ExcelJS = await loadExcelJS();
 
-  // ─── Color + border constants ─────────────────────────────────────────────
-  const BROWN = "8B4513", LT_BROWN = "F5EFE7", WHITE = "FFFFFF", GREY = "6B6158";
+  // ─── Constants ───────────────────────────────────────────────────────────
+  const BROWN      = 'FF8B4513';
+  const LT_BROWN   = 'FFF5EFE7';
+  const WHITE      = 'FFFFFFFF';
+  const GREY_BDR   = 'FFD3D3D3';
+  const GREEN_FONT = 'FF2D7D5C';
+  const RED_FONT   = 'FFC04040';
+  const GREY_FONT  = 'FF6B6158';
 
-  const bdr = {
-    top: { style: "thin", color: { rgb: "D3D3D3" } }, bottom: { style: "thin", color: { rgb: "D3D3D3" } },
-    left: { style: "thin", color: { rgb: "D3D3D3" } }, right: { style: "thin", color: { rgb: "D3D3D3" } },
+  const thinBorder = {
+    top:    { style: 'thin',   color: { argb: GREY_BDR } },
+    bottom: { style: 'thin',   color: { argb: GREY_BDR } },
+    left:   { style: 'thin',   color: { argb: GREY_BDR } },
+    right:  { style: 'thin',   color: { argb: GREY_BDR } },
   };
-  const bdrTop = {
-    top: { style: "medium", color: { rgb: BROWN } }, bottom: { style: "thin", color: { rgb: "D3D3D3" } },
-    left: { style: "thin", color: { rgb: "D3D3D3" } }, right: { style: "thin", color: { rgb: "D3D3D3" } },
-  };
-
-  // Number format strings (FIX #1 + FIX #7)
-  const FMT_NUM  = "#,##0.00;(#,##0.00);\"—\"";
-  const FMT_PCT  = "0.00%;(0.00%);\"—\"";   // Excel multiplies stored value × 100 → store 0.2228 for 22.28%
-  const FMT_MULT = "0.00\"x\";(0.00\"x\");\"—\"";
-  const FMT_DAYS = "#,##0\" days\";(#,##0)\" days\";\"—\"";
-  const FMT_INT  = "#,##0;(#,##0);\"—\"";
-
-  // Style builder: mkSt(fill, fontOpts, alignOpts, border, numFmt)
-  const mkSt = (fill, font = {}, align = {}, border = null, numFmt = null) => {
-    const st = { font: { name: "Calibri", sz: 10, ...font } };
-    if (fill) st.fill = { patternType: "solid", fgColor: { rgb: fill } };
-    if (Object.keys(align).length) st.alignment = align;
-    if (border) st.border = border;
-    if (numFmt) st.numFmt = numFmt;
-    return st;
+  const thickTopBorder = {
+    top:    { style: 'medium', color: { argb: BROWN } },
+    bottom: { style: 'thin',   color: { argb: GREY_BDR } },
+    left:   { style: 'thin',   color: { argb: GREY_BDR } },
+    right:  { style: 'thin',   color: { argb: GREY_BDR } },
   };
 
-  // Cell builders
-  const sc = (v, st) => ({ v: v ?? "", t: "s", s: st || {} });           // string cell
-  const nc = (v, st) => ({ v, t: "n", s: st || {} });                     // number cell
-  const ec = ()       => ({ v: "", t: "s", s: {} });                      // empty cell
-  const dc = (st)     => sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr));
-
-  // Build worksheet from 2D array of cells
-  const buildSheet = (rows, colWidths, merges = []) => {
-    const ws = {};
-    let maxR = 0, maxC = 0;
-    rows.forEach((row, r) => {
-      (row || []).forEach((c, col) => {
-        if (c == null) return;
-        ws[XLSX.utils.encode_cell({ r, c: col })] = c;
-        if (r > maxR) maxR = r;
-        if (col > maxC) maxC = col;
-      });
-    });
-    ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
-    if (colWidths?.length) ws["!cols"] = colWidths.map(w => ({ wch: w }));
-    if (merges.length) ws["!merges"] = merges;
-    return ws;
-  };
+  const brownFill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: BROWN } };
+  const ltBrownFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: LT_BROWN } };
 
   // ─── Shared helpers ───────────────────────────────────────────────────────
   const today = new Date();
-  const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const todayStr = `${String(today.getDate()).padStart(2,"0")} ${MON[today.getMonth()]} ${today.getFullYear()}`;
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const todayStr = `${String(today.getDate()).padStart(2,'0')} ${MON[today.getMonth()]} ${today.getFullYear()}`;
 
   const fyLabels = (() => {
-    const m = (companyInfo.period || "").match(/\b(20\d{2})\b/g);
+    const m = (companyInfo.period || '').match(/\b(20\d{2})\b/g);
     if (m?.length >= 2) return {
       current: `FY ${m[0].slice(-2)}-${m[1].slice(-2)}`,
       prior:   `FY ${(parseInt(m[0]) - 1).toString().slice(-2)}-${m[0].slice(-2)}`,
     };
-    return { current: "Current Year", prior: "Prior Year" };
+    return { current: 'Current Year', prior: 'Prior Year' };
   })();
 
   const hasPrior = Object.values(aggregatedPrior || {}).some(v => v != null);
-  const nFinCols = hasPrior ? 4 : 2;
+  const p = aggregatedPrior || {};
+  const a = aggregated;
 
-  const yoyPct = (curr, prior) => {
-    if (curr == null || prior == null || prior === 0) return null;
-    return (curr - prior) / Math.abs(prior);    // decimal for FMT_PCT
-  };
-
-  // Outlook text (FIX #5)
-  const outlookText = swot?.outlookSummary
+  const executiveOutlook = swot?.executiveOutlook || swot?.outlookSummary
     || (swot?.strengths?.[0] && swot?.weaknesses?.[0]
-        ? `${swot.strengths[0].replace(/^[•\-]\s*/, "")} However, ${swot.weaknesses[0].replace(/^[•\-]\s*/, "")}`
-        : swot?.strengths?.[0] || "—");
+        ? `${swot.strengths[0].replace(/^[•\-]\s*/,'')} However, ${swot.weaknesses[0].replace(/^[•\-]\s*/,'')}`
+        : swot?.strengths?.[0] || '—');
 
-  // ─── TAB 1: Summary (FIX #5, FIX #6) ─────────────────────────────────────
-  const sTitleSt = mkSt(BROWN, { bold: true, sz: 16, color: { rgb: WHITE } }, { horizontal: "center", vertical: "center" }, bdr);
-  const sHdrSt   = mkSt(LT_BROWN, { bold: true, sz: 11, color: { rgb: BROWN } }, {}, bdr);
-  const sLblSt   = mkSt(null, { bold: true }, {}, bdr);
-  const sValSt   = mkSt(null, {}, { wrapText: true }, bdr);
+  // ─── Workbook setup ───────────────────────────────────────────────────────
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator        = 'FinSight AI';
+  workbook.lastModifiedBy = 'FinSight AI';
+  workbook.created        = new Date();
+  workbook.modified       = new Date();
+  workbook.title          = `${companyInfo.name || 'Company'} - Financial Analysis`;
+  workbook.subject        = 'AI-organized financial analysis with ratios';
+  workbook.company        = 'FinSight AI · finsightai.org';
 
-  const summaryRows = [
-    [sc("FINSIGHT AI — FINANCIAL ANALYSIS", sTitleSt), sc("", sTitleSt)],
-    [ec(), ec()],
-    [sc("COMPANY OVERVIEW", sHdrSt), sc("", sHdrSt)],
-    [sc("Company Name",    sLblSt), sc(companyInfo.name    || "—", sValSt)],
-    [sc("Period",          sLblSt), sc(companyInfo.period   || "—", sValSt)],
-    [sc("Sector",          sLblSt), sc(companyInfo.sector   || "—", sValSt)],
-    [sc("Currency",        sLblSt), sc(companyInfo.currency || "INR", sValSt)],
-    [sc("Reporting Unit",  sLblSt), sc(companyInfo.rounding || "Lakhs", sValSt)],
-    [ec(), ec()],
-    [sc("OUTLOOK", sHdrSt), sc("", sHdrSt)],
-    [sc(outlookText, mkSt(null, {}, { wrapText: true }, bdr)), ec()],
-    [ec(), ec()],
-    [sc("ABOUT THIS REPORT", sHdrSt), sc("", sHdrSt)],
-    [sc("Generated by", sLblSt), sc("FinSight AI", sValSt)],
-    [sc("Generated on", sLblSt), sc(todayStr, sValSt)],
-    [sc("Source",       sLblSt), sc("finsightai.org", sValSt)],
-  ];
-  const wsSummary = buildSheet(summaryRows, [30, 60], [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }]);
+  // ─── TAB 1: Summary ───────────────────────────────────────────────────────
+  const sumSheet = workbook.addWorksheet('Summary');
+  sumSheet.columns = [{ width: 30 }, { width: 60 }];
 
-  // ─── TAB 2: Financials (FIX #1, #3, #9) ──────────────────────────────────
-  const fTitleSt = mkSt(BROWN, { bold: true, sz: 13, color: { rgb: WHITE } }, { horizontal: "center" });
-  const fSubSt   = mkSt(null, { italic: true, color: { rgb: GREY } }, {});
-  const fSecSt   = mkSt(LT_BROWN, { bold: true, color: { rgb: BROWN } }, {}, bdr);
-  const fColHSt  = mkSt(BROWN, { bold: true, color: { rgb: WHITE } }, { horizontal: "center" }, bdr);
-
-  const emptyRow = () => Array(nFinCols).fill(null).map(() => ec());
-
-  const secRow = (label) => {
-    const row = [sc(label, fSecSt)];
-    for (let i = 1; i < nFinCols; i++) row.push(sc("", fSecSt));
-    return row;
-  };
-
-  const finRow = (label, curr, prior, isBold = false, isTotal = false) => {
-    const useBdr = isTotal ? bdrTop : bdr;
-    const lblSt = mkSt(null, isBold ? { bold: true } : {}, {}, useBdr);
-    const numSt = mkSt(null, isBold ? { bold: true } : {}, { horizontal: "right" }, useBdr, FMT_NUM);
-    const pctSt = (val) => mkSt(null,
-      isBold
-        ? { bold: true, color: { rgb: val >= 0 ? "2D7D5C" : "C04040" } }
-        : { color: { rgb: val >= 0 ? "2D7D5C" : "C04040" } },
-      { horizontal: "right" }, bdr, FMT_PCT);
-
-    const row = [sc(label, lblSt)];
-    row.push(curr != null ? nc(curr, numSt) : sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, useBdr)));
-    if (hasPrior) {
-      row.push(prior != null ? nc(prior, numSt) : sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr)));
-      const chg = yoyPct(curr, prior);
-      row.push(chg != null ? nc(chg, pctSt(chg)) : sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr)));
+  // Helper: apply all-sides thin border to a row range
+  const borderRow = (sheet, rowNum, colCount) => {
+    for (let c = 1; c <= colCount; c++) {
+      sheet.getCell(rowNum, c).border = thinBorder;
     }
-    return row;
   };
 
-  // Title row spans all fin columns
-  const fTitleArr  = [sc("FINANCIAL STATEMENTS", fTitleSt), ...Array(nFinCols - 1).fill(sc("", fTitleSt))];
-  const fSubArr    = [sc(`Values in ${companyInfo.rounding || "Lakhs"} of ${companyInfo.currency || "INR"}`, fSubSt), ...Array(nFinCols - 1).fill(ec())];
-  const fColHdrArr = [sc("Particulars", fColHSt), sc(fyLabels.current, fColHSt)];
-  if (hasPrior) fColHdrArr.push(sc(fyLabels.prior, fColHSt), sc("YoY Change", fColHSt));
+  // Title
+  sumSheet.mergeCells('A1:B1');
+  const sTitle = sumSheet.getCell('A1');
+  sTitle.value     = 'FINSIGHT AI — FINANCIAL ANALYSIS';
+  sTitle.font      = { bold: true, size: 16, color: { argb: WHITE }, name: 'Arial' };
+  sTitle.fill      = brownFill;
+  sTitle.alignment = { horizontal: 'center', vertical: 'middle' };
+  sumSheet.getRow(1).height = 32;
 
-  const a = aggregated, p = aggregatedPrior || {};
-  const financialsRows = [
-    fTitleArr,
-    fSubArr,
-    emptyRow(),
-    fColHdrArr,
-    secRow("BALANCE SHEET"),
-    finRow("Total Assets",              a.totalAssets,           p.totalAssets,           true, true),
-    finRow("  Current Assets",          a.currentAssets,         p.currentAssets),
-    finRow("  Non-Current Assets",      a.nonCurrentAssets,      p.nonCurrentAssets),
-    finRow("  Fixed Assets",            a.fixedAssets,           p.fixedAssets),
-    finRow("  Inventory",               a.inventory,             p.inventory),
-    finRow("  Receivables",             a.receivables,           p.receivables),
-    finRow("  Cash & Equivalents",      a.cash,                  p.cash),
-    emptyRow(),
-    finRow("Total Liabilities",         a.totalLiabilities,      p.totalLiabilities,      true, true),
-    finRow("  Current Liabilities",     a.currentLiabilities,    p.currentLiabilities),
-    finRow("  Non-Current Liabilities", a.nonCurrentLiabilities, p.nonCurrentLiabilities),
-    finRow("  Long-term Debt",          a.longTermDebt,          p.longTermDebt),
-    finRow("  Short-term Debt",         a.shortTermDebt,         p.shortTermDebt),
-    emptyRow(),
-    finRow("Total Equity",              a.totalEquity,           p.totalEquity,           true, true),
-    emptyRow(),
-    secRow("PROFIT & LOSS"),
-    finRow("Revenue",                   a.revenue,               p.revenue,               true, true),
-    finRow("  Cost of Goods Sold",      a.cogs,                  p.cogs),
-    finRow("  Gross Profit",            a.grossProfit,           p.grossProfit),
-    finRow("  Operating Profit",        a.operatingProfit,       p.operatingProfit),
-    finRow("  EBITDA",                  a.ebitda,                p.ebitda),
-    finRow("  Depreciation",            a.depreciation,          p.depreciation),
-    finRow("  Interest Expense",        a.interestExpense,       p.interestExpense),
-    finRow("  Tax",                     a.tax,                   p.tax),
-    finRow("Net Income",                a.netIncome,             p.netIncome,             true, true),
-    emptyRow(),
-    secRow("CASH FLOW"),
-    finRow("Operating Cash Flow",       a.operatingCashFlow,     p.operatingCashFlow),
-  ];
-
-  const finMerges = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: nFinCols - 1 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: nFinCols - 1 } },
-  ];
-  const finColWidths = hasPrior ? [40, 20, 20, 15] : [40, 20];
-  const wsFinancials = buildSheet(financialsRows, finColWidths, finMerges);
-
-  // ─── TAB 3: Ratios (FIX #1, #4, #6) ──────────────────────────────────────
-  const rTitleSt = mkSt(BROWN, { bold: true, sz: 13, color: { rgb: WHITE } }, { horizontal: "center" });
-  const rColHSt  = mkSt(BROWN, { bold: true, color: { rgb: WHITE } }, {}, bdr);
-  const rSecSt   = mkSt(LT_BROWN, { bold: true, color: { rgb: BROWN } }, {}, bdr);
-  const rTxtSt   = mkSt(null, {}, { wrapText: true, vertical: "center" }, bdr);
-  const rRightSt = mkSt(null, {}, { horizontal: "right" }, bdr);
-
-  const ratioFmt = (type) => {
-    if (type === "percent")  return FMT_PCT;
-    if (type === "multiple") return FMT_MULT;
-    if (type === "days")     return FMT_DAYS;
-    return FMT_INT;
+  const addSumHeader = (row, text) => {
+    sumSheet.mergeCells(`A${row}:B${row}`);
+    const c = sumSheet.getCell(`A${row}`);
+    c.value     = text;
+    c.font      = { bold: true, size: 11, color: { argb: BROWN.replace('FF','') }, name: 'Arial' };
+    c.fill      = ltBrownFill;
+    c.alignment = { horizontal: 'left', vertical: 'middle' };
+    sumSheet.getRow(row).height = 22;
+    borderRow(sumSheet, row, 2);
   };
 
-  const ratioNum = (rawValue, type) => {
-    if (rawValue == null || isNaN(rawValue) || !isFinite(rawValue)) return null;
-    return type === "percent" ? rawValue / 100 : rawValue;
+  const addSumLabelValue = (row, label, value) => {
+    const lc = sumSheet.getCell(`A${row}`);
+    lc.value = label;
+    lc.font  = { bold: true, name: 'Arial', size: 11 };
+    lc.alignment = { vertical: 'middle' };
+    const vc = sumSheet.getCell(`B${row}`);
+    vc.value = value ?? '—';
+    vc.font  = { name: 'Arial', size: 11 };
+    vc.alignment = { vertical: 'middle', wrapText: true };
+    borderRow(sumSheet, row, 2);
   };
 
-  const ratiosRows = [
-    [sc("FINANCIAL RATIOS", rTitleSt), sc("", rTitleSt), sc("", rTitleSt), sc("", rTitleSt)],
-    [ec(), ec(), ec(), ec()],
-    [sc("Ratio Name", rColHSt), sc("Value", mkSt(BROWN, { bold: true, color: { rgb: WHITE } }, { horizontal: "right" }, bdr)),
-     sc("Formula", rColHSt), sc("What It Means", rColHSt)],
-  ];
+  addSumHeader(3, 'COMPANY OVERVIEW');
+  addSumLabelValue(4, 'Company Name',   companyInfo.name);
+  addSumLabelValue(5, 'Period',         companyInfo.period);
+  addSumLabelValue(6, 'Sector',         companyInfo.sector || 'Not specified');
+  addSumLabelValue(7, 'Currency',       companyInfo.currency || 'INR');
+  addSumLabelValue(8, 'Reporting Unit', companyInfo.rounding || 'Lakhs');
+
+  addSumHeader(10, 'EXECUTIVE OUTLOOK');
+  sumSheet.mergeCells('A11:B11');
+  const outCell = sumSheet.getCell('A11');
+  outCell.value     = executiveOutlook;
+  outCell.font      = { name: 'Arial', size: 11 };
+  outCell.alignment = { wrapText: true, vertical: 'top' };
+  sumSheet.getRow(11).height = 80;
+  borderRow(sumSheet, 11, 2);
+
+  addSumHeader(13, 'ABOUT THIS REPORT');
+  addSumLabelValue(14, 'Generated by', 'FinSight AI');
+  addSumLabelValue(15, 'Generated on', todayStr);
+  addSumLabelValue(16, 'Source',       'finsightai.org');
+
+  // ─── TAB 2: Financials ────────────────────────────────────────────────────
+  const finSheet = workbook.addWorksheet('Financials');
+  const finColCount = hasPrior ? 4 : 2;
+  finSheet.columns = hasPrior
+    ? [{ width: 40 }, { width: 18 }, { width: 18 }, { width: 15 }]
+    : [{ width: 40 }, { width: 18 }];
+
+  // Title
+  finSheet.mergeCells(`A1:${String.fromCharCode(64 + finColCount)}1`);
+  const finTitle = finSheet.getCell('A1');
+  finTitle.value     = 'FINANCIAL STATEMENTS';
+  finTitle.font      = { bold: true, size: 14, color: { argb: WHITE }, name: 'Arial' };
+  finTitle.fill      = brownFill;
+  finTitle.alignment = { horizontal: 'center', vertical: 'middle' };
+  finSheet.getRow(1).height = 28;
+
+  // Subtitle
+  finSheet.mergeCells(`A2:${String.fromCharCode(64 + finColCount)}2`);
+  const finSub = finSheet.getCell('A2');
+  finSub.value     = `Values in ${companyInfo.rounding || 'Lakhs'} of ${companyInfo.currency || 'INR'}`;
+  finSub.font      = { italic: true, size: 10, name: 'Arial' };
+  finSub.alignment = { horizontal: 'center' };
+
+  // Column headers row 3
+  const finColHdrs = ['Particulars', fyLabels.current];
+  if (hasPrior) finColHdrs.push(fyLabels.prior, 'YoY %');
+  finColHdrs.forEach((h, i) => {
+    const c = finSheet.getCell(3, i + 1);
+    c.value     = h;
+    c.font      = { bold: true, color: { argb: WHITE }, name: 'Arial', size: 11 };
+    c.fill      = brownFill;
+    c.alignment = { horizontal: i === 0 ? 'left' : 'center', vertical: 'middle' };
+    c.border    = thinBorder;
+  });
+  finSheet.getRow(3).height = 24;
+  finSheet.views = [{ state: 'frozen', ySplit: 3 }];
+
+  const addFinSectionHeader = (rowNum, text) => {
+    finSheet.mergeCells(`A${rowNum}:${String.fromCharCode(64 + finColCount)}${rowNum}`);
+    const c = finSheet.getCell(`A${rowNum}`);
+    c.value     = text;
+    c.font      = { bold: true, color: { argb: BROWN.replace('FF','') }, name: 'Arial', size: 12 };
+    c.fill      = ltBrownFill;
+    c.alignment = { horizontal: 'left', vertical: 'middle' };
+    finSheet.getRow(rowNum).height = 22;
+  };
+
+  const addFinRow = (rowNum, label, curr, prior, isBold = false, isTotal = false) => {
+    const brd = isTotal ? thickTopBorder : thinBorder;
+    const lc = finSheet.getCell(rowNum, 1);
+    lc.value     = label;
+    lc.font      = { bold: isBold, name: 'Arial', size: 11 };
+    lc.border    = brd;
+    lc.alignment = { vertical: 'middle' };
+
+    const cc = finSheet.getCell(rowNum, 2);
+    if (curr != null) {
+      cc.value  = curr;
+      cc.numFmt = '#,##0.00;(#,##0.00);"—"';
+    } else {
+      cc.value = '—';
+    }
+    cc.font      = { bold: isBold, name: 'Arial', size: 11 };
+    cc.alignment = { horizontal: 'right', vertical: 'middle' };
+    cc.border    = brd;
+
+    if (hasPrior) {
+      const pc = finSheet.getCell(rowNum, 3);
+      if (prior != null) {
+        pc.value  = prior;
+        pc.numFmt = '#,##0.00;(#,##0.00);"—"';
+      } else {
+        pc.value = '—';
+      }
+      pc.font      = { bold: isBold, name: 'Arial', size: 11 };
+      pc.alignment = { horizontal: 'right', vertical: 'middle' };
+      pc.border    = thinBorder;
+
+      const yoyCell = finSheet.getCell(rowNum, 4);
+      if (curr != null && prior != null && prior !== 0) {
+        const chg = (curr - prior) / Math.abs(prior);
+        yoyCell.value  = chg;
+        yoyCell.numFmt = '0.00%;(0.00%);"—"';
+        yoyCell.font   = { name: 'Arial', size: 11, color: { argb: chg >= 0 ? GREEN_FONT : RED_FONT } };
+      } else {
+        yoyCell.value  = '—';
+        yoyCell.font   = { name: 'Arial', size: 11, color: { argb: GREY_FONT } };
+      }
+      yoyCell.alignment = { horizontal: 'right', vertical: 'middle' };
+      yoyCell.border    = thinBorder;
+    }
+  };
+
+  addFinSectionHeader(4, 'BALANCE SHEET');
+  addFinRow(5,  'Total Assets',              a.totalAssets,           p.totalAssets,           true, true);
+  addFinRow(6,  '  Current Assets',          a.currentAssets,         p.currentAssets);
+  addFinRow(7,  '  Non-Current Assets',      a.nonCurrentAssets,      p.nonCurrentAssets);
+  addFinRow(8,  '  Fixed Assets',            a.fixedAssets,           p.fixedAssets);
+  addFinRow(9,  '  Inventory',               a.inventory,             p.inventory);
+  addFinRow(10, '  Receivables',             a.receivables,           p.receivables);
+  addFinRow(11, '  Cash & Equivalents',      a.cash,                  p.cash);
+  addFinRow(13, 'Total Liabilities',         a.totalLiabilities,      p.totalLiabilities,      true, true);
+  addFinRow(14, '  Current Liabilities',     a.currentLiabilities,    p.currentLiabilities);
+  addFinRow(15, '  Non-Current Liabilities', a.nonCurrentLiabilities, p.nonCurrentLiabilities);
+  addFinRow(16, '  Trade Payables',          a.tradePayables,         p.tradePayables);
+  addFinRow(17, '  Long-term Debt',          a.longTermDebt,          p.longTermDebt);
+  addFinRow(18, '  Short-term Debt',         a.shortTermDebt,         p.shortTermDebt);
+  addFinRow(19, 'Total Debt',                a.totalDebt,             p.totalDebt,             true);
+  addFinRow(20, 'Total Equity',              a.totalEquity,           p.totalEquity,           true, true);
+  addFinRow(21, 'Working Capital',           a.workingCapital,        p.workingCapital);
+
+  addFinSectionHeader(23, 'PROFIT & LOSS');
+  addFinRow(24, 'Revenue',                   a.revenue,               p.revenue,               true, true);
+  addFinRow(25, '  Cost of Goods Sold',      a.cogs,                  p.cogs);
+  addFinRow(26, '  Gross Profit',            a.grossProfit,           p.grossProfit,           true);
+  addFinRow(27, '  Operating Profit',        a.operatingProfit,       p.operatingProfit,       true);
+  addFinRow(28, '  EBITDA',                  a.ebitda,                p.ebitda,                true);
+  addFinRow(29, '  Depreciation',            a.depreciation,          p.depreciation);
+  addFinRow(30, '  Interest Expense',        a.interestExpense,       p.interestExpense);
+  addFinRow(31, '  Tax',                     a.tax,                   p.tax);
+  addFinRow(32, 'Net Income',                a.netIncome,             p.netIncome,             true, true);
+
+  addFinSectionHeader(34, 'CASH FLOW');
+  addFinRow(35, 'Operating Cash Flow',       a.operatingCashFlow,     p.operatingCashFlow);
+  addFinRow(36, 'Investing Cash Flow',       a.investingCashFlow,     p.investingCashFlow);
+  addFinRow(37, 'Financing Cash Flow',       a.financingCashFlow,     p.financingCashFlow);
+
+  // ─── TAB 3: Ratios ────────────────────────────────────────────────────────
+  const ratSheet = workbook.addWorksheet('Ratios');
+  ratSheet.columns = [{ width: 30 }, { width: 15 }, { width: 40 }, { width: 60 }];
+
+  // Title
+  ratSheet.mergeCells('A1:D1');
+  const ratTitle = ratSheet.getCell('A1');
+  ratTitle.value     = 'FINANCIAL RATIOS';
+  ratTitle.font      = { bold: true, size: 14, color: { argb: WHITE }, name: 'Arial' };
+  ratTitle.fill      = brownFill;
+  ratTitle.alignment = { horizontal: 'center', vertical: 'middle' };
+  ratSheet.getRow(1).height = 28;
+
+  // Column headers
+  const ratColHdrs = ['Ratio Name', 'Value', 'Formula', 'What It Means'];
+  ratColHdrs.forEach((h, i) => {
+    const c = ratSheet.getCell(3, i + 1);
+    c.value     = h;
+    c.font      = { bold: true, color: { argb: WHITE }, name: 'Arial', size: 11 };
+    c.fill      = brownFill;
+    c.alignment = { horizontal: i === 1 ? 'right' : 'left', vertical: 'middle' };
+    c.border    = thinBorder;
+  });
+  ratSheet.getRow(3).height = 24;
+  ratSheet.views = [{ state: 'frozen', ySplit: 3 }];
+
+  let curRow = 4;
+
+  const addRatioSectionHeader = (text) => {
+    ratSheet.mergeCells(`A${curRow}:D${curRow}`);
+    const c = ratSheet.getCell(`A${curRow}`);
+    c.value     = text;
+    c.font      = { bold: true, color: { argb: BROWN.replace('FF','') }, name: 'Arial', size: 12 };
+    c.fill      = ltBrownFill;
+    c.alignment = { horizontal: 'left', vertical: 'middle' };
+    ratSheet.getRow(curRow).height = 22;
+    curRow++;
+  };
+
+  const ratioNumFmt = (type) => {
+    if (type === 'percent')  return '0.00%;(0.00%);"—"';
+    if (type === 'multiple') return '0.00"x";(0.00"x");"—"';
+    if (type === 'days')     return '#,##0" days";(#,##0)" days";"—"';
+    return '#,##0.00;(#,##0.00);"—"';
+  };
 
   for (const cat of (ratios || [])) {
-    ratiosRows.push([sc(cat.category || "", rSecSt), sc("", rSecSt), sc("", rSecSt), sc("", rSecSt)]);
+    addRatioSectionHeader(cat.category || '');
+
     for (const item of (cat.items || [])) {
-      const numV = ratioNum(item.rawValue, item.type);
-      const fmt  = ratioFmt(item.type);
-      const valCell = numV != null
-        ? nc(numV, mkSt(null, {}, { horizontal: "right" }, bdr, fmt))
-        : sc("—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr));
-      ratiosRows.push([sc(item.name || "", rTxtSt), valCell, sc(item.formula || "", rTxtSt), sc(item.interpretation || "", rTxtSt)]);
+      const nameCell = ratSheet.getCell(curRow, 1);
+      nameCell.value     = item.name || '';
+      nameCell.font      = { name: 'Arial', size: 11 };
+      nameCell.border    = thinBorder;
+
+      const valCell = ratSheet.getCell(curRow, 2);
+      const rawV = item.rawValue;
+      if (rawV != null && !isNaN(rawV) && isFinite(rawV)) {
+        valCell.value  = item.type === 'percent' ? rawV / 100 : rawV;
+        valCell.numFmt = ratioNumFmt(item.type);
+        valCell.font   = { name: 'Arial', size: 11 };
+      } else {
+        valCell.value = '—';
+        valCell.font  = { name: 'Arial', size: 11, color: { argb: GREY_FONT } };
+      }
+      valCell.alignment = { horizontal: 'right', vertical: 'middle' };
+      valCell.border    = thinBorder;
+
+      const fmlCell = ratSheet.getCell(curRow, 3);
+      fmlCell.value     = item.formula || '';
+      fmlCell.font      = { italic: true, name: 'Arial', size: 10 };
+      fmlCell.alignment = { wrapText: true, vertical: 'top' };
+      fmlCell.border    = thinBorder;
+
+      const intCell = ratSheet.getCell(curRow, 4);
+      intCell.value     = item.interpretation || '';
+      intCell.font      = { name: 'Arial', size: 10 };
+      intCell.alignment = { wrapText: true, vertical: 'top' };
+      intCell.border    = thinBorder;
+
+      curRow++;
     }
-    ratiosRows.push([ec(), ec(), ec(), ec()]);
+    curRow++; // blank row between categories
   }
 
   if (swot?.ratioInterpretations?.length) {
-    ratiosRows.push([sc("Company-Specific Interpretations", rSecSt), sc("", rSecSt), sc("", rSecSt), sc("", rSecSt)]);
+    addRatioSectionHeader('Company-Specific Interpretations');
     for (const interp of swot.ratioInterpretations) {
-      ratiosRows.push([
-        sc(interp.ratio   || "", rTxtSt),
-        sc(interp.value   || "—", mkSt(null, { color: { rgb: GREY } }, { horizontal: "right" }, bdr)),
-        sc("—", mkSt(null, { color: { rgb: GREY } }, {}, bdr)),
-        sc(interp.meaning || "", rTxtSt),
-      ]);
+      ratSheet.getCell(curRow, 1).value     = interp.ratio || '';
+      ratSheet.getCell(curRow, 1).font      = { bold: true, name: 'Arial', size: 11 };
+      ratSheet.getCell(curRow, 1).border    = thinBorder;
+      ratSheet.getCell(curRow, 2).value     = interp.value || '—';
+      ratSheet.getCell(curRow, 2).font      = { name: 'Arial', size: 11 };
+      ratSheet.getCell(curRow, 2).alignment = { horizontal: 'right' };
+      ratSheet.getCell(curRow, 2).border    = thinBorder;
+      ratSheet.getCell(curRow, 3).value     = '—';
+      ratSheet.getCell(curRow, 3).border    = thinBorder;
+      ratSheet.getCell(curRow, 4).value     = interp.meaning || '';
+      ratSheet.getCell(curRow, 4).font      = { name: 'Arial', size: 10 };
+      ratSheet.getCell(curRow, 4).alignment = { wrapText: true, vertical: 'top' };
+      ratSheet.getCell(curRow, 4).border    = thinBorder;
+      ratSheet.getRow(curRow).height = 60;
+      curRow++;
     }
   }
 
-  const wsRatios = buildSheet(ratiosRows, [30, 15, 35, 50], [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }]);
-
-  // ─── Assemble workbook ────────────────────────────────────────────────────
-  const wb = XLSX.utils.book_new();
-  wb.Props = {
-    Title:   `${companyInfo.name || "Company"} - Financial Analysis`,
-    Subject: "AI-organized financial analysis with ratios",
-    Author:  "FinSight AI",
-    Creator: "FinSight AI · finsightai.org",
-  };
-  XLSX.utils.book_append_sheet(wb, wsSummary,   "Summary");
-  XLSX.utils.book_append_sheet(wb, wsFinancials, "Financials");
-  XLSX.utils.book_append_sheet(wb, wsRatios,     "Ratios");
-
-  const wbOut = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const excelBlob = new Blob([wbOut], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const fileName = generateSmartFilename(companyInfo, "xlsx");
+  // ─── Generate Blob ────────────────────────────────────────────────────────
+  const buffer = await workbook.xlsx.writeBuffer();
+  const excelBlob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const fileName = generateSmartFilename(companyInfo, 'xlsx');
   const fileSizeKB = Math.round(excelBlob.size / 1024);
 
   return { excelBlob, fileName, fileSizeKB, tabCount: 3 };

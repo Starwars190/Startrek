@@ -10,12 +10,14 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.0.0",
+    "exceljs": "^4.4.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "recharts": "^2.10.3"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",
-    "vite": "^5.0.8"
+    "vite": "^5.0.8",
+    "vite-plugin-node-polyfills": "^0.26.0"
   }
 }
