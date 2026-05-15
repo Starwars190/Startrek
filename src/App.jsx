@@ -4,6 +4,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList
 } from "recharts";
 import { ClerkProvider, SignedIn, SignedOut, SignIn, UserButton, useUser } from "@clerk/clerk-react";
+import * as docxLib from "docx";
 
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -77,7 +78,16 @@ async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
     }
 
     const json = await res.json();
-    if (json.error) throw new Error(json.error.message || "API call failed");
+    if (json.error) {
+      if (json.error_type) {
+        // Structured error from proxy (400/402/403): API is unavailable, not a transient failure
+        const err = new Error(json.message || "API unavailable");
+        err.apiUnavailable = true;
+        err.errorType = json.error_type;
+        throw err;
+      }
+      throw new Error(json.error.message || "API call failed");
+    }
     return json.content.filter(b => b.type === "text").map(b => b.text).join("");
   }
 }
@@ -290,14 +300,10 @@ async function loadMammoth() {
 }
 
 async function loadDocx() {
-  if (window.docx) return window.docx;
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js';
-    script.onload = () => resolve(window.docx);
-    script.onerror = () => reject(new Error('Failed to load Word generator'));
-    document.head.appendChild(script);
-  });
+  // Use the npm-installed docx package (Vite bundles the browser-compatible ESM build).
+  // The old CDN UMD path caused "nodebuffer is not supported by this platform" because
+  // JSZip inside the UMD bundle could pick the wrong output type in certain environments.
+  return docxLib;
 }
 
 async function loadTesseract() {
@@ -955,7 +961,7 @@ function calculateRatios(fd, sectorHint = "general", fdPrior = null) {
   return ratios;
 }
 
-async function generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress) {
+async function generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress, aggregatedPrior = null) {
   onProgress?.("Generating SWOT analysis and ratio interpretations...");
   const ratiosFlat = ratios.flatMap(r => r.items.map(i => `${i.name}: ${i.value} (${r.category})`)).join('\n');
   const systemPrompt = `You are a senior financial analyst for an Indian private company. Generate SPECIFIC SWOT and ratio interpretations - no generic advice.
@@ -994,6 +1000,10 @@ Generate company-specific SWOT and interpretations.`;
     else if (clean.startsWith('```')) clean = clean.replace(/^```\s*/, '').replace(/```\s*$/, '');
     return JSON.parse(clean);
   } catch (e) {
+    if (e.apiUnavailable) {
+      console.warn('[SWOT] API unavailable — using rule-based fallback');
+      return generateRuleBasedSWOT(companyInfo, aggregated, aggregatedPrior, ratios);
+    }
     console.error("SWOT generation failed:", e);
     return { strengths: [], weaknesses: [], opportunities: [], threats: [], ratioInterpretations: [] };
   }
@@ -1978,6 +1988,121 @@ function getFallbackNarrative(companyInfo, aggregated, swot) {
   };
 }
 
+function generateRuleBasedSWOT(companyInfo, aggregated, aggregatedPrior, ratios) {
+  const strengths = [], weaknesses = [], opportunities = [], threats = [];
+
+  const getItemVal = (categoryName, itemName) => {
+    const cat = ratios.find(r => r.category === categoryName);
+    return cat?.items.find(i => i.name === itemName)?.rawValue ?? null;
+  };
+
+  const netMargin    = getItemVal('Profitability Ratios', 'Net Margin');
+  const grossMargin  = getItemVal('Profitability Ratios', 'Gross Margin');
+  const ebitdaMargin = getItemVal('Profitability Ratios', 'EBITDA Margin');
+  const roe          = getItemVal('Profitability Ratios', 'Return on Equity (ROE)');
+  const debtEquity   = getItemVal('Leverage Ratios', 'Debt-to-Equity');
+  const interestCov  = getItemVal('Leverage Ratios', 'Interest Coverage');
+  const currentRatio = getItemVal('Liquidity Ratios', 'Current Ratio');
+  const revGrowth    = (aggregated.revenue && aggregatedPrior?.revenue && aggregatedPrior.revenue !== 0)
+    ? ((aggregated.revenue - aggregatedPrior.revenue) / Math.abs(aggregatedPrior.revenue)) * 100
+    : null;
+
+  const fmt1 = (v) => v.toFixed(1);
+  const fmt2 = (v) => v.toFixed(2);
+  const unit = companyInfo.rounding || 'Lakhs';
+
+  // Strengths
+  if (netMargin != null && netMargin > 10)   strengths.push(`Strong net profitability at ${fmt1(netMargin)}% net margin reflects efficient cost management`);
+  if (grossMargin != null && grossMargin > 40) strengths.push(`High gross margin of ${fmt1(grossMargin)}% indicates strong pricing power and/or low input costs`);
+  if (revGrowth != null && revGrowth > 15)   strengths.push(`Revenue grew ${fmt1(revGrowth)}% year-over-year to ${aggregated.revenue?.toLocaleString()} ${unit}, showing strong demand momentum`);
+  if (currentRatio != null && currentRatio > 1.5) strengths.push(`Healthy liquidity position with current ratio of ${fmt2(currentRatio)}x provides short-term financial flexibility`);
+  if (debtEquity != null && debtEquity < 0.5) strengths.push(`Conservative capital structure with D/E ratio of ${fmt2(debtEquity)}x leaves capacity for strategic borrowing`);
+  if (roe != null && roe > 15)              strengths.push(`Return on equity of ${fmt1(roe)}% demonstrates effective use of shareholder capital`);
+  if (interestCov != null && interestCov > 5) strengths.push(`Interest coverage of ${fmt2(interestCov)}x indicates comfortable debt servicing capacity`);
+
+  // Weaknesses
+  if (netMargin != null && netMargin < 5 && netMargin >= 0) weaknesses.push(`Thin net margins at ${fmt1(netMargin)}% leave limited buffer against revenue or cost shocks`);
+  if (netMargin != null && netMargin < 0) weaknesses.push(`Net loss reported — operations are not yet profitable at bottom line`);
+  if (debtEquity != null && debtEquity > 2)  weaknesses.push(`High financial leverage with D/E ratio of ${fmt2(debtEquity)}x increases vulnerability to interest rate rises`);
+  if (currentRatio != null && currentRatio < 1) weaknesses.push(`Current ratio below 1.0 (${fmt2(currentRatio)}x) signals potential short-term liquidity pressure`);
+  if (revGrowth != null && revGrowth < 0)    weaknesses.push(`Revenue declined ${fmt1(Math.abs(revGrowth))}% year-over-year — top-line pressure warrants monitoring`);
+  if (interestCov != null && interestCov < 2) weaknesses.push(`Low interest coverage of ${fmt2(interestCov)}x — limited headroom for debt servicing under stress`);
+
+  // Opportunities (sector-aware)
+  const nameLower = (companyInfo.name || '').toLowerCase();
+  const sectorLower = (companyInfo.sector || '').toLowerCase();
+  if (sectorLower.includes('medical') || sectorLower.includes('pharma') || nameLower.includes('health')) {
+    opportunities.push('India\'s expanding healthcare infrastructure and rising insurance penetration support medium-term demand growth');
+    opportunities.push('Export opportunities to regulated markets (US FDA, CE) could diversify revenue and improve realisations');
+  } else if (sectorLower.includes('tech') || sectorLower.includes('software') || sectorLower.includes('it')) {
+    opportunities.push('Digital transformation spending across industries creates sustained demand for technology services');
+    opportunities.push('Global delivery model expansion could increase addressable market and margin profile');
+  } else {
+    opportunities.push('Growing domestic consumption and formalisation of the economy support sector tailwinds');
+    opportunities.push('Operational digitalisation and process efficiency improvements could structurally improve margins');
+  }
+  if (revGrowth != null && revGrowth > 10) opportunities.push('Existing growth momentum positions the company well to gain further market share');
+  opportunities.push('Strategic partnerships or distribution network expansion could accelerate geographic reach');
+
+  // Threats
+  threats.push('Rising input and employee costs could compress margins if not offset by pricing or productivity gains');
+  threats.push('Competitive intensity from both organised domestic players and international entrants');
+  if (debtEquity != null && debtEquity > 1) threats.push('Interest rate increases would elevate finance costs given current leverage, pressuring net income');
+  threats.push('Regulatory changes, GST implications, or policy shifts in the operating environment could add compliance cost');
+
+  // Ensure minimums
+  if (!strengths.length) strengths.push(`${companyInfo.name || 'The company'} has an established operating track record with documented financial performance`);
+  if (!weaknesses.length) weaknesses.push('Full AI analysis unavailable — manual review of ratios above is recommended');
+
+  const rev = aggregated.revenue;
+  const ni  = aggregated.netIncome;
+  const outlook = `${companyInfo.name || 'The company'} reported revenue of ${rev != null ? rev.toLocaleString() + ' ' + unit : 'N/A'} with a net ${ni != null && ni < 0 ? 'loss' : 'income'} of ${ni != null ? Math.abs(ni).toLocaleString() + ' ' + unit : 'N/A'} for ${companyInfo.period || 'the period'}. `
+    + (revGrowth != null ? `Revenue ${revGrowth >= 0 ? 'grew' : 'declined'} ${fmt1(Math.abs(revGrowth))}% year-over-year. ` : '')
+    + 'Note: AI narrative is temporarily unavailable — this assessment is rule-based from extracted financial ratios.';
+
+  return {
+    strengths: strengths.slice(0, 5),
+    weaknesses: weaknesses.slice(0, 5),
+    opportunities: opportunities.slice(0, 4),
+    threats: threats.slice(0, 4),
+    executiveOutlook: outlook,
+    ratioInterpretations: [],
+    _rulesBased: true,
+  };
+}
+
+function queuePendingAnalysis(companyInfo, aggregated, aggregatedPrior, ratios, swot) {
+  try {
+    const key = 'finsight_pending_analyses';
+    const existing = JSON.parse(localStorage.getItem(key) || '[]');
+    existing.push({
+      id: Date.now(),
+      companyName: companyInfo.name || 'Unknown Company',
+      queuedAt: new Date().toISOString(),
+      companyInfo,
+      aggregated,
+      aggregatedPrior,
+      ratios,
+      swot,
+    });
+    localStorage.setItem(key, JSON.stringify(existing.slice(-5)));
+  } catch (e) {
+    console.warn('[PendingQueue] Failed to save:', e);
+  }
+}
+
+function getPendingAnalyses() {
+  try { return JSON.parse(localStorage.getItem('finsight_pending_analyses') || '[]'); }
+  catch { return []; }
+}
+
+function removePendingAnalysis(id) {
+  try {
+    const existing = JSON.parse(localStorage.getItem('finsight_pending_analyses') || '[]');
+    localStorage.setItem('finsight_pending_analyses', JSON.stringify(existing.filter(p => p.id !== id)));
+  } catch { /* ignore */ }
+}
+
 async function generateBriefNarrative(companyInfo, aggregated, aggregatedPrior, ratios, swot, chunkResults) {
   const contextSnippets = chunkResults.slice(0, 3)
     .flatMap(c => (c.blocks || []).filter(b => b.type === 'paragraph_block').map(b => (b.paragraphs || []).join(' ')))
@@ -2036,10 +2161,19 @@ Return ONLY this JSON (no markdown, no text outside braces):
 }
 Rules: Use INR/₹, not USD. Include real numbers. Return null for genuinely unavailable sections. Do NOT invent facts.`;
 
-  const raw = await callClaude({
-    system: 'You are a senior financial analyst writing research notes for Indian private companies. Output valid JSON only.',
-    userMsg, maxTokens: 3000
-  });
+  let raw;
+  try {
+    raw = await callClaude({
+      system: 'You are a senior financial analyst writing research notes for Indian private companies. Output valid JSON only.',
+      userMsg, maxTokens: 3000
+    });
+  } catch (e) {
+    if (e.apiUnavailable) {
+      console.warn('[BriefNarrative] API unavailable — using fallback narrative');
+      return getFallbackNarrative(companyInfo, aggregated, swot);
+    }
+    throw e;
+  }
 
   const extractJSON = (text) => {
     if (!text) return null;
@@ -2327,7 +2461,16 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
     }],
   });
 
-  const blob = await Packer.toBlob(doc);
+  // Packer.toBase64String uses JSZip's 'base64' output type, which works in every
+  // browser without touching Node.js Buffer. We then decode it with atob() and pack
+  // into a Uint8Array before wrapping in a Blob — pure browser APIs throughout.
+  const base64 = await Packer.toBase64String(doc);
+  const byteStr = atob(base64);
+  const bytes = new Uint8Array(byteStr.length);
+  for (let i = 0; i < byteStr.length; i++) bytes[i] = byteStr.charCodeAt(i);
+  const blob = new Blob([bytes.buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  });
 
   // Filename: FinSight_BBraun_FY24-25_CompanyBrief.docx
   const slug = (companyInfo.name || 'Company').replace(/\b(Private|Pvt|Limited|Ltd|Public|Inc|Corp|Company|Co|LLP|Group|Holdings)\b/gi, '').replace(/[^a-zA-Z0-9 ]/g, '').trim().split(/\s+/).slice(0, 4).join('_').substring(0, 25) || 'Company';
@@ -2367,6 +2510,472 @@ function hasAnyFinancialData(agg) {
   return criticalFields.some(field => agg[field] != null && agg[field] !== 0);
 }
 
+// ─── Scanned PDF → Excel Pipeline ────────────────────────────────────────────
+
+const VISION_FINANCIAL_PROMPT = `Extract ALL financial data visible in these financial statement pages.
+Return ONLY valid JSON — no markdown, no explanation, no code fences:
+{
+  "company_name": null,
+  "currency": "INR",
+  "unit": "Lakhs",
+  "years": {
+    "FY2024": {
+      "profit_loss": {
+        "revenue": null, "other_income": null, "total_income": null,
+        "cost_of_goods": null, "employee_costs": null, "finance_costs": null,
+        "depreciation": null, "other_expenses": null, "total_expenses": null,
+        "pbt": null, "tax": null, "net_income": null, "ebitda": null
+      },
+      "balance_sheet": {
+        "share_capital": null, "reserves": null, "total_equity": null,
+        "long_term_debt": null, "short_term_debt": null, "total_debt": null,
+        "trade_payables": null, "other_current_liabilities": null, "total_liabilities": null,
+        "fixed_assets": null, "intangibles": null, "investments": null,
+        "trade_receivables": null, "inventory": null, "cash": null,
+        "current_assets": null, "total_assets": null
+      },
+      "cash_flow": {
+        "cfo": null, "cfi": null, "cff": null, "net_change_in_cash": null, "closing_cash": null
+      },
+      "ratios": {
+        "eps": null, "book_value_per_share": null, "dividend_per_share": null
+      }
+    }
+  }
+}
+Rules:
+- Detect fiscal year from column headers (e.g. "March 2024" or "2023-24" → "FY2024", "2022-23" → "FY2023")
+- If multiple years appear in same table, create a key for each year
+- All values as plain numbers matching the document's stated unit (Lakhs/Crores/Millions/Thousands)
+- Negative values as negative numbers (e.g. losses)
+- Missing or illegible data → null (never use 0 unless the document explicitly states zero)
+- Detect currency from document header (INR/USD/EUR/GBP)
+- Detect unit from document (Lakhs/Crores/Millions/Thousands) — default Lakhs if unclear`;
+
+async function callClaudeVisionForFinancials(pageImages) {
+  const content = [
+    ...pageImages.map(img => ({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: img.base64 }
+    })),
+    { type: 'text', text: VISION_FINANCIAL_PROMPT }
+  ];
+  const body = { model: MODEL, max_tokens: 4000, messages: [{ role: 'user', content }] };
+  const RETRYABLE = new Set([429, 503, 529]);
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120_000);
+    let res;
+    try {
+      res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') { if (attempt > 3) throw new Error('Vision financial extraction timed out'); continue; }
+      throw err;
+    }
+    clearTimeout(timeoutId);
+    if (RETRYABLE.has(res.status)) {
+      if (attempt > 3) throw new Error('Rate limit on vision financial extraction');
+      await new Promise(r => setTimeout(r, 60000 * attempt));
+      continue;
+    }
+    const json = await res.json();
+    if (json.error) throw new Error(json.error.message || 'Vision financial API failed');
+    return json.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  }
+}
+
+function mergeFinancialYearData(base, incoming) {
+  if (!incoming) return base;
+  const merged = { ...base };
+  for (const [section, data] of Object.entries(incoming)) {
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      merged[section] = merged[section] ? { ...merged[section] } : {};
+      for (const [key, val] of Object.entries(data)) {
+        if (merged[section][key] == null && val != null) {
+          merged[section][key] = val;
+        }
+      }
+    } else if (merged[section] == null && data != null) {
+      merged[section] = data;
+    }
+  }
+  return merged;
+}
+
+async function extractFinancialsFromScannedPdf(file, onProgress) {
+  const pdfjs = await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const totalPages = pdf.numPages;
+  onProgress?.(`📄 Reading PDF pages... (0/${totalPages})`);
+
+  const allYears = {};
+  let detectedCompanyName = null;
+  let detectedCurrency = 'INR';
+  let detectedUnit = 'Lakhs';
+  const pageMetadata = [];
+  const visionQueue = [];
+
+  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    onProgress?.(`📄 Reading PDF pages... (${pageNum}/${totalPages})`);
+    let canvas;
+    try {
+      const page = await pdf.getPage(pageNum);
+      canvas = await renderPdfPageToCanvas(page, 3.0);
+    } catch (e) {
+      pageMetadata.push({ page: pageNum, method: 'failed', reason: e.message });
+      continue;
+    }
+    let ocrResult = { text: '', confidence: 0 };
+    try {
+      onProgress?.(`🔍 Running OCR on page ${pageNum}...`);
+      ocrResult = await ocrPageWithTesseract(canvas);
+    } catch (e) { /* OCR failed — will use Vision */ }
+
+    const hasFinancialKw = /revenue|profit|loss|assets|liabilities|equity|income|expense|balance|cash|turnover|borrowing/i.test(ocrResult.text);
+    const hasNumbers = /\d{3,}/.test(ocrResult.text);
+
+    if (hasFinancialKw || hasNumbers) {
+      const meta = { page: pageNum, method: 'vision-queued', confidence: ocrResult.confidence };
+      pageMetadata.push(meta);
+      visionQueue.push({ pageNum, canvas, meta });
+    } else {
+      pageMetadata.push({ page: pageNum, method: 'skipped', reason: 'no financial content detected' });
+    }
+  }
+
+  const BATCH_SIZE = 2;
+  for (let i = 0; i < visionQueue.length; i += BATCH_SIZE) {
+    const batch = visionQueue.slice(i, i + BATCH_SIZE);
+    const pageNums = batch.map(p => p.pageNum).join(', ');
+    onProgress?.(`🤖 Claude Vision extracting financials from pages ${pageNums}...`);
+
+    const pageImages = batch.map(p => {
+      const dataURL = p.canvas.toDataURL('image/png');
+      return { base64: dataURL.split(',')[1], pageNum: p.pageNum };
+    });
+
+    let raw = '';
+    try {
+      raw = await callClaudeVisionForFinancials(pageImages);
+    } catch (e) {
+      console.error(`[ScannedExcel] Vision failed for pages ${pageNums}:`, e);
+      for (const p of batch) p.meta.method = 'vision-failed';
+      continue;
+    }
+
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch {}
+    if (!parsed) {
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (m) { try { parsed = JSON.parse(m[0]); } catch {} }
+    }
+    if (!parsed) {
+      const fixed = raw.replace(/,(\s*[}\]])/g, '$1');
+      try { parsed = JSON.parse(fixed); } catch {}
+    }
+
+    if (parsed) {
+      if (parsed.company_name && !detectedCompanyName) detectedCompanyName = parsed.company_name;
+      if (parsed.currency) detectedCurrency = parsed.currency;
+      if (parsed.unit) detectedUnit = parsed.unit;
+      if (parsed.years && typeof parsed.years === 'object') {
+        for (const [yr, data] of Object.entries(parsed.years)) {
+          if (!allYears[yr]) {
+            allYears[yr] = data;
+            onProgress?.(`✅ ${yr} data extracted`);
+          } else {
+            allYears[yr] = mergeFinancialYearData(allYears[yr], data);
+          }
+        }
+      }
+      for (const p of batch) p.meta.method = 'vision-success';
+    } else {
+      for (const p of batch) p.meta.method = 'vision-parse-failed';
+    }
+  }
+
+  return { years: allYears, company_name: detectedCompanyName, currency: detectedCurrency, unit: detectedUnit, pageMetadata, totalPages };
+}
+
+function validateScannedData(years, sortedYears) {
+  const warnings = [];
+  for (const yr of sortedYears) {
+    const data = years[yr];
+    if (!data) continue;
+    const bs = data.balance_sheet || {};
+    if (bs.total_assets != null && bs.total_liabilities != null && bs.total_equity != null) {
+      const computed = (bs.total_liabilities || 0) + (bs.total_equity || 0);
+      if (bs.total_assets !== 0) {
+        const diff = Math.abs((bs.total_assets - computed) / bs.total_assets);
+        if (diff > 0.05) {
+          warnings.push(`[${yr}] Balance sheet gap: Assets=${bs.total_assets} vs L+E=${computed.toFixed(0)} (${(diff * 100).toFixed(1)}% difference)`);
+        }
+      }
+    }
+    const pl = data.profit_loss || {};
+    if (pl.revenue != null && pl.revenue < 0) {
+      warnings.push(`[${yr}] Negative revenue (${pl.revenue}) — may be extraction error`);
+    }
+    const cf = data.cash_flow || {};
+    if (cf.cfo != null && cf.cfi != null && cf.cff != null && cf.net_change_in_cash != null && cf.net_change_in_cash !== 0) {
+      const computed = (cf.cfo || 0) + (cf.cfi || 0) + (cf.cff || 0);
+      const diff = Math.abs(computed - cf.net_change_in_cash) / Math.abs(cf.net_change_in_cash);
+      if (diff > 0.1) {
+        warnings.push(`[${yr}] Cash flow components sum to ${computed.toFixed(0)} vs stated net change ${cf.net_change_in_cash}`);
+      }
+    }
+  }
+  return warnings;
+}
+
+function buildNullFieldReport(years, sortedYears) {
+  if (!sortedYears.length) return [];
+  const latestYr = sortedYears[sortedYears.length - 1];
+  const data = years[latestYr];
+  if (!data) return [];
+  const missing = [];
+  const checks = [
+    ['profit_loss', ['revenue', 'net_income', 'ebitda', 'pbt']],
+    ['balance_sheet', ['total_assets', 'total_equity', 'total_liabilities']],
+    ['cash_flow', ['cfo', 'cfi', 'cff']],
+  ];
+  for (const [section, fields] of checks) {
+    for (const field of fields) {
+      if ((data[section] || {})[field] == null) {
+        missing.push(`${latestYr} — ${section.replace('_', ' ')}: ${field.replace(/_/g, ' ')} not found`);
+      }
+    }
+  }
+  return missing;
+}
+
+function buildTrendSummary(years, sortedYears) {
+  const trends = [];
+  if (sortedYears.length < 2) return trends;
+  const latestYr = sortedYears[sortedYears.length - 1];
+  const prevYr = sortedYears[sortedYears.length - 2];
+  const latest = years[latestYr] || {};
+  const prev = years[prevYr] || {};
+  const lpl = latest.profit_loss || {};
+  const ppl = prev.profit_loss || {};
+  if (lpl.revenue != null && ppl.revenue != null && ppl.revenue !== 0) {
+    const g = ((lpl.revenue - ppl.revenue) / Math.abs(ppl.revenue)) * 100;
+    trends.push(`Revenue ${g >= 0 ? 'grew' : 'declined'} ${Math.abs(g).toFixed(1)}% from ${prevYr} to ${latestYr}`);
+  }
+  if (lpl.net_income != null && ppl.net_income != null && ppl.net_income !== 0) {
+    const g = ((lpl.net_income - ppl.net_income) / Math.abs(ppl.net_income)) * 100;
+    if (lpl.net_income < 0) trends.push(`Net loss of ${Math.abs(lpl.net_income).toLocaleString()} in ${latestYr}`);
+    else trends.push(`Net income ${g >= 0 ? 'improved' : 'declined'} ${Math.abs(g).toFixed(1)}% year-over-year`);
+  }
+  const lbs = latest.balance_sheet || {};
+  if (lbs.total_debt != null && lbs.total_equity != null && lbs.total_equity !== 0) {
+    const de = lbs.total_debt / lbs.total_equity;
+    if (de > 2) trends.push(`High leverage: D/E ratio ${de.toFixed(2)}x in ${latestYr}`);
+    else if (de < 0.5) trends.push(`Conservative leverage: D/E ratio ${de.toFixed(2)}x in ${latestYr}`);
+  }
+  return trends;
+}
+
+async function generateScannedExcel(structuredData, companyInfo, onProgress) {
+  onProgress?.("📊 Building Excel workbook...");
+  const XLSX = await loadSheetJS();
+
+  const { years = {}, currency = 'INR', unit = 'Lakhs', pageMetadata = [], totalPages = 0 } = structuredData;
+  const sortedYears = Object.keys(years).sort();
+  const warnings = validateScannedData(years, sortedYears);
+  const nullReport = buildNullFieldReport(years, sortedYears);
+  const trends = buildTrendSummary(years, sortedYears);
+  const companyName = structuredData.company_name || companyInfo.name || 'Company';
+
+  const wb = XLSX.utils.book_new();
+
+  function makeHeader(title) {
+    return [
+      [`${companyName} — ${title}`],
+      [`Currency: ${currency} | Unit: ${unit} | Source: Scanned PDF (Claude Vision OCR)`],
+      [''],
+    ];
+  }
+
+  function makeRow(label, fieldPath) {
+    const parts = fieldPath.split('.');
+    const row = [label];
+    for (const yr of sortedYears) {
+      let val = years[yr] || {};
+      for (const p of parts) val = val?.[p] ?? null;
+      row.push(val !== null && val !== undefined ? val : null);
+    }
+    return row;
+  }
+
+  function appendWarnings(ws_data) {
+    if (warnings.length) {
+      ws_data.push(['']);
+      ws_data.push(['DATA WARNINGS']);
+      for (const w of warnings) ws_data.push(['⚠ DATA WARNING', w]);
+    }
+  }
+
+  // Sheet 1: P&L Summary
+  const plData = [
+    ...makeHeader('Profit & Loss Summary'),
+    ['', ...sortedYears],
+    ['REVENUE'],
+    makeRow('Total Revenue', 'profit_loss.revenue'),
+    makeRow('Other Income', 'profit_loss.other_income'),
+    makeRow('Total Income', 'profit_loss.total_income'),
+    [''],
+    ['EXPENSES'],
+    makeRow('Cost of Goods Sold', 'profit_loss.cost_of_goods'),
+    makeRow('Employee Costs', 'profit_loss.employee_costs'),
+    makeRow('Finance Costs', 'profit_loss.finance_costs'),
+    makeRow('Depreciation', 'profit_loss.depreciation'),
+    makeRow('Other Expenses', 'profit_loss.other_expenses'),
+    makeRow('Total Expenses', 'profit_loss.total_expenses'),
+    [''],
+    ['PROFITABILITY'],
+    makeRow('EBITDA', 'profit_loss.ebitda'),
+    makeRow('Profit Before Tax (PBT)', 'profit_loss.pbt'),
+    makeRow('Tax', 'profit_loss.tax'),
+    makeRow('Net Income / PAT', 'profit_loss.net_income'),
+  ];
+  appendWarnings(plData);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(plData), 'P&L Summary');
+
+  // Sheet 2: Balance Sheet
+  const bsData = [
+    ...makeHeader('Balance Sheet'),
+    ['', ...sortedYears],
+    ['EQUITY & LIABILITIES'],
+    makeRow('Share Capital', 'balance_sheet.share_capital'),
+    makeRow('Reserves & Surplus', 'balance_sheet.reserves'),
+    makeRow('Total Equity', 'balance_sheet.total_equity'),
+    makeRow('Long-term Debt', 'balance_sheet.long_term_debt'),
+    makeRow('Short-term Debt', 'balance_sheet.short_term_debt'),
+    makeRow('Total Debt', 'balance_sheet.total_debt'),
+    makeRow('Trade Payables', 'balance_sheet.trade_payables'),
+    makeRow('Other Current Liabilities', 'balance_sheet.other_current_liabilities'),
+    makeRow('Total Liabilities', 'balance_sheet.total_liabilities'),
+    [''],
+    ['ASSETS'],
+    makeRow('Fixed Assets / PPE', 'balance_sheet.fixed_assets'),
+    makeRow('Intangibles / Goodwill', 'balance_sheet.intangibles'),
+    makeRow('Investments', 'balance_sheet.investments'),
+    makeRow('Trade Receivables', 'balance_sheet.trade_receivables'),
+    makeRow('Inventory', 'balance_sheet.inventory'),
+    makeRow('Cash & Equivalents', 'balance_sheet.cash'),
+    makeRow('Current Assets', 'balance_sheet.current_assets'),
+    makeRow('Total Assets', 'balance_sheet.total_assets'),
+  ];
+  appendWarnings(bsData);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(bsData), 'Balance Sheet');
+
+  // Sheet 3: Cash Flow
+  const cfData = [
+    ...makeHeader('Cash Flow Statement'),
+    ['', ...sortedYears],
+    makeRow('Cash from Operations (CFO)', 'cash_flow.cfo'),
+    makeRow('Cash from Investing (CFI)', 'cash_flow.cfi'),
+    makeRow('Cash from Financing (CFF)', 'cash_flow.cff'),
+    makeRow('Net Change in Cash', 'cash_flow.net_change_in_cash'),
+    makeRow('Closing Cash Balance', 'cash_flow.closing_cash'),
+  ];
+  appendWarnings(cfData);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cfData), 'Cash Flow');
+
+  // Sheet 4: Key Ratios (computed inline)
+  const ratioData = [
+    ...makeHeader('Key Ratios'),
+    ['', ...sortedYears],
+    ['PROFITABILITY'],
+    ['Gross Margin (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      if (pl.revenue && pl.cost_of_goods != null) return +((( pl.revenue - pl.cost_of_goods) / pl.revenue) * 100).toFixed(2);
+      return null;
+    })],
+    ['Net Margin (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      if (pl.revenue && pl.net_income != null) return +((pl.net_income / pl.revenue) * 100).toFixed(2);
+      return null;
+    })],
+    ['EBITDA Margin (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      if (pl.revenue && pl.ebitda != null) return +((pl.ebitda / pl.revenue) * 100).toFixed(2);
+      return null;
+    })],
+    [''],
+    ['LEVERAGE'],
+    ['Debt-to-Equity (x)', ...sortedYears.map(yr => {
+      const bs = (years[yr] || {}).balance_sheet || {};
+      if (bs.total_debt != null && bs.total_equity) return +(bs.total_debt / bs.total_equity).toFixed(2);
+      return null;
+    })],
+    ['Interest Coverage (x)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      if (pl.ebitda != null && pl.finance_costs) return +(pl.ebitda / pl.finance_costs).toFixed(2);
+      return null;
+    })],
+    [''],
+    ['RETURNS'],
+    ['ROE (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      const bs = (years[yr] || {}).balance_sheet || {};
+      if (pl.net_income != null && bs.total_equity) return +((pl.net_income / bs.total_equity) * 100).toFixed(2);
+      return null;
+    })],
+    ['ROA (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      const bs = (years[yr] || {}).balance_sheet || {};
+      if (pl.net_income != null && bs.total_assets) return +((pl.net_income / bs.total_assets) * 100).toFixed(2);
+      return null;
+    })],
+    [''],
+    ['PER SHARE'],
+    makeRow('EPS', 'ratios.eps'),
+    makeRow('Book Value per Share', 'ratios.book_value_per_share'),
+    makeRow('Dividend per Share', 'ratios.dividend_per_share'),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ratioData), 'Key Ratios');
+
+  // Sheet 5: Analysis
+  const analysisData = [
+    ...makeHeader('Analysis & Insights'),
+    ['TREND SUMMARY'],
+    ...(trends.length ? trends.map(t => [t]) : [['Insufficient multi-year data for trend analysis']]),
+    [''],
+    ['DATA QUALITY — MISSING FIELDS (latest year)'],
+    ...(nullReport.length ? nullReport.map(n => [n]) : [['All key fields populated']]),
+    [''],
+    ['EXTRACTION DETAILS'],
+    [`Pages processed: ${pageMetadata.length} of ${totalPages}`],
+    [`Financial data years found: ${sortedYears.join(', ') || 'None detected'}`],
+    [`Extraction method: Claude Vision OCR`],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(analysisData), 'Analysis');
+
+  // Sheet 6: Metadata
+  const metaData = [
+    ['Page', 'Method', 'OCR Confidence', 'Notes'],
+    ...pageMetadata.map(m => [
+      m.page,
+      m.method,
+      m.confidence != null ? `${m.confidence.toFixed(0)}%` : '',
+      m.reason || '',
+    ]),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(metaData), 'Metadata');
+
+  onProgress?.(`✅ Excel ready — 6 sheets, ${sortedYears.length} year(s) of data`);
+
+  const arrayBuf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([arrayBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const safeName = (companyInfo.name || 'Company').replace(/[^a-zA-Z0-9\s]/g, '').trim().replace(/\s+/g, '_') || 'Company';
+  const fileName = `${safeName}_ScannedFinancials_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  return { excelBlob: blob, fileName };
+}
+
 async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
   try {
     onProgress?.("Reading your document...");
@@ -2403,6 +3012,7 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
     const loopStart = Date.now();
     const chunkTimes = [];
     let failedChunks = 0;
+    let apiUnavailable = false;
     for (let i = 0; i < chunks.length; i++) {
       const chunkStart = Date.now();
       let chunkResult;
@@ -2413,6 +3023,7 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
           onProgress
         );
       } catch (chunkErr) {
+        if (chunkErr.apiUnavailable) apiUnavailable = true;
         failedChunks++;
         console.error(`[processPrivateCompanyDoc] Chunk ${i + 1}/${chunks.length} failed:`, chunkErr);
         chunkResult = {
@@ -2486,7 +3097,7 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       else if (nameLower.includes("steel") || nameLower.includes("manufact")) sectorHint = "manufacturing";
     }
     const ratios = calculateRatios(aggregated, sectorHint, aggregatedPrior);
-    const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress);
+    const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress, aggregatedPrior);
     
     onProgress?.("Building bar charts...");
     const chartImages = [];
@@ -2582,7 +3193,16 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
     if (selectedOutputs.excel) {
       onProgress?.("Generating Excel workbook...");
       try {
-        excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot);
+        const useScannedPipeline = fname.endsWith('.pdf') &&
+          !apiUnavailable &&
+          (extractionMethod === 'ocr' || extractionMethod === 'vision' || noFinancialData);
+        if (useScannedPipeline) {
+          onProgress?.("Scanned PDF detected — running Vision extraction for structured Excel...");
+          const scannedData = await extractFinancialsFromScannedPdf(file, onProgress);
+          excelResult = await generateScannedExcel(scannedData, companyInfo, onProgress);
+        } else {
+          excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot);
+        }
       } catch (excelErr) {
         console.error("[processPrivateCompanyDoc] Excel generation failed:", excelErr);
       }
@@ -2611,6 +3231,11 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       throw pdfError || new Error("All document generation attempts failed.");
     }
 
+    // If API was unavailable, queue this analysis for retry when credits are restored
+    if (apiUnavailable) {
+      queuePendingAnalysis(companyInfo, aggregated, aggregatedPrior, ratios, swot);
+    }
+
     return {
       pdfBlob: pdfResult?.pdfBlob || null,
       pdfFileName: pdfResult?.fileName || null,
@@ -2623,6 +3248,7 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       briefWordFileName: briefWordResult?.fileName || null,
       briefWordError: briefWordErr,
       noFinancialData,
+      apiUnavailable,
       extractionMethod,
       extractionWarnings,
       companyInfo,
@@ -2640,372 +3266,220 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
 }
 
 async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot) {
-  const ExcelJS = await loadExcelJS();
+  // Uses SheetJS (CDN, already loaded elsewhere). Output path:
+  //   XLSX.write → Uint8Array → new Blob([...])  — zero Node.js Buffer involved.
+  const XLSX = await loadSheetJS();
 
-  // ─── Constants ───────────────────────────────────────────────────────────
-  const BROWN      = 'FF8B4513';
-  const LT_BROWN   = 'FFF5EFE7';
-  const WHITE      = 'FFFFFFFF';
-  const GREY_BDR   = 'FFD3D3D3';
-  const GREEN_FONT = 'FF2D7D5C';
-  const RED_FONT   = 'FFC04040';
-  const GREY_FONT  = 'FF6B6158';
+  const a  = aggregated     || {};
+  const p  = aggregatedPrior || {};
+  const hasPrior = Object.values(p).some(v => v != null);
 
-  const thinBorder = {
-    top:    { style: 'thin',   color: { argb: GREY_BDR } },
-    bottom: { style: 'thin',   color: { argb: GREY_BDR } },
-    left:   { style: 'thin',   color: { argb: GREY_BDR } },
-    right:  { style: 'thin',   color: { argb: GREY_BDR } },
-  };
-  const thickTopBorder = {
-    top:    { style: 'medium', color: { argb: BROWN } },
-    bottom: { style: 'thin',   color: { argb: GREY_BDR } },
-    left:   { style: 'thin',   color: { argb: GREY_BDR } },
-    right:  { style: 'thin',   color: { argb: GREY_BDR } },
-  };
+  const unit     = companyInfo.rounding || 'Lakhs';
+  const currency = companyInfo.currency || 'INR';
+  const name     = companyInfo.name     || 'Company';
+  const period   = companyInfo.period   || '';
 
-  const brownFill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: BROWN } };
-  const ltBrownFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: LT_BROWN } };
-
-  // ─── Shared helpers ───────────────────────────────────────────────────────
   const today = new Date();
   const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const todayStr = `${String(today.getDate()).padStart(2,'0')} ${MON[today.getMonth()]} ${today.getFullYear()}`;
 
   const fyLabels = (() => {
-    const m = (companyInfo.period || '').match(/\b(20\d{2})\b/g);
+    const m = (period).match(/\b(20\d{2})\b/g);
     if (m?.length >= 2) return {
-      current: `FY ${m[0].slice(-2)}-${m[1].slice(-2)}`,
-      prior:   `FY ${(parseInt(m[0]) - 1).toString().slice(-2)}-${m[0].slice(-2)}`,
+      cur: `FY ${m[0].slice(-2)}-${m[1].slice(-2)}`,
+      pri: `FY ${(parseInt(m[0]) - 1).toString().slice(-2)}-${m[0].slice(-2)}`,
     };
-    return { current: 'Current Year', prior: 'Prior Year' };
+    return { cur: 'Current Year', pri: 'Prior Year' };
   })();
 
-  const hasPrior = Object.values(aggregatedPrior || {}).some(v => v != null);
-  const p = aggregatedPrior || {};
-  const a = aggregated;
+  const wb = XLSX.utils.book_new();
 
-  const executiveOutlook = swot?.executiveOutlook || swot?.outlookSummary
-    || (swot?.strengths?.[0] && swot?.weaknesses?.[0]
-        ? `${swot.strengths[0].replace(/^[•\-]\s*/,'')} However, ${swot.weaknesses[0].replace(/^[•\-]\s*/,'')}`
-        : swot?.strengths?.[0] || '—');
-
-  // ─── Workbook setup ───────────────────────────────────────────────────────
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator        = 'FinSight AI';
-  workbook.lastModifiedBy = 'FinSight AI';
-  workbook.created        = new Date();
-  workbook.modified       = new Date();
-  workbook.title          = `${companyInfo.name || 'Company'} - Financial Analysis`;
-  workbook.subject        = 'AI-organized financial analysis with ratios';
-  workbook.company        = 'FinSight AI · finsightai.org';
-
-  // ─── TAB 1: Summary ───────────────────────────────────────────────────────
-  const sumSheet = workbook.addWorksheet('Summary');
-  sumSheet.columns = [{ width: 30 }, { width: 60 }];
-
-  // Helper: apply all-sides thin border to a row range
-  const borderRow = (sheet, rowNum, colCount) => {
-    for (let c = 1; c <= colCount; c++) {
-      sheet.getCell(rowNum, c).border = thinBorder;
-    }
+  // ── Shared row builders ───────────────────────────────────────────────────
+  // Safe number — keep null as null so cells stay blank
+  const n  = (v) => (v != null && !isNaN(v) && isFinite(v)) ? v : null;
+  // YoY % as decimal fraction (Excel % format multiplies ×100 for display)
+  const yoyFrac = (c, pr) => (c != null && pr != null && pr !== 0)
+    ? ((c - pr) / Math.abs(pr))
+    : null;
+  // YoY % as formatted string (for sheets where we can't use number format)
+  const yoyStr  = (c, pr) => {
+    const f = yoyFrac(c, pr);
+    return f == null ? '—' : `${f >= 0 ? '+' : ''}${(f * 100).toFixed(1)}%`;
   };
 
-  // Title
-  sumSheet.mergeCells('A1:B1');
-  const sTitle = sumSheet.getCell('A1');
-  sTitle.value     = 'FINSIGHT AI — FINANCIAL ANALYSIS';
-  sTitle.font      = { bold: true, size: 16, color: { argb: WHITE }, name: 'Arial' };
-  sTitle.fill      = brownFill;
-  sTitle.alignment = { horizontal: 'center', vertical: 'middle' };
-  sumSheet.getRow(1).height = 32;
+  const subHdr  = `Values in ${unit} of ${currency}  |  Period: ${period}  |  Generated: ${todayStr}`;
 
-  const addSumHeader = (row, text) => {
-    sumSheet.mergeCells(`A${row}:B${row}`);
-    const c = sumSheet.getCell(`A${row}`);
-    c.value     = text;
-    c.font      = { bold: true, size: 11, color: { argb: BROWN.replace('FF','') }, name: 'Arial' };
-    c.fill      = ltBrownFill;
-    c.alignment = { horizontal: 'left', vertical: 'middle' };
-    sumSheet.getRow(row).height = 22;
-    borderRow(sumSheet, row, 2);
-  };
+  // A data row with 2 or 4 columns depending on hasPrior
+  const dr = (label, curr, prior) => hasPrior
+    ? [label, n(curr), n(prior), yoyStr(curr, prior)]
+    : [label, n(curr)];
 
-  const addSumLabelValue = (row, label, value) => {
-    const lc = sumSheet.getCell(`A${row}`);
-    lc.value = label;
-    lc.font  = { bold: true, name: 'Arial', size: 11 };
-    lc.alignment = { vertical: 'middle' };
-    const vc = sumSheet.getCell(`B${row}`);
-    vc.value = value ?? '—';
-    vc.font  = { name: 'Arial', size: 11 };
-    vc.alignment = { vertical: 'middle', wrapText: true };
-    borderRow(sumSheet, row, 2);
-  };
+  // A section-header label row (visually separates groups)
+  const sh = (label) => hasPrior ? [`── ${label}`, null, null, null] : [`── ${label}`, null];
 
-  addSumHeader(3, 'COMPANY OVERVIEW');
-  addSumLabelValue(4, 'Company Name',   companyInfo.name);
-  addSumLabelValue(5, 'Period',         companyInfo.period);
-  addSumLabelValue(6, 'Sector',         companyInfo.sector || 'Not specified');
-  addSumLabelValue(7, 'Currency',       companyInfo.currency || 'INR');
-  addSumLabelValue(8, 'Reporting Unit', companyInfo.rounding || 'Lakhs');
+  // Column widths for financial sheets
+  const finCols = hasPrior
+    ? [{ wch: 40 }, { wch: 17 }, { wch: 17 }, { wch: 12 }]
+    : [{ wch: 40 }, { wch: 17 }];
 
-  addSumHeader(10, 'EXECUTIVE OUTLOOK');
-  sumSheet.mergeCells('A11:B11');
-  const outCell = sumSheet.getCell('A11');
-  outCell.value     = executiveOutlook;
-  outCell.font      = { name: 'Arial', size: 11 };
-  outCell.alignment = { wrapText: true, vertical: 'top' };
-  sumSheet.getRow(11).height = 80;
-  borderRow(sumSheet, 11, 2);
+  const colHdrs = hasPrior
+    ? ['Particulars', fyLabels.cur, fyLabels.pri, 'YoY %']
+    : ['Particulars', fyLabels.cur];
 
-  addSumHeader(13, 'ABOUT THIS REPORT');
-  addSumLabelValue(14, 'Generated by', 'FinSight AI');
-  addSumLabelValue(15, 'Generated on', todayStr);
-  addSumLabelValue(16, 'Source',       'finsightai.org');
+  // ── Sheet 1 · P&L ─────────────────────────────────────────────────────────
+  const plRows = [
+    [`${name} — Profit & Loss Statement`],
+    [subHdr],
+    [''],
+    colHdrs,
+    sh('REVENUE'),
+    dr('Total Revenue',                a.revenue,         p.revenue),
+    dr('Cost of Goods Sold (COGS)',     a.cogs,            p.cogs),
+    dr('Gross Profit',                 a.grossProfit,     p.grossProfit),
+    [''],
+    sh('OPERATING EXPENSES'),
+    dr('Depreciation & Amortisation',  a.depreciation,    p.depreciation),
+    dr('Interest / Finance Costs',     a.interestExpense, p.interestExpense),
+    [''],
+    sh('PROFITABILITY'),
+    dr('EBITDA',                       a.ebitda,          p.ebitda),
+    dr('Operating Profit (EBIT)',      a.operatingProfit, p.operatingProfit),
+    dr('Profit Before Tax (PBT)',      a.pbt,             p.pbt),
+    dr('Tax',                          a.tax,             p.tax),
+    dr('Net Income / PAT',             a.netIncome,       p.netIncome),
+  ];
+  const wsPL = XLSX.utils.aoa_to_sheet(plRows);
+  wsPL['!cols'] = finCols;
+  XLSX.utils.book_append_sheet(wb, wsPL, 'P&L');
 
-  // ─── TAB 2: Financials ────────────────────────────────────────────────────
-  const finSheet = workbook.addWorksheet('Financials');
-  const finColCount = hasPrior ? 4 : 2;
-  finSheet.columns = hasPrior
-    ? [{ width: 40 }, { width: 18 }, { width: 18 }, { width: 15 }]
-    : [{ width: 40 }, { width: 18 }];
+  // ── Sheet 2 · Balance Sheet ───────────────────────────────────────────────
+  const bsRows = [
+    [`${name} — Balance Sheet`],
+    [subHdr],
+    [''],
+    colHdrs,
+    sh('ASSETS'),
+    dr('Total Assets',                 a.totalAssets,           p.totalAssets),
+    dr('  Current Assets',             a.currentAssets,         p.currentAssets),
+    dr('    Cash & Equivalents',       a.cash,                  p.cash),
+    dr('    Trade Receivables',        a.receivables,           p.receivables),
+    dr('    Inventory',                a.inventory,             p.inventory),
+    dr('  Non-Current Assets',         a.nonCurrentAssets,      p.nonCurrentAssets),
+    dr('    Fixed Assets / PPE',       a.fixedAssets,           p.fixedAssets),
+    [''],
+    sh('LIABILITIES'),
+    dr('Total Liabilities',            a.totalLiabilities,      p.totalLiabilities),
+    dr('  Current Liabilities',        a.currentLiabilities,    p.currentLiabilities),
+    dr('    Trade Payables',           a.tradePayables,         p.tradePayables),
+    dr('    Short-term Borrowings',    a.shortTermDebt,         p.shortTermDebt),
+    dr('  Non-Current Liabilities',    a.nonCurrentLiabilities, p.nonCurrentLiabilities),
+    dr('    Long-term Borrowings',     a.longTermDebt,          p.longTermDebt),
+    dr('  Total Debt',                 a.totalDebt,             p.totalDebt),
+    [''],
+    sh('EQUITY'),
+    dr('Total Equity / Net Worth',     a.totalEquity,           p.totalEquity),
+    [''],
+    sh('WORKING CAPITAL'),
+    dr('Working Capital',              a.workingCapital,        p.workingCapital),
+  ];
+  const wsBS = XLSX.utils.aoa_to_sheet(bsRows);
+  wsBS['!cols'] = finCols;
+  XLSX.utils.book_append_sheet(wb, wsBS, 'Balance Sheet');
 
-  // Title
-  finSheet.mergeCells(`A1:${String.fromCharCode(64 + finColCount)}1`);
-  const finTitle = finSheet.getCell('A1');
-  finTitle.value     = 'FINANCIAL STATEMENTS';
-  finTitle.font      = { bold: true, size: 14, color: { argb: WHITE }, name: 'Arial' };
-  finTitle.fill      = brownFill;
-  finTitle.alignment = { horizontal: 'center', vertical: 'middle' };
-  finSheet.getRow(1).height = 28;
+  // ── Sheet 3 · Cash Flow ───────────────────────────────────────────────────
+  const cfRows = [
+    [`${name} — Cash Flow Statement`],
+    [subHdr],
+    [''],
+    colHdrs,
+    dr('Operating Cash Flow (CFO)',    a.operatingCashFlow,  p.operatingCashFlow),
+    dr('Investing Cash Flow (CFI)',    a.investingCashFlow,  p.investingCashFlow),
+    dr('Financing Cash Flow (CFF)',    a.financingCashFlow,  p.financingCashFlow),
+  ];
+  // Derive net change only when at least one component is available
+  if (a.operatingCashFlow != null || a.investingCashFlow != null || a.financingCashFlow != null) {
+    const netC = (a.operatingCashFlow ?? 0) + (a.investingCashFlow ?? 0) + (a.financingCashFlow ?? 0);
+    const netP = hasPrior
+      ? (p.operatingCashFlow ?? 0) + (p.investingCashFlow ?? 0) + (p.financingCashFlow ?? 0)
+      : null;
+    cfRows.push(dr('Net Change in Cash', netC, netP));
+  }
+  const wsCF = XLSX.utils.aoa_to_sheet(cfRows);
+  wsCF['!cols'] = finCols;
+  XLSX.utils.book_append_sheet(wb, wsCF, 'Cash Flow');
 
-  // Subtitle
-  finSheet.mergeCells(`A2:${String.fromCharCode(64 + finColCount)}2`);
-  const finSub = finSheet.getCell('A2');
-  finSub.value     = `Values in ${companyInfo.rounding || 'Lakhs'} of ${companyInfo.currency || 'INR'}`;
-  finSub.font      = { italic: true, size: 10, name: 'Arial' };
-  finSub.alignment = { horizontal: 'center' };
-
-  // Column headers row 3
-  const finColHdrs = ['Particulars', fyLabels.current];
-  if (hasPrior) finColHdrs.push(fyLabels.prior, 'YoY %');
-  finColHdrs.forEach((h, i) => {
-    const c = finSheet.getCell(3, i + 1);
-    c.value     = h;
-    c.font      = { bold: true, color: { argb: WHITE }, name: 'Arial', size: 11 };
-    c.fill      = brownFill;
-    c.alignment = { horizontal: i === 0 ? 'left' : 'center', vertical: 'middle' };
-    c.border    = thinBorder;
-  });
-  finSheet.getRow(3).height = 24;
-  finSheet.views = [{ state: 'frozen', ySplit: 3 }];
-
-  const addFinSectionHeader = (rowNum, text) => {
-    finSheet.mergeCells(`A${rowNum}:${String.fromCharCode(64 + finColCount)}${rowNum}`);
-    const c = finSheet.getCell(`A${rowNum}`);
-    c.value     = text;
-    c.font      = { bold: true, color: { argb: BROWN.replace('FF','') }, name: 'Arial', size: 12 };
-    c.fill      = ltBrownFill;
-    c.alignment = { horizontal: 'left', vertical: 'middle' };
-    finSheet.getRow(rowNum).height = 22;
-  };
-
-  const addFinRow = (rowNum, label, curr, prior, isBold = false, isTotal = false) => {
-    const brd = isTotal ? thickTopBorder : thinBorder;
-    const lc = finSheet.getCell(rowNum, 1);
-    lc.value     = label;
-    lc.font      = { bold: isBold, name: 'Arial', size: 11 };
-    lc.border    = brd;
-    lc.alignment = { vertical: 'middle' };
-
-    const cc = finSheet.getCell(rowNum, 2);
-    if (curr != null) {
-      cc.value  = curr;
-      cc.numFmt = '#,##0.00;(#,##0.00);"—"';
-    } else {
-      cc.value = '—';
-    }
-    cc.font      = { bold: isBold, name: 'Arial', size: 11 };
-    cc.alignment = { horizontal: 'right', vertical: 'middle' };
-    cc.border    = brd;
-
-    if (hasPrior) {
-      const pc = finSheet.getCell(rowNum, 3);
-      if (prior != null) {
-        pc.value  = prior;
-        pc.numFmt = '#,##0.00;(#,##0.00);"—"';
-      } else {
-        pc.value = '—';
-      }
-      pc.font      = { bold: isBold, name: 'Arial', size: 11 };
-      pc.alignment = { horizontal: 'right', vertical: 'middle' };
-      pc.border    = thinBorder;
-
-      const yoyCell = finSheet.getCell(rowNum, 4);
-      if (curr != null && prior != null && prior !== 0) {
-        const chg = (curr - prior) / Math.abs(prior);
-        yoyCell.value  = chg;
-        yoyCell.numFmt = '0.00%;(0.00%);"—"';
-        yoyCell.font   = { name: 'Arial', size: 11, color: { argb: chg >= 0 ? GREEN_FONT : RED_FONT } };
-      } else {
-        yoyCell.value  = '—';
-        yoyCell.font   = { name: 'Arial', size: 11, color: { argb: GREY_FONT } };
-      }
-      yoyCell.alignment = { horizontal: 'right', vertical: 'middle' };
-      yoyCell.border    = thinBorder;
-    }
-  };
-
-  addFinSectionHeader(4, 'BALANCE SHEET');
-  addFinRow(5,  'Total Assets',              a.totalAssets,           p.totalAssets,           true, true);
-  addFinRow(6,  '  Current Assets',          a.currentAssets,         p.currentAssets);
-  addFinRow(7,  '  Non-Current Assets',      a.nonCurrentAssets,      p.nonCurrentAssets);
-  addFinRow(8,  '  Fixed Assets',            a.fixedAssets,           p.fixedAssets);
-  addFinRow(9,  '  Inventory',               a.inventory,             p.inventory);
-  addFinRow(10, '  Receivables',             a.receivables,           p.receivables);
-  addFinRow(11, '  Cash & Equivalents',      a.cash,                  p.cash);
-  addFinRow(13, 'Total Liabilities',         a.totalLiabilities,      p.totalLiabilities,      true, true);
-  addFinRow(14, '  Current Liabilities',     a.currentLiabilities,    p.currentLiabilities);
-  addFinRow(15, '  Non-Current Liabilities', a.nonCurrentLiabilities, p.nonCurrentLiabilities);
-  addFinRow(16, '  Trade Payables',          a.tradePayables,         p.tradePayables);
-  addFinRow(17, '  Long-term Debt',          a.longTermDebt,          p.longTermDebt);
-  addFinRow(18, '  Short-term Debt',         a.shortTermDebt,         p.shortTermDebt);
-  addFinRow(19, 'Total Debt',                a.totalDebt,             p.totalDebt,             true);
-  addFinRow(20, 'Total Equity',              a.totalEquity,           p.totalEquity,           true, true);
-  addFinRow(21, 'Working Capital',           a.workingCapital,        p.workingCapital);
-
-  addFinSectionHeader(23, 'PROFIT & LOSS');
-  addFinRow(24, 'Revenue',                   a.revenue,               p.revenue,               true, true);
-  addFinRow(25, '  Cost of Goods Sold',      a.cogs,                  p.cogs);
-  addFinRow(26, '  Gross Profit',            a.grossProfit,           p.grossProfit,           true);
-  addFinRow(27, '  Operating Profit',        a.operatingProfit,       p.operatingProfit,       true);
-  addFinRow(28, '  EBITDA',                  a.ebitda,                p.ebitda,                true);
-  addFinRow(29, '  Depreciation',            a.depreciation,          p.depreciation);
-  addFinRow(30, '  Interest Expense',        a.interestExpense,       p.interestExpense);
-  addFinRow(31, '  Tax',                     a.tax,                   p.tax);
-  addFinRow(32, 'Net Income',                a.netIncome,             p.netIncome,             true, true);
-
-  addFinSectionHeader(34, 'CASH FLOW');
-  addFinRow(35, 'Operating Cash Flow',       a.operatingCashFlow,     p.operatingCashFlow);
-  addFinRow(36, 'Investing Cash Flow',       a.investingCashFlow,     p.investingCashFlow);
-  addFinRow(37, 'Financing Cash Flow',       a.financingCashFlow,     p.financingCashFlow);
-
-  // ─── TAB 3: Ratios ────────────────────────────────────────────────────────
-  const ratSheet = workbook.addWorksheet('Ratios');
-  ratSheet.columns = [{ width: 30 }, { width: 15 }, { width: 40 }, { width: 60 }];
-
-  // Title
-  ratSheet.mergeCells('A1:D1');
-  const ratTitle = ratSheet.getCell('A1');
-  ratTitle.value     = 'FINANCIAL RATIOS';
-  ratTitle.font      = { bold: true, size: 14, color: { argb: WHITE }, name: 'Arial' };
-  ratTitle.fill      = brownFill;
-  ratTitle.alignment = { horizontal: 'center', vertical: 'middle' };
-  ratSheet.getRow(1).height = 28;
-
-  // Column headers
-  const ratColHdrs = ['Ratio Name', 'Value', 'Formula', 'What It Means'];
-  ratColHdrs.forEach((h, i) => {
-    const c = ratSheet.getCell(3, i + 1);
-    c.value     = h;
-    c.font      = { bold: true, color: { argb: WHITE }, name: 'Arial', size: 11 };
-    c.fill      = brownFill;
-    c.alignment = { horizontal: i === 1 ? 'right' : 'left', vertical: 'middle' };
-    c.border    = thinBorder;
-  });
-  ratSheet.getRow(3).height = 24;
-  ratSheet.views = [{ state: 'frozen', ySplit: 3 }];
-
-  let curRow = 4;
-
-  const addRatioSectionHeader = (text) => {
-    ratSheet.mergeCells(`A${curRow}:D${curRow}`);
-    const c = ratSheet.getCell(`A${curRow}`);
-    c.value     = text;
-    c.font      = { bold: true, color: { argb: BROWN.replace('FF','') }, name: 'Arial', size: 12 };
-    c.fill      = ltBrownFill;
-    c.alignment = { horizontal: 'left', vertical: 'middle' };
-    ratSheet.getRow(curRow).height = 22;
-    curRow++;
-  };
-
-  const ratioNumFmt = (type) => {
-    if (type === 'percent')  return '0.00%;(0.00%);"—"';
-    if (type === 'multiple') return '0.00"x";(0.00"x");"—"';
-    if (type === 'days')     return '#,##0" days";(#,##0)" days";"—"';
-    return '#,##0.00;(#,##0.00);"—"';
-  };
-
+  // ── Sheet 4 · Ratios ──────────────────────────────────────────────────────
+  const ratRows = [
+    [`${name} — Financial Ratios`],
+    [`Period: ${period}  |  Generated: ${todayStr}`],
+    [''],
+    ['Category', 'Ratio', 'Value', 'Formula', 'Interpretation'],
+  ];
   for (const cat of (ratios || [])) {
-    addRatioSectionHeader(cat.category || '');
-
     for (const item of (cat.items || [])) {
-      const nameCell = ratSheet.getCell(curRow, 1);
-      nameCell.value     = item.name || '';
-      nameCell.font      = { name: 'Arial', size: 11 };
-      nameCell.border    = thinBorder;
-
-      const valCell = ratSheet.getCell(curRow, 2);
       const rawV = item.rawValue;
-      if (rawV != null && !isNaN(rawV) && isFinite(rawV)) {
-        valCell.value  = item.type === 'percent' ? rawV / 100 : rawV;
-        valCell.numFmt = ratioNumFmt(item.type);
-        valCell.font   = { name: 'Arial', size: 11 };
-      } else {
-        valCell.value = '—';
-        valCell.font  = { name: 'Arial', size: 11, color: { argb: GREY_FONT } };
-      }
-      valCell.alignment = { horizontal: 'right', vertical: 'middle' };
-      valCell.border    = thinBorder;
-
-      const fmlCell = ratSheet.getCell(curRow, 3);
-      fmlCell.value     = item.formula || '';
-      fmlCell.font      = { italic: true, name: 'Arial', size: 10 };
-      fmlCell.alignment = { wrapText: true, vertical: 'top' };
-      fmlCell.border    = thinBorder;
-
-      const intCell = ratSheet.getCell(curRow, 4);
-      intCell.value     = item.interpretation || '';
-      intCell.font      = { name: 'Arial', size: 10 };
-      intCell.alignment = { wrapText: true, vertical: 'top' };
-      intCell.border    = thinBorder;
-
-      curRow++;
+      const val  = (rawV != null && !isNaN(rawV) && isFinite(rawV)) ? rawV : '—';
+      ratRows.push([
+        cat.category || '',
+        item.name    || '',
+        val,
+        item.formula        || '',
+        item.interpretation || '',
+      ]);
     }
-    curRow++; // blank row between categories
+    ratRows.push(['', '', '', '', '']); // blank separator between categories
   }
-
   if (swot?.ratioInterpretations?.length) {
-    addRatioSectionHeader('Company-Specific Interpretations');
+    ratRows.push(['Company-Specific Interpretations', '', '', '', '']);
     for (const interp of swot.ratioInterpretations) {
-      ratSheet.getCell(curRow, 1).value     = interp.ratio || '';
-      ratSheet.getCell(curRow, 1).font      = { bold: true, name: 'Arial', size: 11 };
-      ratSheet.getCell(curRow, 1).border    = thinBorder;
-      ratSheet.getCell(curRow, 2).value     = interp.value || '—';
-      ratSheet.getCell(curRow, 2).font      = { name: 'Arial', size: 11 };
-      ratSheet.getCell(curRow, 2).alignment = { horizontal: 'right' };
-      ratSheet.getCell(curRow, 2).border    = thinBorder;
-      ratSheet.getCell(curRow, 3).value     = '—';
-      ratSheet.getCell(curRow, 3).border    = thinBorder;
-      ratSheet.getCell(curRow, 4).value     = interp.meaning || '';
-      ratSheet.getCell(curRow, 4).font      = { name: 'Arial', size: 10 };
-      ratSheet.getCell(curRow, 4).alignment = { wrapText: true, vertical: 'top' };
-      ratSheet.getCell(curRow, 4).border    = thinBorder;
-      ratSheet.getRow(curRow).height = 60;
-      curRow++;
+      ratRows.push([
+        'Company-Specific',
+        interp.ratio  || '',
+        interp.value  || '—',
+        '',
+        interp.meaning || '',
+      ]);
     }
   }
+  const wsRatios = XLSX.utils.aoa_to_sheet(ratRows);
+  wsRatios['!cols'] = [{ wch: 26 }, { wch: 28 }, { wch: 12 }, { wch: 30 }, { wch: 55 }];
+  XLSX.utils.book_append_sheet(wb, wsRatios, 'Ratios');
 
-  // ─── Generate Blob ────────────────────────────────────────────────────────
-  const buffer = await workbook.xlsx.writeBuffer();
-  const excelBlob = new Blob([buffer], {
+  // ── Sheet 5 · SWOT ────────────────────────────────────────────────────────
+  const bullets = (arr) =>
+    (Array.isArray(arr) ? arr : []).map((s, i) => [`  ${i + 1}. ${String(s).replace(/^[•\-\d.]\s*/, '')}`]);
+
+  const swotRows = [
+    [`${name} — SWOT Analysis`],
+    [`Period: ${period}  |  Generated by FinSight AI  |  ${todayStr}`],
+    [''],
+    ['EXECUTIVE OUTLOOK'],
+    [swot?.executiveOutlook || '—'],
+    [''],
+    ['STRENGTHS'],
+    ...bullets(swot?.strengths),
+    [''],
+    ['WEAKNESSES'],
+    ...bullets(swot?.weaknesses),
+    [''],
+    ['OPPORTUNITIES'],
+    ...bullets(swot?.opportunities),
+    [''],
+    ['THREATS'],
+    ...bullets(swot?.threats),
+  ];
+  const wsSWOT = XLSX.utils.aoa_to_sheet(swotRows);
+  wsSWOT['!cols'] = [{ wch: 90 }];
+  XLSX.utils.book_append_sheet(wb, wsSWOT, 'SWOT');
+
+  // ── Serialize — pure Uint8Array, no Node Buffer ───────────────────────────
+  // type:'array' tells SheetJS to return a plain Uint8Array (works in every browser).
+  const arrayBuf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const excelBlob = new Blob([arrayBuf], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
   const fileName = generateSmartFilename(companyInfo, 'xlsx');
-  const fileSizeKB = Math.round(excelBlob.size / 1024);
-
-  return { excelBlob, fileName, fileSizeKB, tabCount: 3 };
+  return { excelBlob, fileName };
 }
 
 async function generatePPTFull(data, periodLabel) {
@@ -3382,7 +3856,7 @@ function PeriodDropdown({ value, onChange }) {
 
 function DocumentReadyScreen({ docReady, onReset }) {
   const { pdfBlob, pdfFileName, docxBlob, docxFileName, excelBlob, excelFileName,
-    briefWordBlob, briefWordFileName, briefWordError, noFinancialData,
+    briefWordBlob, briefWordFileName, briefWordError, noFinancialData, apiUnavailable,
     extractionWarnings = [],
     selectedOutputs = {}, companyName, summary } = docReady;
   const METHOD_LABEL = { text: 'Text extraction', ocr: 'OCR (Tesseract)', vision: 'Claude Vision OCR', xml: 'XBRL/XML parsing', 'excel-input': 'Excel parsing', word: 'Word extraction' };
@@ -3403,7 +3877,14 @@ function DocumentReadyScreen({ docReady, onReset }) {
       <div style={{ width: 56, height: 56, borderRadius: "50%", background: C.greenBg, border: `2px solid ${C.green}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", fontSize: 26 }}>✓</div>
       <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Your document is ready!</div>
       <div style={{ fontSize: 13.5, fontWeight: 600, color: C.brown, marginBottom: 16 }}>{companyName}</div>
-      {noFinancialData && (
+      {apiUnavailable && (
+        <div style={{ background: '#FEF3F2', border: '1px solid #F4B5B5', borderRadius: 10, padding: '10px 14px', marginBottom: 14, textAlign: 'left', fontSize: 12.5, color: '#9A3412', lineHeight: 1.6 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>⚠ AI analysis unavailable — API limit reached</div>
+          <div>Your Excel workbook has been generated with extracted financial data. AI-generated SWOT, narrative, and PDF/Word analysis will be available once API credits are restored.</div>
+          <div style={{ marginTop: 6, color: '#7C3D12', fontSize: 12 }}>A rule-based analysis has been used as a fallback. Your analysis has been queued — when you return and credits are restored, you can regenerate.</div>
+        </div>
+      )}
+      {noFinancialData && !apiUnavailable && (
         <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 10, padding: '10px 14px', marginBottom: 14, textAlign: 'left', fontSize: 12.5, color: '#92400E', lineHeight: 1.6 }}>
           ⚠ Limited financial data was extracted. The PDF may contain scanned images instead of text. Try the MCA portal XBRL/text-based PDF version for better results.
         </div>
@@ -3471,6 +3952,77 @@ function DocumentReadyScreen({ docReady, onReset }) {
       <button onClick={onReset} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: C.textSec, textDecoration: "underline" }}>
         ⟲ Process another document
       </button>
+    </div>
+  );
+}
+
+function PendingAnalysisBanner({ onRetry }) {
+  const [pending, setPending] = useState(() => getPendingAnalyses());
+  const [retrying, setRetrying] = useState(null);
+
+  if (!pending.length) return null;
+
+  const handleRetry = async (item) => {
+    setRetrying(item.id);
+    try {
+      const freshSwot = await generateSWOTAndInterpretation(
+        item.companyInfo, item.aggregated, item.ratios, null, item.aggregatedPrior
+      );
+      const briefNarrative = await generateBriefNarrative(
+        item.companyInfo, item.aggregated, item.aggregatedPrior, item.ratios, freshSwot, []
+      );
+      const briefWordResult = await generateBriefWordDoc(
+        [], item.companyInfo, item.aggregated, item.aggregatedPrior, item.ratios, freshSwot, briefNarrative
+      );
+      if (briefWordResult?.blob) {
+        triggerBlobDownload(briefWordResult.blob, briefWordResult.fileName);
+        removePendingAnalysis(item.id);
+        setPending(getPendingAnalyses());
+      }
+    } catch (e) {
+      if (e.apiUnavailable) {
+        alert('API credits still unavailable. Please try again later.');
+      } else {
+        alert('Retry failed: ' + (e.message || 'Unknown error'));
+      }
+    }
+    setRetrying(null);
+    if (onRetry) onRetry();
+  };
+
+  const handleDismiss = (id) => {
+    removePendingAnalysis(id);
+    setPending(getPendingAnalyses());
+  };
+
+  return (
+    <div style={{ maxWidth: 480, margin: '0 auto 16px', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 10, padding: '12px 16px' }}>
+      <div style={{ fontWeight: 700, fontSize: 13, color: '#1D4ED8', marginBottom: 8 }}>
+        Pending AI Analysis
+      </div>
+      {pending.map(item => (
+        <div key={item.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderTop: '1px solid #DBEAFE' }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#1E3A8A' }}>{item.companyName}</div>
+            <div style={{ fontSize: 11.5, color: '#3B82F6' }}>Queued {new Date(item.queuedAt).toLocaleDateString()}</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              disabled={retrying === item.id}
+              onClick={() => handleRetry(item)}
+              style={{ fontSize: 12, fontWeight: 600, padding: '5px 12px', borderRadius: 6, border: 'none', background: retrying === item.id ? '#93C5FD' : '#2563EB', color: '#fff', cursor: retrying === item.id ? 'default' : 'pointer' }}
+            >
+              {retrying === item.id ? 'Generating...' : 'Generate now'}
+            </button>
+            <button
+              onClick={() => handleDismiss(item.id)}
+              style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid #93C5FD', background: 'transparent', color: '#1D4ED8', cursor: 'pointer' }}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -3817,6 +4369,7 @@ function FinSightApp() {
         briefWordFileName: result.briefWordFileName,
         briefWordError: result.briefWordError,
         noFinancialData: result.noFinancialData,
+        apiUnavailable: result.apiUnavailable,
         extractionMethod: result.extractionMethod,
         extractionWarnings: result.extractionWarnings,
         selectedOutputs: outputs,
@@ -3926,6 +4479,7 @@ function FinSightApp() {
           <div style={{ flex: 1, height: 1, background: C.border }}></div>
         </div>
 
+        <PendingAnalysisBanner />
         {docReady
           ? <DocumentReadyScreen docReady={docReady} onReset={() => { setDocReady(null); setPrivateDocStage('idle'); setPrivateDocFile(null); setScannedPdfWarn(null); }} />
           : scannedPdfWarn
