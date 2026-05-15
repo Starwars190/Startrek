@@ -1743,6 +1743,347 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
   }
 }
 
+// ─── BRIEF COMPANY NOTE ─────────────────────────────────────────────────────
+
+async function generateBriefNarrative(companyInfo, aggregated, aggregatedPrior, ratios, swot, chunkResults) {
+  const contextSnippets = chunkResults.slice(0, 3)
+    .flatMap(c => (c.blocks || []).filter(b => b.type === 'paragraph_block').map(b => (b.paragraphs || []).join(' ')))
+    .filter(Boolean).join('\n\n').slice(0, 4000);
+
+  const profCat = ratios.find(c => c.category === 'Profitability Ratios');
+  const unit = companyInfo.rounding || 'Lakhs';
+  const finSnap = [
+    `Company: ${companyInfo.name}`, `Period: ${companyInfo.period}`,
+    `Sector: ${companyInfo.sector || 'N/A'}`,
+    `Revenue (current yr): ${aggregated.revenue ?? 'N/A'} ${unit}`,
+    `Revenue (prior yr):   ${aggregatedPrior.revenue ?? 'N/A'} ${unit}`,
+    `Net Income: ${aggregated.netIncome ?? 'N/A'} ${unit}`,
+    `Gross Margin: ${profCat?.items.find(i => i.name === 'Gross Margin')?.value ?? 'N/A'}`,
+    `Net Margin:   ${profCat?.items.find(i => i.name === 'Net Margin')?.value ?? 'N/A'}`,
+    `Total Assets: ${aggregated.totalAssets ?? 'N/A'} ${unit}`,
+    `LT Debt: ${aggregated.longTermDebt ?? 'N/A'} ${unit}`,
+    `ST Debt: ${aggregated.shortTermDebt ?? 'N/A'} ${unit}`,
+  ].join('\n');
+
+  const userMsg = `You are writing a brief company research note for CAs and senior analysts in India. Tone: concise, analytical, specific — like a Bloomberg brief or an initiation note.
+
+FINANCIAL SNAPSHOT:
+${finSnap}
+
+FILING EXCERPTS (first 3 sections):
+${contextSnippets}
+
+EXECUTIVE OUTLOOK: ${swot?.executiveOutlook || 'N/A'}
+KEY STRENGTHS: ${(swot?.strengths || []).slice(0, 3).join(' | ')}
+KEY CONCERNS: ${(swot?.weaknesses || []).slice(0, 3).join(' | ')}
+
+Return ONLY this JSON (no markdown, no text outside braces):
+{
+  "aboutCompany": {
+    "type": "1-line business type (e.g. 'Medical Devices Distributor')",
+    "headquarters": "City, State if extractable from filing, else null",
+    "overview": "2-3 sentence business description specific to this company",
+    "coreOfferings": ["offering 1","offering 2","offering 3","offering 4"]
+  },
+  "keyInsights": [
+    "Specific observation with actual number (max 25 words)",
+    "Specific observation with actual number (max 25 words)",
+    "Specific observation with actual number (max 25 words)",
+    "Specific observation with actual number (max 25 words)"
+  ],
+  "financialNarrative": "Single paragraph max 80 words interpreting financial highlights with 2-3 specific numbers and balanced analytical tone",
+  "businessModel": {
+    "coreModel": "1 sentence on how the company makes money",
+    "revenueDrivers": ["driver 1","driver 2","driver 3"],
+    "valueProposition": "1-2 sentences on competitive positioning"
+  },
+  "keyDifferentiators": ["Differentiator 1 (max 15 words)","Differentiator 2","Differentiator 3"],
+  "risks": ["Risk 1 with number if relevant (max 25 words)","Risk 2","Risk 3"],
+  "summary": "3-paragraph summary separated by \\n\\n. P1: Company positioning and FY performance. P2: Key insight about financial health. P3: Forward-looking framing. Each paragraph max 50 words."
+}
+Rules: Use INR/₹, not USD. Include real numbers. Return null for genuinely unavailable sections. Do NOT invent facts.`;
+
+  const raw = await callClaude({
+    system: 'You are a senior financial analyst writing research notes for Indian private companies. Output valid JSON only.',
+    userMsg, maxTokens: 3000
+  });
+  let cleaned = raw.trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+  const s = cleaned.indexOf('{'), e = cleaned.lastIndexOf('}');
+  if (s >= 0 && e >= 0) cleaned = cleaned.slice(s, e + 1);
+  try { return JSON.parse(cleaned); } catch { return {}; }
+}
+
+async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggregatedPrior, ratios, swot, briefNarrative) {
+  const docx = await loadDocx();
+  const {
+    Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+    BorderStyle, AlignmentType, WidthType, PageNumber, Header, Footer, ShadingType,
+  } = docx;
+  const levelBulletFmt = (docx.LevelFormat || {}).BULLET || 'bullet';
+
+  // ── Palette ──────────────────────────────────────────────────────────────
+  const BROWN = "8B4513", DK = "4A4A4A", MID = "888888";
+  const BROWN_BG = "F5EFE7", WHITE = "FFFFFF", ALT = "FAFAFA";
+  const BORD = { top: { style: BorderStyle.SINGLE, size: 4, color: "D3D3D3" }, bottom: { style: BorderStyle.SINGLE, size: 4, color: "D3D3D3" }, left: { style: BorderStyle.SINGLE, size: 4, color: "D3D3D3" }, right: { style: BorderStyle.SINGLE, size: 4, color: "D3D3D3" } };
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const run = (text, o = {}) => new TextRun({ text: String(text ?? ''), font: 'Calibri', size: o.size || 22, bold: o.bold || false, italics: o.italics || false, color: o.color || DK });
+  const pg = (children, o = {}) => new Paragraph({ children: Array.isArray(children) ? children : [children], alignment: o.align || AlignmentType.LEFT, spacing: o.sp || { before: 80, after: 80, line: 280 }, ...(o.num ? { numbering: { reference: 'bb', level: 0 } } : {}), ...(o.brk ? { pageBreakBefore: true } : {}) });
+  const h1 = (txt, brk = false) => pg([run(txt, { size: 32, bold: true, color: BROWN })], { sp: { before: 280, after: 140, line: 360 }, brk });
+  const h2 = (txt) => pg([run(txt, { size: 24, bold: true, color: BROWN })], { sp: { before: 180, after: 100, line: 320 } });
+  const body = (txt, o = {}) => pg([run(txt, { size: 22, ...o })], { sp: { before: 60, after: 60, line: 288 } });
+  const kv = (label, val) => pg([run(`${label}: `, { size: 22, bold: true }), run(val || '—', { size: 22 })], { sp: { before: 50, after: 50, line: 276 } });
+  const bullet = (txt) => pg([run(txt, { size: 22 })], { sp: { before: 40, after: 40, line: 280 }, num: true });
+  const blank = () => pg([run('')], { sp: { before: 60, after: 60 } });
+  const hr = () => new Paragraph({ children: [], border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'E8E1D8' } }, spacing: { before: 100, after: 100 } });
+
+  const tc = (kids, o = {}) => new TableCell({ children: Array.isArray(kids) ? kids : [kids], borders: BORD, width: o.w, shading: o.shd, margins: { top: 80, bottom: 80, left: 120, right: 120 } });
+
+  // ── Number helpers ────────────────────────────────────────────────────────
+  const fn = (v) => { if (v == null) return '—'; const a = Math.abs(v); const s = a.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return v < 0 ? `(${s})` : s; };
+  const fp = (v) => v == null ? '—' : v < 0 ? `(${Math.abs(v).toFixed(2)}%)` : `${v.toFixed(2)}%`;
+  const yoy = (c, p) => (c != null && p != null && p !== 0) ? fp(((c - p) / Math.abs(p)) * 100) : '—';
+
+  // FY labels
+  const fyL = (() => {
+    const m = (companyInfo.period || '').match(/\b(20\d{2})\b/g);
+    if (m?.length >= 2) { const [a, b] = m.slice(-2); return { cur: `FY ${a.slice(-2)}-${b.slice(-2)}`, pri: `FY ${(+a - 1).toString().slice(-2)}-${a.slice(-2)}` }; }
+    return { cur: 'Current', pri: 'Prior' };
+  })();
+
+  // ── Director / auditor extraction ─────────────────────────────────────────
+  const people = (() => {
+    const dirs = []; let aud = null;
+    for (const chunk of chunkResults) {
+      for (const blk of (chunk.blocks || [])) {
+        const tl = (blk.title || '').toLowerCase();
+        if (/director|leadership|management|board/.test(tl)) {
+          (blk.pairs || []).forEach(pr => { if (pr.label && pr.value && !/date|din|pan|cin|address/i.test(pr.label)) dirs.push(`${pr.value} — ${pr.label}`); });
+          (blk.rows || []).forEach(r => { if (r.length >= 2 && !/^\d+$/.test(r[0]) && r[0].length > 3) dirs.push(`${r[0]} — ${r[1]}`); });
+        }
+        if (/auditor/.test(tl)) {
+          const pr = (blk.pairs || []).find(p => /name|firm/i.test(p.label));
+          if (pr) aud = pr.value;
+        }
+        if (!aud) {
+          const txt = (blk.paragraphs || []).join(' ');
+          const mx = txt.match(/(?:Statutory\s+Auditor|Auditor)[^:\n]*:\s*([A-Z][^,\n.]{5,60}(?:LLP|CA|Associates|Partners|&\s*Co))/i);
+          if (mx) aud = mx[1].trim();
+        }
+      }
+    }
+    return { dirs: [...new Set(dirs)].slice(0, 8), aud };
+  })();
+
+  // CIN / incorporation year
+  const cin = (() => {
+    const txt = chunkResults.map(c => JSON.stringify(c.blocks || [])).join(' ');
+    const m = txt.match(/CIN\s*[:\s]*([ULF][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6})/i);
+    return m ? m[1] : null;
+  })();
+  const incYear = cin ? cin.slice(5, 9) : null;
+
+  // Smart-skip flags
+  const allTxt = chunkResults.map(c => JSON.stringify(c.blocks || [])).join(' ');
+  const hasSubs = /subsidiar|holding\s+compan|associate\s+compan/i.test(allTxt);
+  const hasHistory = !!(cin || incYear || hasSubs);
+
+  const nb = briefNarrative || {};
+  const about = nb.aboutCompany || {};
+
+  // ── Ratios lookup ─────────────────────────────────────────────────────────
+  const getR = (cat, name) => ratios.find(c => c.category === cat)?.items.find(i => i.name === name);
+  const dso = getR('Efficiency Ratios', 'Receivables Days (DSO)');
+  const dpo = getR('Efficiency Ratios', 'Payable Days (DPO)');
+  const invT = getR('Efficiency Ratios', 'Inventory Turnover');
+
+  const ebitdaM = (c, p) => (c != null && p != null && p !== 0) ? (c / p) * 100 : null;
+  const wc = (a) => a.workingCapital ?? (a.currentAssets != null && a.currentLiabilities != null ? a.currentAssets - a.currentLiabilities : null);
+
+  // ── Financial highlights table ────────────────────────────────────────────
+  const finRows = [
+    { L: 'Revenue',                c: aggregated.revenue,       p: aggregatedPrior.revenue },
+    { L: 'COGS',                   c: aggregated.cogs,          p: aggregatedPrior.cogs },
+    { L: 'EBITDA',                 c: aggregated.ebitda,        p: aggregatedPrior.ebitda },
+    { L: 'EBITDA Margin (%)',      c: ebitdaM(aggregated.ebitda, aggregated.revenue), p: ebitdaM(aggregatedPrior.ebitda, aggregatedPrior.revenue), isPct: true, noYoy: true },
+    { L: 'Net Income (After Tax)', c: aggregated.netIncome,     p: aggregatedPrior.netIncome },
+    { L: 'Trade Receivables',      c: aggregated.receivables,   p: aggregatedPrior.receivables },
+    { L: 'Receivable Days (DSO)',  c: dso?.rawValue, p: null, isDays: true, noYoy: true },
+    { L: 'Trade Payables',         c: aggregated.tradePayables, p: aggregatedPrior.tradePayables },
+    { L: 'Payable Days (DPO)',     c: dpo?.rawValue, p: null, isDays: true, noYoy: true },
+    { L: 'Short-term Borrowings',  c: aggregated.shortTermDebt, p: aggregatedPrior.shortTermDebt },
+    { L: 'Long-term Borrowings',   c: aggregated.longTermDebt,  p: aggregatedPrior.longTermDebt },
+    { L: 'Inventory',              c: aggregated.inventory,     p: aggregatedPrior.inventory },
+    { L: 'Inventory Turnover',     c: invT?.rawValue, p: null, isMult: true, noYoy: true },
+    { L: 'Working Capital',        c: wc(aggregated),           p: wc(aggregatedPrior) },
+  ].filter(r => r.c != null || r.p != null).map(r => ({
+    ...r,
+    cs: r.isPct ? fp(r.c) : r.isDays ? (r.c != null ? `${r.c.toFixed(0)} days` : '—') : r.isMult ? (r.c != null ? `${r.c.toFixed(2)}x` : '—') : fn(r.c),
+    ps: r.isPct ? fp(r.p) : r.isDays ? '—' : r.isMult ? '—' : fn(r.p),
+    ys: r.noYoy ? '—' : yoy(r.c, r.p),
+  }));
+
+  const CW = [{ size: 47, type: WidthType.PERCENTAGE }, { size: 18, type: WidthType.PERCENTAGE }, { size: 18, type: WidthType.PERCENTAGE }, { size: 17, type: WidthType.PERCENTAGE }];
+  const hdrShd = { fill: BROWN, type: ShadingType.CLEAR, color: 'auto' };
+  const tblHdr = new TableRow({ tableHeader: true, children: [
+    tc([pg([run('Particulars', { size: 20, bold: true, color: WHITE })], { sp: { before: 60, after: 60 } })], { w: CW[0], shd: hdrShd }),
+    tc([pg([run(fyL.pri, { size: 20, bold: true, color: WHITE })], { align: AlignmentType.RIGHT, sp: { before: 60, after: 60 } })], { w: CW[1], shd: hdrShd }),
+    tc([pg([run(fyL.cur, { size: 20, bold: true, color: WHITE })], { align: AlignmentType.RIGHT, sp: { before: 60, after: 60 } })], { w: CW[2], shd: hdrShd }),
+    tc([pg([run('YoY %', { size: 20, bold: true, color: WHITE })], { align: AlignmentType.RIGHT, sp: { before: 60, after: 60 } })], { w: CW[3], shd: hdrShd }),
+  ]});
+  const tblBody = finRows.map((r, i) => {
+    const bg = i % 2 === 0 ? WHITE : ALT;
+    const shd = { fill: bg, type: ShadingType.CLEAR, color: 'auto' };
+    const rsp = { before: 60, after: 60 };
+    return new TableRow({ children: [
+      tc([pg([run(r.L, { size: 20 })], { sp: rsp })], { w: CW[0], shd }),
+      tc([pg([run(r.ps, { size: 20 })], { align: AlignmentType.RIGHT, sp: rsp })], { w: CW[1], shd }),
+      tc([pg([run(r.cs, { size: 20 })], { align: AlignmentType.RIGHT, sp: rsp })], { w: CW[2], shd }),
+      tc([pg([run(r.ys, { size: 20 })], { align: AlignmentType.RIGHT, sp: rsp })], { w: CW[3], shd }),
+    ]});
+  });
+  const finTable = new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [tblHdr, ...tblBody] });
+
+  // ── Build document children ───────────────────────────────────────────────
+  const ch = [];
+
+  // ── Title page ────────────────────────────────────────────────────────────
+  ch.push(pg([run('')], { sp: { before: 900, after: 0 } }));
+  ch.push(pg([run(companyInfo.name || 'Private Company', { size: 52, bold: true, color: BROWN })], { align: AlignmentType.CENTER, sp: { before: 200, after: 200, line: 560 } }));
+  ch.push(pg([run('Company Brief', { size: 30, italics: true, color: DK })], { align: AlignmentType.CENTER, sp: { before: 100, after: 100 } }));
+  if (companyInfo.period) ch.push(pg([run(`Reporting Period: ${companyInfo.period}`, { size: 22, color: MID })], { align: AlignmentType.CENTER, sp: { before: 80, after: 60 } }));
+  ch.push(pg([run('Prepared by FinSight AI  ·  finsightai.org', { size: 20, italics: true, color: MID })], { align: AlignmentType.CENTER, sp: { before: 200, after: 60 } }));
+  ch.push(pg([run(`Generated: ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`, { size: 20, color: MID })], { align: AlignmentType.CENTER, sp: { before: 60, after: 240 } }));
+  ch.push(hr());
+  ch.push(pg([run('This document is generated from MCA/XBRL filings using FinSight AI. For informational purposes only. Not investment advice.', { size: 16, italics: true, color: MID })], { align: AlignmentType.CENTER, sp: { before: 100, after: 0 } }));
+
+  // ── About the Company ─────────────────────────────────────────────────────
+  ch.push(h1('About the Company', true));
+  if (about.type)          ch.push(kv('Business Type', about.type));
+  if (companyInfo.sector)  ch.push(kv('Sector', companyInfo.sector));
+  if (about.headquarters)  ch.push(kv('Headquarters', about.headquarters));
+  if (cin)                 ch.push(kv('CIN', cin));
+  if (companyInfo.period)  ch.push(kv('Reporting Period', companyInfo.period));
+  if (companyInfo.rounding) ch.push(kv('Financial Unit', `${companyInfo.rounding} of ${companyInfo.currency || 'INR'}`));
+  if (about.overview)      { ch.push(blank()); ch.push(body(about.overview)); }
+  if (about.coreOfferings?.length) {
+    ch.push(blank());
+    ch.push(pg([run('Core Offerings', { size: 22, bold: true })], { sp: { before: 100, after: 60 } }));
+    about.coreOfferings.forEach(o => ch.push(bullet(o)));
+  }
+
+  // ── Key Insights ──────────────────────────────────────────────────────────
+  if (nb.keyInsights?.length) {
+    ch.push(h1('Key Insights', true));
+    nb.keyInsights.forEach(ins => ch.push(bullet(ins)));
+  }
+
+  // ── Financial Highlights ──────────────────────────────────────────────────
+  ch.push(h1('Financial Highlights', true));
+  ch.push(pg([run(`Values in ${companyInfo.rounding || 'Lakhs'} of ${companyInfo.currency || 'INR'}`, { size: 20, italics: true, color: MID })], { sp: { before: 40, after: 140 } }));
+  ch.push(finTable);
+  if (nb.financialNarrative) { ch.push(blank()); ch.push(body(nb.financialNarrative, { italics: true })); }
+
+  // ── Promoters & Leadership ────────────────────────────────────────────────
+  if (people.dirs.length > 0 || people.aud) {
+    ch.push(h1('Promoters & Leadership', true));
+    if (people.dirs.length > 0) {
+      ch.push(pg([run('Board of Directors / Key Management', { size: 22, bold: true })], { sp: { before: 80, after: 60 } }));
+      people.dirs.forEach(d => ch.push(bullet(d)));
+    }
+    if (people.aud) { ch.push(blank()); ch.push(kv('Statutory Auditor', people.aud)); }
+    if (incYear)     ch.push(kv('Year of Incorporation', `${incYear} (per CIN)`));
+  }
+
+  // ── Business Model ────────────────────────────────────────────────────────
+  if (nb.businessModel) {
+    const bm = nb.businessModel;
+    ch.push(h1('Business Model', true));
+    if (bm.coreModel) ch.push(body(bm.coreModel));
+    if (bm.revenueDrivers?.length) {
+      ch.push(blank());
+      ch.push(pg([run('Revenue Drivers', { size: 22, bold: true })], { sp: { before: 80, after: 60 } }));
+      bm.revenueDrivers.forEach(d => ch.push(bullet(d)));
+    }
+    if (bm.valueProposition) { ch.push(blank()); ch.push(h2('Value Proposition')); ch.push(body(bm.valueProposition)); }
+  }
+
+  // ── Key Differentiators ───────────────────────────────────────────────────
+  if (nb.keyDifferentiators?.length) {
+    ch.push(h1('Key Differentiators', true));
+    nb.keyDifferentiators.forEach(d => ch.push(bullet(d)));
+  }
+
+  // ── Company History ───────────────────────────────────────────────────────
+  if (hasHistory) {
+    ch.push(h1('Company History & Structure', true));
+    if (cin)    ch.push(kv('Company Identification Number', cin));
+    if (incYear) ch.push(body(`Incorporated in ${incYear} as per CIN registration records.`));
+    if (hasSubs) { ch.push(blank()); ch.push(body('The company has subsidiaries, associates, or related group entities. Refer to the Notes to Financial Statements for the full group structure.')); }
+  }
+
+  // ── Risks & Outlook ───────────────────────────────────────────────────────
+  ch.push(h1('Risks & Outlook', true));
+  if (nb.risks?.length) { ch.push(h2('Key Risks')); nb.risks.forEach(r => ch.push(bullet(r))); }
+  if (swot?.threats?.length) { ch.push(blank()); ch.push(h2('External Threats')); swot.threats.slice(0, 3).forEach(th => ch.push(bullet(th))); }
+  if (swot?.executiveOutlook) { ch.push(blank()); ch.push(h2('Outlook')); ch.push(body(swot.executiveOutlook)); }
+
+  // ── Summary ───────────────────────────────────────────────────────────────
+  if (nb.summary) {
+    ch.push(h1('Summary', true));
+    const paras = String(nb.summary).split(/\n\n+/).filter(Boolean);
+    paras.forEach((par, i) => { ch.push(body(par)); if (i < paras.length - 1) ch.push(blank()); });
+  }
+
+  // ── Header / Footer ───────────────────────────────────────────────────────
+  const docHeader = new Header({ children: [
+    new Paragraph({ alignment: AlignmentType.LEFT, border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'E8E1D8' } }, spacing: { before: 0, after: 80 },
+      children: [new TextRun({ text: companyInfo.name || 'Company Brief', font: 'Calibri', size: 18, italics: true, color: MID })] }),
+  ]});
+  const docFooter = new Footer({ children: [
+    new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 80, after: 0 }, children: [
+      new TextRun({ text: 'FinSight AI  ·  Page ', font: 'Calibri', size: 18, color: MID }),
+      new TextRun({ children: [PageNumber.CURRENT], font: 'Calibri', size: 18, color: MID }),
+      new TextRun({ text: ' of ', font: 'Calibri', size: 18, color: MID }),
+      new TextRun({ children: [PageNumber.TOTAL_PAGES], font: 'Calibri', size: 18, color: MID }),
+      new TextRun({ text: '  ·  finsightai.org', font: 'Calibri', size: 18, color: MID }),
+    ]}),
+  ]});
+
+  const doc = new Document({
+    title: `${companyInfo.name || 'Company'} - Company Brief`,
+    subject: 'Brief company analysis',
+    creator: 'FinSight AI',
+    keywords: 'company brief, financial analysis, India',
+    numbering: {
+      config: [{
+        reference: 'bb',
+        levels: [{
+          level: 0, format: levelBulletFmt, text: '•', alignment: AlignmentType.LEFT,
+          style: { paragraph: { indent: { left: 720, hanging: 360 } }, run: { font: 'Symbol', size: 20 } },
+        }],
+      }],
+    },
+    sections: [{
+      properties: { page: { margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }, size: { height: 16838, width: 11906 } } },
+      headers: { default: docHeader },
+      footers: { default: docFooter },
+      children: ch,
+    }],
+  });
+
+  const buffer = await Packer.toBuffer(doc);
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+
+  // Filename: FinSight_BBraun_FY24-25_CompanyBrief.docx
+  const slug = (companyInfo.name || 'Company').replace(/\b(Private|Pvt|Limited|Ltd|Public|Inc|Corp|Company|Co|LLP|Group|Holdings)\b/gi, '').replace(/[^a-zA-Z0-9 ]/g, '').trim().split(/\s+/).slice(0, 4).join('_').substring(0, 25) || 'Company';
+  const ym = (companyInfo.period || '').match(/\b(20\d{2})\b/g);
+  const fyTag = ym?.length >= 2 ? `_FY${ym[ym.length - 2].slice(-2)}-${ym[ym.length - 1].slice(-2)}` : '';
+  const fileName = `FinSight_${slug}${fyTag}_CompanyBrief.docx`;
+
+  return { blob, fileName, pageCount: 12 };
+}
+
 function validateExtractedData(agg) {
   const warnings = [];
   if (agg.tax != null && agg.netIncome != null && agg.tax === agg.netIncome)
@@ -1963,10 +2304,12 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       }
     }
 
-    if (selectedOutputs.briefWord && typeof generateBriefWordDoc === 'function') {
-      onProgress?.("Generating brief company note...");
+    if (selectedOutputs.briefWord) {
       try {
-        briefWordResult = await generateBriefWordDoc(chunkResults, companyInfo, ratios, swot);
+        onProgress?.("Generating company narrative (AI)...");
+        const briefNarrative = await generateBriefNarrative(companyInfo, aggregated, aggregatedPrior, ratios, swot, chunkResults);
+        onProgress?.("Building brief company note...");
+        briefWordResult = await generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggregatedPrior, ratios, swot, briefNarrative);
       } catch (briefErr) {
         console.error("[processPrivateCompanyDoc] Brief Word generation failed:", briefErr);
       }
@@ -1974,7 +2317,7 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
 
     const anyGenerated = pdfResult || docxResult || excelResult || briefWordResult;
     const anyRequested = selectedOutputs.detailedPdf || selectedOutputs.detailedWord || selectedOutputs.excel ||
-      (selectedOutputs.briefWord && typeof generateBriefWordDoc === 'function');
+      selectedOutputs.briefWord;
     if (anyRequested && !anyGenerated) {
       throw pdfError || new Error("All document generation attempts failed.");
     }
