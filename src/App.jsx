@@ -4211,7 +4211,8 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       });
     }
 
-    onProgress?.("🔢 Running sanity validation and cross-checking figures...");
+    onProgress?.("✅ Cross-validating figures across pages...");
+    onProgress?.("🔢 Running sanity checks & blocking errors...");
     const aggregated = aggregateFinancialData(chunkResults);
     computeDerivedFinancials(aggregated);
 
@@ -4432,6 +4433,8 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       queuePendingAnalysis(companyInfo, aggregated, aggregatedPrior, ratios, swot);
     }
 
+    onProgress?.("✅ Complete — your documents are ready");
+
     return {
       pdfBlob: pdfResult?.pdfBlob || null,
       pdfFileName: pdfResult?.fileName || null,
@@ -4489,27 +4492,44 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
 
   const wb = XLSX.utils.book_new();
 
-  // ── Style helpers (xlsx-js-style) ─────────────────────────────────────────
+  // ── Style helpers (xlsx-js-style) — Goldman Sachs navy palette ───────────
   const HDR_STYLE = {
-    fill: { patternType: 'solid', fgColor: { rgb: '1B4332' } },
+    fill: { patternType: 'solid', fgColor: { rgb: '0F2044' } },
     font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 10, name: 'Calibri' },
     alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
   };
+  const SECT_HDR_STYLE = {
+    fill: { patternType: 'solid', fgColor: { rgb: '1B3A6B' } },
+    font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 10, name: 'Calibri' },
+    alignment: { vertical: 'center', wrapText: false },
+  };
   const ALT_STYLE = {
-    fill: { patternType: 'solid', fgColor: { rgb: 'F0F4F0' } },
+    fill: { patternType: 'solid', fgColor: { rgb: 'E8EDF5' } },
     alignment: { vertical: 'center', wrapText: false },
   };
   const TOTAL_STYLE = {
-    font: { bold: true, name: 'Calibri', sz: 10 },
-    border: {
-      top: { style: 'thin', color: { rgb: '1B4332' } },
-      bottom: { style: 'medium', color: { rgb: '1B4332' } },
-    },
+    fill: { patternType: 'solid', fgColor: { rgb: '0F2044' } },
+    font: { bold: true, name: 'Calibri', sz: 10, color: { rgb: 'FFFFFF' } },
     alignment: { vertical: 'center' },
   };
+  const SUBTOTAL_STYLE = {
+    fill: { patternType: 'solid', fgColor: { rgb: 'E8EDF5' } },
+    font: { bold: true, name: 'Calibri', sz: 10, color: { rgb: '0F2044' } },
+    alignment: { vertical: 'center' },
+  };
+  const MARGIN_STYLE = {
+    fill: { patternType: 'solid', fgColor: { rgb: 'F5F7FA' } },
+    font: { italic: true, sz: 9, name: 'Calibri', color: { rgb: '4A5568' } },
+    alignment: { vertical: 'center', horizontal: 'right' },
+  };
   const NEG_STYLE = { font: { color: { rgb: 'C0392B' }, name: 'Calibri', sz: 10 } };
-  const TITLE_STYLE = { font: { bold: true, sz: 13, name: 'Calibri', color: { rgb: '1B4332' } } };
+  const TITLE_STYLE = { font: { bold: true, sz: 13, name: 'Calibri', color: { rgb: '0F2044' } } };
   const SUB_HDR_STYLE = { font: { italic: true, sz: 9, name: 'Calibri', color: { rgb: '555555' } } };
+  const GREEN_CELL  = { fill: { patternType: 'solid', fgColor: { rgb: 'D4EFDF' } }, font: { color: { rgb: '1B6B4A' }, bold: true, sz: 10, name: 'Calibri' } };
+  const AMBER_CELL  = { fill: { patternType: 'solid', fgColor: { rgb: 'FAD7A0' } }, font: { color: { rgb: '7D5700' }, bold: true, sz: 10, name: 'Calibri' } };
+  const RED_CELL    = { fill: { patternType: 'solid', fgColor: { rgb: 'FADBD8' } }, font: { color: { rgb: 'C0392B' }, bold: true, sz: 10, name: 'Calibri' } };
+  const GREY_CELL   = { fill: { patternType: 'solid', fgColor: { rgb: 'F0F0F0' } }, font: { color: { rgb: '888888' }, sz: 10, name: 'Calibri' } };
+  const BLUE_CELL   = { fill: { patternType: 'solid', fgColor: { rgb: 'D6EAF8' } }, font: { bold: true, color: { rgb: '154360' }, sz: 10, name: 'Calibri' } };
 
   // Apply consistent styles to a worksheet
   function styleSheet(ws, dataRows, headerRows, totalRowLabels) {
@@ -4684,198 +4704,385 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   })();
   const qualityLabel = qualityScore >= 80 ? 'HIGH — Data complete' : qualityScore >= 50 ? 'MEDIUM — Some gaps' : 'LOW — Extraction limited';
 
-  const coverRows = [
-    ['FinSight AI — Financial Analysis Report'],
-    [''],
-    ['Company Name', name],
-    ['CIN', cin || (documentMetadata.isMCA ? 'MCA Filing (CIN not detected)' : '—')],
-    ['Reporting Period', period || '—'],
-    ['Currency', currency],
-    ['Unit', unit],
-    ['Document Type', documentMetadata.docType || 'Unknown'],
-    ['Indian MCA Filing', documentMetadata.isMCA ? 'Yes' : 'No'],
-    [''],
-    ['DATA QUALITY ASSESSMENT'],
-    ['Overall Score', `${qualityScore}% — ${qualityLabel}`],
-    ['Financial Pages Detected', (documentMetadata.financialPageNums || []).length || '—'],
-    ['Claude Vision Pages Processed', (documentMetadata.visionPageLog || []).filter(p => p.itemCount > 0).length || '—'],
-    ['Sanity Blocks Applied', (visionStructuredData.errorLog || []).length],
-    [''],
-    ['KEY FINANCIAL METRICS'],
-    ['Revenue', a.revenue != null ? `₹${a.revenue.toLocaleString('en-IN')} ${unit}` : '—'],
-    ['Net Profit (PAT)', a.netIncome != null ? `₹${a.netIncome.toLocaleString('en-IN')} ${unit}` : '—'],
-    ['EBITDA', a.ebitda != null ? `₹${a.ebitda.toLocaleString('en-IN')} ${unit}` : '—'],
-    ['Total Assets', a.totalAssets != null ? `₹${a.totalAssets.toLocaleString('en-IN')} ${unit}` : '—'],
-    ['Total Equity', a.totalEquity != null ? `₹${a.totalEquity.toLocaleString('en-IN')} ${unit}` : '—'],
-    [''],
-    ['Prepared by', 'FinSight AI | finsightai.org'],
-    ['Generated on', todayStr],
-    ['Authors', AUTHOR_NAME],
-  ];
-  const wsCover = XLSX.utils.aoa_to_sheet(coverRows);
-  wsCover['!cols'] = [{ wch: 28 }, { wch: 45 }];
-  // Style cover sheet
-  const coverTitleAddr = XLSX.utils.encode_cell({ r: 0, c: 0 });
-  if (wsCover[coverTitleAddr]) wsCover[coverTitleAddr].s = { ...TITLE_STYLE, font: { ...TITLE_STYLE.font, sz: 16 } };
-  ['DATA QUALITY ASSESSMENT', 'KEY FINANCIAL METRICS'].forEach(section => {
-    const idx = coverRows.findIndex(r => r[0] === section);
-    if (idx >= 0) {
-      const a = XLSX.utils.encode_cell({ r: idx, c: 0 });
-      if (wsCover[a]) wsCover[a].s = { ...HDR_STYLE };
-    }
-  });
-  XLSX.utils.book_append_sheet(wb, wsCover, 'Cover');
-  XLSX.utils.book_append_sheet(wb, wsCharts, 'Chart Data');
+  // Financial health scoring for Summary sheet
+  const health = (() => {
+    const netMargin = (a.netIncome != null && a.revenue != null && a.revenue > 0) ? (a.netIncome / a.revenue) * 100 : null;
+    const ebitdaMargin = (a.ebitda != null && a.revenue != null && a.revenue > 0) ? (a.ebitda / a.revenue) * 100 : null;
+    const currentRatio = (a.currentAssets != null && a.currentLiabilities != null && a.currentLiabilities > 0) ? a.currentAssets / a.currentLiabilities : null;
+    const debtEquity = (a.totalDebt != null && a.totalEquity != null && a.totalEquity > 0) ? a.totalDebt / a.totalEquity : null;
+    const revGrowth = (hasPrior && a.revenue != null && p.revenue != null && p.revenue > 0) ? ((a.revenue - p.revenue) / p.revenue) * 100 : null;
+    return {
+      profitability: netMargin != null ? (netMargin > 10 ? 'GREEN' : netMargin > 3 ? 'AMBER' : 'RED') : 'GREY',
+      liquidity:     currentRatio != null ? (currentRatio >= 1.5 ? 'GREEN' : currentRatio >= 1.0 ? 'AMBER' : 'RED') : 'GREY',
+      leverage:      debtEquity != null ? (debtEquity <= 0.5 ? 'GREEN' : debtEquity <= 1.5 ? 'AMBER' : 'RED') : 'GREY',
+      growth:        revGrowth != null ? (revGrowth > 15 ? 'GREEN' : revGrowth > 0 ? 'AMBER' : 'RED') : 'GREY',
+    };
+  })();
+  const hLabel = { GREEN: 'Healthy', AMBER: 'Moderate', RED: 'Needs Attention', GREY: 'Insufficient Data' };
+  const fmtV = (v) => v != null ? `${currency === 'INR' ? '₹' : currency} ${v.toLocaleString('en-IN')} ${unit}` : '—';
 
-  // ── Sheet 2 · P&L ─────────────────────────────────────────────────────────
-  const plRows = [
-    [`${name} — Profit & Loss Statement`],
+  const summaryRows = [
+    [`${name} — Financial Analysis Summary`],
     [subHdr],
     [''],
-    colHdrsPL,
-    sh('REVENUE'),
-    dr('Total Revenue',                a.revenue,         p.revenue,         true),
-    dr('Cost of Goods Sold (COGS)',     a.cogs,            p.cogs,            true),
-    dr('Gross Profit',                 a.grossProfit,     p.grossProfit,     true),
+    ['COMPANY PROFILE'],
+    ['Company Name', name],
+    ['CIN / Registration', cin || (documentMetadata.isMCA ? 'MCA Filing' : '—')],
+    ['Reporting Period', period || '—'],
+    ['Currency & Unit', `${currency} — ${unit}`],
+    ['Document Type', documentMetadata.docType || 'Unknown'],
+    ['Sector', documentMetadata.sector || '—'],
     [''],
-    sh('OPERATING EXPENSES'),
-    dr('Depreciation & Amortisation',  a.depreciation,    p.depreciation,    true),
-    dr('Interest / Finance Costs',     a.interestExpense, p.interestExpense, true),
+    ['FINANCIAL HEALTH SCORECARD'],
+    ['Pillar', 'Status', 'Indicator'],
+    ['Profitability', hLabel[health.profitability], health.profitability],
+    ['Liquidity', hLabel[health.liquidity], health.liquidity],
+    ['Leverage', hLabel[health.leverage], health.leverage],
+    ['Revenue Growth', hLabel[health.growth], health.growth],
     [''],
-    sh('PROFITABILITY'),
-    dr('EBITDA',                       a.ebitda,          p.ebitda,          true),
-    dr('Operating Profit (EBIT)',      a.operatingProfit, p.operatingProfit, true),
-    dr('Profit Before Tax (PBT)',      a.pbt,             p.pbt,             true),
-    dr('Tax',                          a.tax,             p.tax,             true),
-    dr('Net Income / PAT',             a.netIncome,       p.netIncome,       true),
+    ['KEY FINANCIAL METRICS', fyLabels.cur, hasPrior ? fyLabels.pri : ''],
+    ['Revenue from Operations', fmtV(a.revenue), hasPrior ? fmtV(p.revenue) : ''],
+    ['EBITDA', fmtV(a.ebitda), hasPrior ? fmtV(p.ebitda) : ''],
+    ['Net Profit (PAT)', fmtV(a.netIncome), hasPrior ? fmtV(p.netIncome) : ''],
+    ['Total Assets', fmtV(a.totalAssets), hasPrior ? fmtV(p.totalAssets) : ''],
+    ['Total Equity', fmtV(a.totalEquity), hasPrior ? fmtV(p.totalEquity) : ''],
+    [''],
+    ['DATA QUALITY'],
+    ['Overall Quality Score', `${qualityScore}% — ${qualityLabel}`],
+    ['Financial Pages Detected', (documentMetadata.financialPageNums || []).length || '—'],
+    ['Vision Pages Processed', (documentMetadata.visionPageLog || []).filter(vp => vp.itemCount > 0).length || '—'],
+    ['Sanity Blocks Applied', (visionStructuredData.errorLog || []).length],
+    [''],
+    ['Prepared by FinSight AI  |  finsightai.org  |  ' + todayStr],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = [{ wch: 28 }, { wch: 38 }, { wch: 20 }];
+  // Style Summary sheet
+  const sumSectRows = [3, 11, 18, 25];
+  const sumHdrRows = [12];
+  sumSectRows.forEach(r => {
+    const addr = XLSX.utils.encode_cell({ r, c: 0 });
+    if (wsSummary[addr]) wsSummary[addr].s = HDR_STYLE;
+  });
+  sumHdrRows.forEach(r => {
+    for (let c = 0; c < 3; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (wsSummary[addr]) wsSummary[addr].s = HDR_STYLE;
+    }
+  });
+  // Traffic light colours for health scorecard (rows 13-16)
+  [13, 14, 15, 16].forEach(r => {
+    const statusCell = wsSummary[XLSX.utils.encode_cell({ r, c: 2 })];
+    if (!statusCell) return;
+    const st = statusCell.v;
+    const style = st === 'GREEN' ? GREEN_CELL : st === 'AMBER' ? AMBER_CELL : st === 'RED' ? RED_CELL : GREY_CELL;
+    wsSummary[XLSX.utils.encode_cell({ r, c: 1 })].s = style;
+    statusCell.s = style;
+  });
+  if (wsSummary['A1']) wsSummary['A1'].s = { ...TITLE_STYLE, font: { ...TITLE_STYLE.font, sz: 16 } };
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+
+  // ── Sheet 2 · P&L ─────────────────────────────────────────────────────────
+  // Margin row: percentage of total income, with pp change as YoY
+  const totalIncome  = a.revenue  != null ? a.revenue  + (a.otherIncome  ?? 0) : null;
+  const totalIncomeP = hasPrior && p.revenue != null ? p.revenue + (p.otherIncome ?? 0) : null;
+  const mrow = (label, curNum, curDen, priNum, priDen) => {
+    const fmtPct = (num, den) => (num != null && den != null && den !== 0) ? `${((num / den) * 100).toFixed(1)}%` : NA;
+    const bps = (curNum != null && curDen && priNum != null && priDen)
+      ? (() => { const d = (curNum / curDen - priNum / priDen) * 100; return `${d >= 0 ? '+' : ''}${d.toFixed(1)} pp`; })() : NA;
+    const base = [label, NA, NA, NA, NA];
+    if (hasPrior) { base.push(fmtPct(priNum, priDen)); base.push(fmtPct(curNum, curDen)); base.push(bps); base.push(NA); }
+    else { base.push(fmtPct(curNum, curDen)); base.push(NA); }
+    return base;
+  };
+
+  // plMeta tracks row type for targeted styling (parallel to plRows)
+  const plMeta = [];
+  const plR = (type, row) => { plMeta.push(type); return row; };
+
+  const plRows = [
+    plR('title',   [`${name} — Profit & Loss Statement`]),
+    plR('subhdr',  [subHdr]),
+    plR('blank',   ['']),
+    plR('hdr',     colHdrsPL),
+    // ── Revenue ──
+    plR('data',    dr('Revenue from Operations',           a.revenue,         p.revenue,         true)),
+    plR('data',    dr('Other Income',                      null,              null,              true)),
+    plR('total',   dr('Total Income',                      totalIncome,       totalIncomeP,      true)),
+    plR('blank',   ['']),
+    // ── Expenses ──
+    plR('sect',    sh('EXPENSES')),
+    plR('data',    dr('Cost of Materials Consumed',        null,              null,              true)),
+    plR('data',    dr('Purchases of Stock in Trade',       null,              null,              true)),
+    plR('data',    dr('Changes in Inventories',            null,              null,              true)),
+    plR('data',    dr('Employee Benefit Expenses',         null,              null,              true)),
+    plR('data',    dr('Finance Costs',                     a.interestExpense, p.interestExpense, true)),
+    plR('data',    dr('Depreciation and Amortisation',     a.depreciation,    p.depreciation,    true)),
+    plR('data',    dr('Other Expenses',                    null,              null,              true)),
+    plR('total',   dr('Total Expenses',                    a.cogs,            p.cogs,            true)),
+    plR('blank',   ['']),
+    // ── Profitability ──
+    plR('subtotal',dr(  'Gross Profit / (Loss)',            a.grossProfit,     p.grossProfit,     true)),
+    plR('margin',  mrow('  Gross Margin %',               a.grossProfit,     totalIncome,       p.grossProfit,   totalIncomeP)),
+    plR('subtotal',dr('EBITDA',                            a.ebitda,          p.ebitda,          true)),
+    plR('margin',  mrow('  EBITDA Margin %',               a.ebitda,          totalIncome,       p.ebitda,        totalIncomeP)),
+    plR('subtotal',dr('Operating Profit (EBIT)',           a.operatingProfit, p.operatingProfit, true)),
+    plR('margin',  mrow('  EBIT Margin %',                 a.operatingProfit, totalIncome,       p.operatingProfit, totalIncomeP)),
+    plR('subtotal',dr('Profit Before Tax (PBT)',           a.pbt,             p.pbt,             true)),
+    plR('margin',  mrow('  PBT Margin %',                  a.pbt,             totalIncome,       p.pbt,           totalIncomeP)),
+    plR('data',    dr('Tax Expense',                       a.tax,             p.tax,             true)),
+    plR('data',    dr('  Current Tax',                     null,              null,              true)),
+    plR('data',    dr('  Deferred Tax',                    null,              null,              true)),
+    plR('total',   dr('Net Profit / (Loss) — PAT',         a.netIncome,       p.netIncome,       true)),
+    plR('margin',  mrow('  Net Margin %',                  a.netIncome,       totalIncome,       p.netIncome,     totalIncomeP)),
+    plR('blank',   ['']),
+    plR('data',    dr('EPS — Basic',                       null,              null,              true)),
+    plR('data',    dr('EPS — Diluted',                     null,              null,              true)),
   ];
   const wsPL = XLSX.utils.aoa_to_sheet(plRows);
   wsPL['!cols'] = finColsPL;
-  styleSheet(wsPL, plRows, 4, ['gross profit', 'ebitda', 'net income / pat', 'total revenue']);
+  wsPL['!freeze'] = { xSplit: 1, ySplit: 4 };
+  // Apply row-level styles
+  plMeta.forEach((type, r) => {
+    const numC = (plRows[r] || []).length;
+    for (let c = 0; c < numC; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!wsPL[addr]) continue;
+      const isNeg = typeof wsPL[addr].v === 'number' && wsPL[addr].v < 0;
+      if (type === 'title')   wsPL[addr].s = TITLE_STYLE;
+      else if (type === 'subhdr') wsPL[addr].s = SUB_HDR_STYLE;
+      else if (type === 'hdr')    wsPL[addr].s = HDR_STYLE;
+      else if (type === 'sect')   wsPL[addr].s = SECT_HDR_STYLE;
+      else if (type === 'total')  wsPL[addr].s = { ...TOTAL_STYLE, ...(isNeg ? { font: { ...TOTAL_STYLE.font, color: { rgb: 'FF4444' } } } : {}) };
+      else if (type === 'subtotal') wsPL[addr].s = { ...SUBTOTAL_STYLE };
+      else if (type === 'margin')  wsPL[addr].s = MARGIN_STYLE;
+      else if (type === 'data') wsPL[addr].s = { ...(r % 2 === 0 ? ALT_STYLE : { alignment: { vertical: 'center' } }), ...(isNeg ? NEG_STYLE : {}) };
+    }
+  });
   XLSX.utils.book_append_sheet(wb, wsPL, 'P&L');
 
-  // ── Sheet 2 · Balance Sheet ───────────────────────────────────────────────
+  // ── Sheet 3 · Balance Sheet ───────────────────────────────────────────────
+  const bsMeta = [];
+  const bsR = (type, row) => { bsMeta.push(type); return row; };
+  // Balance check: Total Assets = Total Equity + Liabilities
+  const balanceCheck = (() => {
+    const tE = a.totalEquity ?? 0;
+    const tL = a.totalLiabilities ?? 0;
+    if (a.totalAssets == null) return null;
+    const diff = a.totalAssets - (tE + tL);
+    return Math.abs(diff) < 1 ? 'BALANCED ✓' : `Off by ${Math.abs(diff).toFixed(0)} ${unit}`;
+  })();
   const bsRows = [
-    [`${name} — Balance Sheet`],
-    [subHdr],
-    [''],
-    colHdrs,
-    sh('ASSETS'),
-    dr('Total Assets',                 a.totalAssets,           p.totalAssets),
-    dr('  Current Assets',             a.currentAssets,         p.currentAssets),
-    dr('    Cash & Equivalents',       a.cash,                  p.cash),
-    dr('    Trade Receivables',        a.receivables,           p.receivables),
-    dr('    Inventory',                a.inventory,             p.inventory),
-    dr('  Non-Current Assets',         a.nonCurrentAssets,      p.nonCurrentAssets),
-    dr('    Fixed Assets / PPE',       a.fixedAssets,           p.fixedAssets),
-    [''],
-    sh('LIABILITIES'),
-    dr('Total Liabilities',            a.totalLiabilities,      p.totalLiabilities),
-    dr('  Current Liabilities',        a.currentLiabilities,    p.currentLiabilities),
-    dr('    Trade Payables',           a.tradePayables,         p.tradePayables),
-    dr('    Short-term Borrowings',    a.shortTermDebt,         p.shortTermDebt),
-    dr('  Non-Current Liabilities',    a.nonCurrentLiabilities, p.nonCurrentLiabilities),
-    dr('    Long-term Borrowings',     a.longTermDebt,          p.longTermDebt),
-    dr('  Total Debt',                 a.totalDebt,             p.totalDebt),
-    [''],
-    sh('EQUITY'),
-    dr('Total Equity / Net Worth',     a.totalEquity,           p.totalEquity),
-    [''],
-    sh('WORKING CAPITAL'),
-    dr('Working Capital',              a.workingCapital,        p.workingCapital),
+    bsR('title',   [`${name} — Balance Sheet`]),
+    bsR('subhdr',  [subHdr]),
+    bsR('blank',   ['']),
+    bsR('hdr',     colHdrs),
+    // ── Equity & Liabilities ──
+    bsR('sect',    sh('EQUITY & LIABILITIES')),
+    bsR('data',    dr('Share Capital',                   null,                    null)),
+    bsR('data',    dr('Reserves & Surplus',              null,                    null)),
+    bsR('total',   dr('Total Equity / Net Worth',        a.totalEquity,           p.totalEquity)),
+    bsR('sect',    sh('NON-CURRENT LIABILITIES')),
+    bsR('data',    dr('Long-term Borrowings',            a.longTermDebt,          p.longTermDebt)),
+    bsR('data',    dr('Deferred Tax Liabilities',        null,                    null)),
+    bsR('data',    dr('Other Non-Current Liabilities',   null,                    null)),
+    bsR('subtotal',dr('Total NCL',                       a.nonCurrentLiabilities, p.nonCurrentLiabilities)),
+    bsR('sect',    sh('CURRENT LIABILITIES')),
+    bsR('data',    dr('Short-term Borrowings',           a.shortTermDebt,         p.shortTermDebt)),
+    bsR('data',    dr('Trade Payables',                  a.tradePayables,         p.tradePayables)),
+    bsR('data',    dr('Other Current Liabilities',       null,                    null)),
+    bsR('data',    dr('Short-term Provisions',           null,                    null)),
+    bsR('subtotal',dr('Total Current Liabilities',       a.currentLiabilities,    p.currentLiabilities)),
+    bsR('total',   dr('TOTAL EQUITY & LIABILITIES',      a.totalAssets,           p.totalAssets)),
+    bsR('blank',   ['']),
+    // ── Assets ──
+    bsR('sect',    sh('NON-CURRENT ASSETS')),
+    bsR('data',    dr('Property, Plant & Equipment',     a.fixedAssets,           p.fixedAssets)),
+    bsR('data',    dr('Intangibles / Goodwill',          null,                    null)),
+    bsR('data',    dr('Capital Work-in-Progress',        null,                    null)),
+    bsR('data',    dr('Non-current Investments',         null,                    null)),
+    bsR('data',    dr('Deferred Tax Assets',             null,                    null)),
+    bsR('data',    dr('LT Loans & Advances',             null,                    null)),
+    bsR('data',    dr('Other Non-Current Assets',        null,                    null)),
+    bsR('subtotal',dr('Total NCA',                       a.nonCurrentAssets,      p.nonCurrentAssets)),
+    bsR('sect',    sh('CURRENT ASSETS')),
+    bsR('data',    dr('Inventories',                     a.inventory,             p.inventory)),
+    bsR('data',    dr('Trade Receivables',               a.receivables,           p.receivables)),
+    bsR('data',    dr('Cash & Equivalents',              a.cash,                  p.cash)),
+    bsR('data',    dr('Short-term Investments',          null,                    null)),
+    bsR('data',    dr('ST Loans & Advances',             null,                    null)),
+    bsR('data',    dr('Other Current Assets',            null,                    null)),
+    bsR('subtotal',dr('Total Current Assets',            a.currentAssets,         p.currentAssets)),
+    bsR('total',   dr('TOTAL ASSETS',                    a.totalAssets,           p.totalAssets)),
+    bsR('data',    ['Balance Check', balanceCheck ?? '—', ...Array(Math.max(0, colHdrs.length - 2)).fill('')]),
   ];
   const wsBS = XLSX.utils.aoa_to_sheet(bsRows);
   wsBS['!cols'] = finCols;
-  styleSheet(wsBS, bsRows, 4, ['total assets', 'total liabilities', 'total equity / net worth', '  total debt']);
+  wsBS['!freeze'] = { xSplit: 1, ySplit: 4 };
+  bsMeta.forEach((type, r) => {
+    const numC = (bsRows[r] || []).length;
+    for (let c = 0; c < numC; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!wsBS[addr]) continue;
+      const isNeg = typeof wsBS[addr].v === 'number' && wsBS[addr].v < 0;
+      if (type === 'title')    wsBS[addr].s = TITLE_STYLE;
+      else if (type === 'subhdr')   wsBS[addr].s = SUB_HDR_STYLE;
+      else if (type === 'hdr')      wsBS[addr].s = HDR_STYLE;
+      else if (type === 'sect')     wsBS[addr].s = SECT_HDR_STYLE;
+      else if (type === 'total')    wsBS[addr].s = { ...TOTAL_STYLE, ...(isNeg ? { font: { ...TOTAL_STYLE.font, color: { rgb: 'FF4444' } } } : {}) };
+      else if (type === 'subtotal') wsBS[addr].s = SUBTOTAL_STYLE;
+      else if (type === 'data')     wsBS[addr].s = { ...(r % 2 === 0 ? ALT_STYLE : { alignment: { vertical: 'center' } }), ...(isNeg ? NEG_STYLE : {}) };
+    }
+  });
   XLSX.utils.book_append_sheet(wb, wsBS, 'Balance Sheet');
 
-  // ── Sheet 3 · Cash Flow ───────────────────────────────────────────────────
+  // ── Sheet 4 · Cash Flow ───────────────────────────────────────────────────
+  const cfMeta = [];
+  const cfR = (type, row) => { cfMeta.push(type); return row; };
+  const netCashChange = (a.operatingCashFlow != null || a.investingCashFlow != null || a.financingCashFlow != null)
+    ? (a.operatingCashFlow ?? 0) + (a.investingCashFlow ?? 0) + (a.financingCashFlow ?? 0) : null;
+  const netCashChangeP = hasPrior ? (p.operatingCashFlow ?? 0) + (p.investingCashFlow ?? 0) + (p.financingCashFlow ?? 0) : null;
+  const fcfVal  = (a.operatingCashFlow != null) ? a.operatingCashFlow : null; // Capex sub-item not available
+  const fcfValP = hasPrior && p.operatingCashFlow != null ? p.operatingCashFlow : null;
   const cfRows = [
-    [`${name} — Cash Flow Statement`],
-    [subHdr],
-    [''],
-    colHdrs,
-    dr('Operating Cash Flow (CFO)',    a.operatingCashFlow,  p.operatingCashFlow),
-    dr('Investing Cash Flow (CFI)',    a.investingCashFlow,  p.investingCashFlow),
-    dr('Financing Cash Flow (CFF)',    a.financingCashFlow,  p.financingCashFlow),
+    cfR('title',   [`${name} — Cash Flow Statement`]),
+    cfR('subhdr',  [subHdr]),
+    cfR('blank',   ['']),
+    cfR('hdr',     colHdrs),
+    // ── Operating ──
+    cfR('sect',    sh('OPERATING ACTIVITIES')),
+    cfR('data',    dr('Profit Before Tax (PBT)',              a.pbt,               p.pbt)),
+    cfR('data',    dr('Add: Depreciation & Amortisation',    a.depreciation,      p.depreciation)),
+    cfR('data',    dr('Add: Finance Costs',                  a.interestExpense,   p.interestExpense)),
+    cfR('sect',    sh('Working Capital Changes')),
+    cfR('data',    dr('(Increase) / Decrease in Inventories', null,               null)),
+    cfR('data',    dr('(Increase) / Decrease in Receivables', null,               null)),
+    cfR('data',    dr('Increase / (Decrease) in Payables',    null,               null)),
+    cfR('data',    dr('Taxes Paid',                           null,               null)),
+    cfR('total',   dr('Net Cash from Operating (CFO)',         a.operatingCashFlow, p.operatingCashFlow)),
+    // ── Investing ──
+    cfR('sect',    sh('INVESTING ACTIVITIES')),
+    cfR('data',    dr('Capital Expenditure (Capex)',           null,               null)),
+    cfR('data',    dr('Sale of Fixed Assets',                  null,               null)),
+    cfR('data',    dr('Investments (Net)',                     null,               null)),
+    cfR('data',    dr('Interest Received',                     null,               null)),
+    cfR('total',   dr('Net Cash from Investing (CFI)',          a.investingCashFlow, p.investingCashFlow)),
+    // ── Financing ──
+    cfR('sect',    sh('FINANCING ACTIVITIES')),
+    cfR('data',    dr('Share Issuance / (Buyback)',            null,               null)),
+    cfR('data',    dr('Borrowings Raised',                    null,               null)),
+    cfR('data',    dr('Repayment of Borrowings',              null,               null)),
+    cfR('data',    dr('Interest / Finance Costs Paid',        null,               null)),
+    cfR('data',    dr('Dividends Paid',                       null,               null)),
+    cfR('total',   dr('Net Cash from Financing (CFF)',         a.financingCashFlow, p.financingCashFlow)),
+    cfR('blank',   ['']),
+    cfR('subtotal',dr('Net Change in Cash',                   netCashChange,      netCashChangeP)),
+    cfR('data',    dr('Opening Cash Balance',                 null,               null)),
+    cfR('data',    dr('Closing Cash Balance',                 a.cash,             p.cash)),
+    cfR('blank',   ['']),
+    cfR('blue',    dr('Free Cash Flow (CFO − Capex)*',        fcfVal,             fcfValP)),
+    cfR('data',    ['* Capex not separately extracted; FCF = CFO as proxy', ...Array(colHdrs.length - 1).fill('')]),
   ];
-  // Derive net change only when at least one component is available
-  if (a.operatingCashFlow != null || a.investingCashFlow != null || a.financingCashFlow != null) {
-    const netC = (a.operatingCashFlow ?? 0) + (a.investingCashFlow ?? 0) + (a.financingCashFlow ?? 0);
-    const netP = hasPrior
-      ? (p.operatingCashFlow ?? 0) + (p.investingCashFlow ?? 0) + (p.financingCashFlow ?? 0)
-      : null;
-    cfRows.push(dr('Net Change in Cash', netC, netP));
-  }
   const wsCF = XLSX.utils.aoa_to_sheet(cfRows);
   wsCF['!cols'] = finCols;
-  styleSheet(wsCF, cfRows, 4, ['net change in cash']);
+  wsCF['!freeze'] = { xSplit: 1, ySplit: 4 };
+  cfMeta.forEach((type, r) => {
+    const numC = (cfRows[r] || []).length;
+    for (let c = 0; c < numC; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!wsCF[addr]) continue;
+      const isNeg = typeof wsCF[addr].v === 'number' && wsCF[addr].v < 0;
+      if (type === 'title')    wsCF[addr].s = TITLE_STYLE;
+      else if (type === 'subhdr')   wsCF[addr].s = SUB_HDR_STYLE;
+      else if (type === 'hdr')      wsCF[addr].s = HDR_STYLE;
+      else if (type === 'sect')     wsCF[addr].s = SECT_HDR_STYLE;
+      else if (type === 'total')    wsCF[addr].s = { ...TOTAL_STYLE, ...(isNeg ? { font: { ...TOTAL_STYLE.font, color: { rgb: 'FF4444' } } } : {}) };
+      else if (type === 'subtotal') wsCF[addr].s = SUBTOTAL_STYLE;
+      else if (type === 'blue')     wsCF[addr].s = BLUE_CELL;
+      else if (type === 'data')     wsCF[addr].s = { ...(r % 2 === 0 ? ALT_STYLE : { alignment: { vertical: 'center' } }), ...(isNeg ? NEG_STYLE : {}) };
+    }
+  });
   XLSX.utils.book_append_sheet(wb, wsCF, 'Cash Flow');
 
-  // ── Sheet 4 · Ratios — with sector benchmarks ─────────────────────────────
-  const SECTOR_BENCHMARKS = {
-    'Gross Margin (%)':                   '35–45%',
-    'Net Margin (%)':                     '8–15%',
-    'EBITDA Margin (%)':                  '15–25%',
-    'Operating Margin (%)':               '12–20%',
-    'Return on Equity (%)':               '12–18%',
-    'Return on Assets (%)':               '8–14%',
-    'Return on Capital Employed (%)':     '15–20%',
-    'Current Ratio':                      '1.5–2.0x',
-    'Quick Ratio':                        '1.0–1.5x',
-    'Debt-to-Equity':                     '0.3–0.8x',
-    'Interest Coverage':                  '3.0–5.0x',
-    'Inventory Turnover':                 '4–8x',
-    'Receivables Days (DSO)':             '45–75 days',
-    'Payable Days (DPO)':                 '30–60 days',
-    'Asset Turnover':                     '0.8–1.5x',
+  // ── Sheet 5 · Key Ratios — sector-aware benchmarks ────────────────────────
+  const detectedSector = (documentMetadata.sector || '').toLowerCase();
+  const sectorBenchmarkMap = {
+    manufacturing:    { 'Gross Margin (%)': ['20','35'], 'EBITDA Margin (%)': ['10','18'], 'Net Margin (%)': ['4','8'], 'Operating Margin (%)': ['7','14'], 'Return on Equity (%)': ['12','20'], 'Return on Assets (%)': ['6','12'], 'Return on Capital Employed (%)': ['12','18'], 'Current Ratio': ['1.5','2.0'], 'Quick Ratio': ['0.8','1.2'], 'Debt-to-Equity': ['0.5','1.5'], 'Interest Coverage': ['3.0','6.0'], 'Inventory Turnover (x)': ['4','8'], 'Receivable Days (DSO)': ['45','75'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.5','1.0'] },
+    fmcg:             { 'Gross Margin (%)': ['40','60'], 'EBITDA Margin (%)': ['15','25'], 'Net Margin (%)': ['8','15'], 'Operating Margin (%)': ['12','20'], 'Return on Equity (%)': ['20','35'], 'Return on Assets (%)': ['12','20'], 'Return on Capital Employed (%)': ['20','35'], 'Current Ratio': ['1.0','1.5'], 'Quick Ratio': ['0.6','1.0'], 'Debt-to-Equity': ['0.1','0.5'], 'Interest Coverage': ['8','20'], 'Inventory Turnover (x)': ['8','15'], 'Receivable Days (DSO)': ['15','30'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['1.0','2.0'] },
+    it:               { 'Gross Margin (%)': ['55','75'], 'EBITDA Margin (%)': ['20','35'], 'Net Margin (%)': ['15','25'], 'Operating Margin (%)': ['18','30'], 'Return on Equity (%)': ['20','35'], 'Return on Assets (%)': ['15','25'], 'Return on Capital Employed (%)': ['20','35'], 'Current Ratio': ['2.0','3.5'], 'Quick Ratio': ['2.0','3.5'], 'Debt-to-Equity': ['0.0','0.3'], 'Interest Coverage': ['20','50'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['45','90'], 'Payable Days (DPO)': ['15','30'], 'Asset Turnover (x)': ['1.0','2.5'] },
+    healthcare:       { 'Gross Margin (%)': ['55','70'], 'EBITDA Margin (%)': ['20','35'], 'Net Margin (%)': ['12','20'], 'Operating Margin (%)': ['15','28'], 'Return on Equity (%)': ['15','25'], 'Return on Assets (%)': ['10','18'], 'Return on Capital Employed (%)': ['15','25'], 'Current Ratio': ['1.5','2.5'], 'Quick Ratio': ['1.0','2.0'], 'Debt-to-Equity': ['0.3','0.8'], 'Interest Coverage': ['5.0','15.0'], 'Inventory Turnover (x)': ['4','10'], 'Receivable Days (DSO)': ['45','90'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.4','0.8'] },
+    banking:          { 'Gross Margin (%)': ['—','—'], 'EBITDA Margin (%)': ['—','—'], 'Net Margin (%)': ['10','20'], 'Operating Margin (%)': ['—','—'], 'Return on Equity (%)': ['10','18'], 'Return on Assets (%)': ['1.0','2.0'], 'Return on Capital Employed (%)': ['—','—'], 'Current Ratio': ['—','—'], 'Quick Ratio': ['—','—'], 'Debt-to-Equity': ['—','—'], 'Interest Coverage': ['—','—'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['—','—'], 'Payable Days (DPO)': ['—','—'], 'Asset Turnover (x)': ['—','—'] },
+    'real estate':    { 'Gross Margin (%)': ['30','50'], 'EBITDA Margin (%)': ['20','35'], 'Net Margin (%)': ['8','20'], 'Operating Margin (%)': ['15','30'], 'Return on Equity (%)': ['8','18'], 'Return on Assets (%)': ['3','8'], 'Return on Capital Employed (%)': ['8','15'], 'Current Ratio': ['1.0','2.0'], 'Quick Ratio': ['0.5','1.0'], 'Debt-to-Equity': ['1.0','3.0'], 'Interest Coverage': ['2.0','5.0'], 'Inventory Turnover (x)': ['0.3','1.0'], 'Receivable Days (DSO)': ['60','120'], 'Payable Days (DPO)': ['30','90'], 'Asset Turnover (x)': ['0.1','0.4'] },
+    infrastructure:   { 'Gross Margin (%)': ['20','40'], 'EBITDA Margin (%)': ['25','45'], 'Net Margin (%)': ['5','15'], 'Operating Margin (%)': ['15','35'], 'Return on Equity (%)': ['8','15'], 'Return on Assets (%)': ['3','8'], 'Return on Capital Employed (%)': ['8','14'], 'Current Ratio': ['1.0','1.5'], 'Quick Ratio': ['0.8','1.2'], 'Debt-to-Equity': ['1.0','3.0'], 'Interest Coverage': ['2.0','4.0'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['60','120'], 'Payable Days (DPO)': ['30','90'], 'Asset Turnover (x)': ['0.2','0.5'] },
+    default:          { 'Gross Margin (%)': ['30','50'], 'EBITDA Margin (%)': ['12','22'], 'Net Margin (%)': ['5','12'], 'Operating Margin (%)': ['8','18'], 'Return on Equity (%)': ['10','20'], 'Return on Assets (%)': ['5','12'], 'Return on Capital Employed (%)': ['10','18'], 'Current Ratio': ['1.2','2.0'], 'Quick Ratio': ['0.8','1.5'], 'Debt-to-Equity': ['0.3','1.5'], 'Interest Coverage': ['3.0','8.0'], 'Inventory Turnover (x)': ['3','8'], 'Receivable Days (DSO)': ['30','75'], 'Payable Days (DPO)': ['25','60'], 'Asset Turnover (x)': ['0.5','1.5'] },
   };
+  const sectorKey = Object.keys(sectorBenchmarkMap).find(k => detectedSector.includes(k)) || 'default';
+  const SECTOR_BENCHMARKS = sectorBenchmarkMap[sectorKey];
+  const sectorLabel = sectorKey.charAt(0).toUpperCase() + sectorKey.slice(1);
+
+  // Traffic-light status: compare ratio value to [low, high] range
+  const getRatioStatus = (rawV, bKey, lowerIsBetter) => {
+    const bounds = SECTOR_BENCHMARKS[bKey];
+    if (!bounds || bounds[0] === '—') return 'NA';
+    const low = parseFloat(bounds[0]);
+    const high = parseFloat(bounds[1]);
+    if (isNaN(low) || isNaN(high) || rawV == null || isNaN(rawV)) return 'NA';
+    if (lowerIsBetter) {
+      return rawV <= high ? 'GREEN' : rawV <= high * 1.5 ? 'AMBER' : 'RED';
+    }
+    return (rawV >= low && rawV <= high) ? 'GREEN' : (rawV >= low * 0.7 || rawV >= high * 0.8) ? 'AMBER' : 'RED';
+  };
+  const LOWER_IS_BETTER = new Set(['Receivable Days (DSO)', 'Payable Days (DPO)', 'Debt-to-Equity']);
 
   const ratRows = [
-    [`${name} — Financial Ratios`],
-    [`Period: ${period}  |  Generated: ${todayStr}`],
-    [`Benchmarks: Indian Medical Devices & Healthcare Sector`],
+    [`${name} — Key Ratios`],
+    [`Period: ${period}  |  Benchmarks: ${sectorLabel} Sector  |  Generated: ${todayStr}`],
     [''],
-    ['Category', 'Ratio', 'Value', 'Sector Benchmark', 'Formula', 'Interpretation'],
+    ['Category', 'Ratio', 'Value', 'Sector Benchmark', 'Status', 'Formula / Interpretation'],
   ];
+  const ratStatusMap = {}; // row → status colour
   for (const cat of (ratios || [])) {
     for (const item of (cat.items || [])) {
       const rawV = item.rawValue;
       const val  = (rawV != null && !isNaN(rawV) && isFinite(rawV)) ? rawV : '—';
+      const bKey = item.name || '';
+      const bounds = SECTOR_BENCHMARKS[bKey];
+      const benchStr = bounds && bounds[0] !== '—'
+        ? (bKey.includes('Days') ? `${bounds[0]}–${bounds[1]} days`
+          : bKey.includes('(x)') ? `${bounds[0]}–${bounds[1]}x`
+          : `${bounds[0]}–${bounds[1]}%`)
+        : '—';
+      const statusVal = (rawV != null && !isNaN(rawV)) ? getRatioStatus(rawV, bKey, LOWER_IS_BETTER.has(bKey)) : 'NA';
+      ratStatusMap[ratRows.length] = statusVal;
       ratRows.push([
         cat.category        || '',
         item.name           || '',
         val,
-        SECTOR_BENCHMARKS[item.name] || '—',
-        item.formula        || '',
-        item.interpretation || '',
+        benchStr,
+        statusVal === 'NA' ? '—' : statusVal,
+        item.interpretation || item.formula || '',
       ]);
     }
-    ratRows.push(['', '', '', '', '', '']); // blank separator between categories
-  }
-  if (swot?.ratioInterpretations?.length) {
-    ratRows.push(['Company-Specific Interpretations', '', '', '', '', '']);
-    for (const interp of swot.ratioInterpretations) {
-      ratRows.push([
-        'Company-Specific',
-        interp.ratio  || '',
-        interp.value  || '—',
-        '—',
-        '',
-        interp.meaning || '',
-      ]);
-    }
+    ratRows.push(['', '', '', '', '', '']);
   }
   const wsRatios = XLSX.utils.aoa_to_sheet(ratRows);
-  wsRatios['!cols'] = [{ wch: 24 }, { wch: 28 }, { wch: 12 }, { wch: 18 }, { wch: 28 }, { wch: 50 }];
-  // Style header row (row 4)
+  wsRatios['!cols'] = [{ wch: 22 }, { wch: 28 }, { wch: 10 }, { wch: 18 }, { wch: 12 }, { wch: 52 }];
+  wsRatios['!freeze'] = { xSplit: 0, ySplit: 4 };
+  // Style header row (row 3)
   for (let c = 0; c < 6; c++) {
-    const addr = XLSX.utils.encode_cell({ r: 4, c });
-    if (wsRatios[addr]) wsRatios[addr].s = { ...HDR_STYLE };
+    const addr = XLSX.utils.encode_cell({ r: 3, c });
+    if (wsRatios[addr]) wsRatios[addr].s = HDR_STYLE;
   }
-  const ratTitleAddr = XLSX.utils.encode_cell({ r: 0, c: 0 });
-  if (wsRatios[ratTitleAddr]) wsRatios[ratTitleAddr].s = TITLE_STYLE;
-  XLSX.utils.book_append_sheet(wb, wsRatios, 'Ratios');
+  if (wsRatios['A1']) wsRatios['A1'].s = TITLE_STYLE;
+  if (wsRatios['A2']) wsRatios['A2'].s = SUB_HDR_STYLE;
+  // Apply traffic-light colours to Status column (col 4)
+  Object.entries(ratStatusMap).forEach(([rowStr, st]) => {
+    const r = parseInt(rowStr);
+    const addr = XLSX.utils.encode_cell({ r, c: 4 });
+    if (!wsRatios[addr]) return;
+    wsRatios[addr].s = st === 'GREEN' ? GREEN_CELL : st === 'AMBER' ? AMBER_CELL : st === 'RED' ? RED_CELL : GREY_CELL;
+  });
+  XLSX.utils.book_append_sheet(wb, wsRatios, 'Key Ratios');
 
   // ── Sheet 5 · SWOT ────────────────────────────────────────────────────────
   const bullets = (arr) =>
@@ -4903,40 +5110,41 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   const wsSWOT = XLSX.utils.aoa_to_sheet(swotRows);
   wsSWOT['!cols'] = [{ wch: 90 }];
   XLSX.utils.book_append_sheet(wb, wsSWOT, 'SWOT');
+  XLSX.utils.book_append_sheet(wb, wsCharts, 'Charts');
 
   // ── Validation sheet + cell highlighting ─────────────────────────────────
   try {
     const { years: vYears, sortedYears: vSorted } = wrapAggToYears(aggregated, aggregatedPrior);
     const vRes = validateFinancialData(vYears, vSorted);
-    // col offset shifts by +4 (historical N/A columns) — map to expanded column indices
-    // Historical cols 1-4 are N/A; actual data starts at col 5 (cur) or 5+6 (pri/cur)
+    // col offset shifts by +4 (historical N/A columns) — actual data at col 5+ or 6+
     const colToYrFin = hasPrior ? { 6: 'cur', 5: 'pri' } : { 5: 'cur' };
+    // P&L row indices in the new spec-order layout
     applyValidationStyles(wsPL, {
-      5:  { section: 'profit_loss', field: 'revenue' },
-      7:  { section: 'profit_loss', field: 'gross_profit' },
-      10: { section: 'profit_loss', field: 'depreciation' },
-      11: { section: 'profit_loss', field: 'interest_expense' },
-      14: { section: 'profit_loss', field: 'ebitda' },
-      15: { section: 'profit_loss', field: 'ebit' },
-      16: { section: 'profit_loss', field: 'pbt' },
-      17: { section: 'profit_loss', field: 'tax_expense' },
-      18: { section: 'profit_loss', field: 'net_income' },
+      4:  { section: 'profit_loss', field: 'revenue' },
+      13: { section: 'profit_loss', field: 'interest_expense' },
+      14: { section: 'profit_loss', field: 'depreciation' },
+      18: { section: 'profit_loss', field: 'gross_profit' },
+      20: { section: 'profit_loss', field: 'ebitda' },
+      22: { section: 'profit_loss', field: 'ebit' },
+      24: { section: 'profit_loss', field: 'pbt' },
+      26: { section: 'profit_loss', field: 'tax_expense' },
+      29: { section: 'profit_loss', field: 'net_income' },
     }, colToYrFin, vRes.rowFlags, XLSX);
+    // BS row indices in the new spec-order layout
     applyValidationStyles(wsBS, {
-      5:  { section: 'balance_sheet', field: 'total_assets' },
-      6:  { section: 'balance_sheet', field: 'current_assets' },
-      7:  { section: 'balance_sheet', field: 'cash_and_equivalents' },
-      10: { section: 'balance_sheet', field: 'non_current_assets' },
-      11: { section: 'balance_sheet', field: 'fixed_assets' },
-      14: { section: 'balance_sheet', field: 'total_liabilities' },
-      15: { section: 'balance_sheet', field: 'current_liabilities' },
-      20: { section: 'balance_sheet', field: 'total_debt' },
-      23: { section: 'balance_sheet', field: 'total_equity' },
+      7:  { section: 'balance_sheet', field: 'total_equity' },
+      18: { section: 'balance_sheet', field: 'current_liabilities' },
+      22: { section: 'balance_sheet', field: 'fixed_assets' },
+      29: { section: 'balance_sheet', field: 'non_current_assets' },
+      33: { section: 'balance_sheet', field: 'cash_and_equivalents' },
+      37: { section: 'balance_sheet', field: 'current_assets' },
+      38: { section: 'balance_sheet', field: 'total_assets' },
     }, colToYrFin, vRes.rowFlags, XLSX);
+    // CF row indices in the new spec-order layout
     applyValidationStyles(wsCF, {
-      4: { section: 'cash_flow', field: 'cfo' },
-      5: { section: 'cash_flow', field: 'cfi' },
-      6: { section: 'cash_flow', field: 'cff' },
+      13: { section: 'cash_flow', field: 'cfo' },
+      19: { section: 'cash_flow', field: 'cfi' },
+      26: { section: 'cash_flow', field: 'cff' },
     }, colToYrFin, vRes.rowFlags, XLSX);
     XLSX.utils.book_append_sheet(wb, buildValidationSheet(vRes, XLSX), 'Validation');
   } catch (valErr) {
@@ -5554,23 +5762,30 @@ function PendingAnalysisBanner({ onRetry }) {
 }
 
 const PIPELINE_STEPS = [
-  { id: 'read',    label: 'Reading document',            icon: '📄' },
-  { id: 'split',   label: 'Splitting into sections',     icon: '🔍' },
-  { id: 'extract', label: 'Extracting financial data',   icon: '📊' },
-  { id: 'analyse', label: 'Calculating ratios & SWOT',   icon: '🔢' },
-  { id: 'excel',   label: 'Building Excel workbook',     icon: '📑' },
-  { id: 'docs',    label: 'Generating documents',        icon: '📝' },
+  { id: 'read',      label: 'Reading document & detecting type',              icon: '🔍' },
+  { id: 'classify',  label: 'Identifying financial statement pages',          icon: '📋' },
+  { id: 'detect',    label: 'Detecting company, currency, unit & sector',     icon: '💱' },
+  { id: 'text',      label: 'Extracting text from document',                  icon: '📄' },
+  { id: 'vision',    label: 'Sending financial pages to Claude Vision',       icon: '🤖' },
+  { id: 'validate',  label: 'Cross-validating figures across pages',          icon: '✅' },
+  { id: 'sanity',    label: 'Running sanity checks & blocking errors',        icon: '🔢' },
+  { id: 'excel',     label: 'Building Excel workbook (8 sheets)',             icon: '📊' },
+  { id: 'word',      label: 'Generating 12-page Word document',               icon: '📝' },
+  { id: 'done',      label: 'Complete — your documents are ready',            icon: '🎉' },
 ];
 
 function getStepIndex(msg) {
   if (!msg) return -1;
-  // Test from last step to first so more-specific patterns win
-  if (/generating.*pdf|generating.*word|generating company narr|building brief|generating brief|generating detailed|pdf generation|large document.*pdf/i.test(msg)) return 5;
-  if (/generating excel|building excel workbook|excel ready|scanned.*vision extraction|📊 building excel/i.test(msg)) return 4;
-  if (/calculating.*ratio|generating swot|building bar chart|done:.*section/i.test(msg)) return 3;
-  if (/processing section|processed section|🤖 claude vision|extracting financials from pages|✅.*data extracted/i.test(msg)) return 2;
-  if (/splitting document|document has \d+.*section|beginning ai|beginning.*processing/i.test(msg)) return 1;
-  if (/reading your document|📄 reading|running ocr|🔍 running ocr|scanned pdf|claude vision ocr|running claude vision/i.test(msg)) return 0;
+  if (/✅\s*complete|documents?\s*are\s*ready|download\s*(excel|word)|generation\s*complete/i.test(msg)) return 9;
+  if (/generating.*word|📝 generating|generating 12.page/i.test(msg)) return 8;
+  if (/generating excel|building excel|📊 building excel|excel workbook/i.test(msg)) return 7;
+  if (/sanity|🔢 running sanity|blocking error|validation complete/i.test(msg)) return 6;
+  if (/cross.valid|reconcil|merging.*page/i.test(msg)) return 5;
+  if (/🤖 claude vision|claude vision processing|sending.*vision|vision.*financial page/i.test(msg)) return 4;
+  if (/📄 extracting text|extracting text|text extraction|processing section|section \d+ of \d+/i.test(msg)) return 3;
+  if (/💱|currency detected|mca filing detected|sector detected|unit:|company detected/i.test(msg)) return 2;
+  if (/📋 page classification|classif|financial pages found|identifying.*page/i.test(msg)) return 1;
+  if (/🔍 analys|reading|analysing document|detecting type|document structure|\d+ pages detected/i.test(msg)) return 0;
   return -1;
 }
 
