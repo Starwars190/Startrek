@@ -424,7 +424,40 @@ async function ocrPageWithTesseract(canvas) {
 
 // ── STAGE 1-3: New PDF Extraction Pipeline ────────────────────────────────────
 
-const FINANCIAL_PAGE_KEYWORDS = /revenue|turnover|profit.*loss|balance\s*sheet|cash\s*flow|assets|liabilities|equity|depreciation|particulars|lakhs|crores|₹|rs\.\s*\d|statement\s+of|schedule/i;
+// Positive indicators: appear ONLY on real financial statement pages
+const FINANCIAL_STMT_STRONG = /revenue\s+from\s+oper|statement\s+of\s+profit|balance\s+sheet\s+as\s+at|equity\s*[&]\s*liabilities|shareholders[']?\s*funds?|profit\s+before\s+tax|profit\s+after\s+tax|total\s+assets\s+\d|particulars\s+(?:note|rs\.?|₹|\d)/i;
+
+// Pages that contain these should be skipped — they describe financials, not present them
+const AUDITOR_REPORT_PAGE_RE = /independent\s+auditors?\s+report|we\s+have\s+audited\s+the|our\s+audit\s+was\s+conducted|key\s+audit\s+matters?|basis\s+(?:for|of)\s+(?:opinion|our\s+opinion)|material\s+misstatement|emphasis\s+of\s+matter/i;
+const AUDITOR_SIGNATURE_RE = /\budin\s*:/i;
+const DIRECTORS_REPORT_RE = /\bdirectors[']?\s+report\b/i;
+
+function classifyFinancialPage(text) {
+  // Skip auditor report pages (they describe financials in narrative, not tabular form)
+  if (AUDITOR_REPORT_PAGE_RE.test(text)) return 'skip';
+  // Skip director's report unless it also has actual financial tables
+  if (DIRECTORS_REPORT_RE.test(text) && !FINANCIAL_STMT_STRONG.test(text)) return 'skip';
+
+  // Positive classification by page type
+  if (/balance\s*sheet|equity\s*[&]\s*liabilities|shareholders[']?\s*funds?|total\s+assets/i.test(text)) return 'balance_sheet';
+  if (/statement\s+of\s+profit|profit\s+(?:and|[&])\s+loss|revenue\s+from\s+oper|total\s+(?:income|revenue)/i.test(text)) return 'profit_loss';
+  if (/cash\s+flow\s+statement|operating\s+activit|investing\s+activit|financing\s+activit/i.test(text)) return 'cash_flow';
+
+  // Notes pages — only if they have substantial numeric data (≥10 large numbers)
+  if (/note\s+(?:no\.?\s*)?\d+\s*[:\-]|notes?\s+to\s+(?:the\s+)?(?:accounts|financial\s+statements?)/i.test(text)) {
+    const numCount = (text.match(/\b\d{2,}(?:,\d{2,3})*(?:\.\d+)?\b/g) || []).length;
+    if (numCount >= 10) return 'notes';
+  }
+
+  // Ratio analysis page (mandated by Companies Act 2023)
+  if (/current\s+ratio|debt[\s-]+equity|return\s+on\s+(?:equity|assets|capital)/i.test(text) &&
+      (text.match(/\b\d+(?:\.\d+)?\b/g) || []).length >= 10) return 'ratios';
+
+  // General financial page with at least one strong keyword
+  if (FINANCIAL_STMT_STRONG.test(text)) return 'financial';
+
+  return 'skip';
+}
 
 async function detectMcaAndMetadata(sampleText) {
   const isMCA = /\bCIN\b|\bCompanies Act,?\s*2013\b|\bMinistry of Corporate Affairs\b|\bRegistrar of Companies\b|\bMCA\b|\bForm\s+AOC/i.test(sampleText);
@@ -438,48 +471,56 @@ async function detectMcaAndMetadata(sampleText) {
   if (periodMatch) {
     period = periodMatch[1] ? `FY${periodMatch[1]}` : null;
   }
-  return { isMCA, currency, unit, cin, period };
+  // Sector detection from business description / name
+  const sectorPatterns = [
+    ['Pharmaceuticals', /pharmaceutical|pharma\b|drug formulation|active pharmaceutical ingredient|\bapi\b|medicine.*manufactur/i],
+    ['Specialty Chemicals', /specialty chemical|speciality chemical|fine chemical|agrochemi/i],
+    ['Chemicals', /\bchemical[s]?\b(?!.*pharma)/i],
+    ['IT', /software|information technology|digital services?|saas\b|cloud\s+services?|technology\s+services?/i],
+    ['FMCG', /fast.moving consumer|fmcg|consumer goods|personal care|household products?/i],
+    ['Banking', /bank(?:ing)?\b|nbfc|non.banking financial|insurance/i],
+    ['Real Estate', /real estate|construction|property develop|housing|infrastructure develop/i],
+    ['Trading', /trading company|import.*export|wholesale|distributors?/i],
+    ['Manufacturing', /manufactur(?:ing|er)|engineering|industrial products?/i],
+  ];
+  let sector = null;
+  for (const [s, re] of sectorPatterns) {
+    if (re.test(sampleText)) { sector = s; break; }
+  }
+
+  return { isMCA, currency, unit, cin, period, sector };
 }
 
 async function callClaudeVisionForPage(base64, pageNum, totalPages, unit) {
-  const prompt = `You are a senior financial analyst extracting data from an Indian company annual report. This is page ${pageNum} of ${totalPages}.
+  const prompt = `You are a senior chartered accountant extracting data from an Indian company annual report page. The company files under Companies Act 2013. Currency is always INR. Extract every financial figure from this page with complete accuracy.
 
-Extract ALL financial figures with surgical precision.
-Return ONLY this JSON structure, nothing else:
+CRITICAL RULES:
+1. Ignore page numbers — they appear ALONE at the very top or bottom margin (e.g., "17", "18"). Never return these as financial values.
+2. Ignore note reference numbers — these are small integers (1–50) in a narrow column immediately to the right of the "Particulars" label. Never return these as financial values.
+3. Financial values appear in wide columns with date headers like "31 March 2025" and "31 March 2024" or "As at 31.03.2025".
+4. Numbers in brackets () are NEGATIVE — return as negative numbers.
+5. If a figure is unclear or ambiguous, return null — never guess.
+6. If the page is a cover, TOC, auditor report, or directors report with no financial tables, return page_type: "other" and empty line_items.
 
+Return ONLY this exact JSON (no extra text, no markdown):
 {
-  "page_type": "profit_loss",
-  "financial_year_current": "FY20XX",
-  "financial_year_prior": "FY20XX",
-  "currency": "INR",
-  "unit": "${unit || 'Lakhs'}",
+  "page_type": "balance_sheet",
+  "unit": "Lakhs",
+  "year_current": "31 March 2025",
+  "year_prior": "31 March 2024",
   "line_items": [
     {
       "label": "exact label as written in document",
-      "category": "revenue",
-      "current_year_value": null,
-      "prior_year_value": null,
-      "is_subtotal": false,
-      "is_total": false
+      "current_year": 1234.56,
+      "prior_year": 5678.90,
+      "is_total": false,
+      "note_reference": null
     }
-  ],
-  "extraction_confidence": "high",
-  "notes": ""
+  ]
 }
 
-page_type must be one of: profit_loss | balance_sheet | cash_flow | notes | schedules | other
-category must be one of: revenue | expense | asset | liability | equity | cash_flow | ratio | other
-
-ABSOLUTE RULES — violating these means wrong output:
-1. NEVER confuse page numbers with financial figures. Page numbers are 1-500 appearing alone at top or bottom margin.
-2. NEVER confuse footnote reference numbers (1, 2, 3 in superscript or at end of row) with financial values.
-3. NEVER confuse row sequence numbers with financial values.
-4. Numbers in brackets () mean NEGATIVE values — represent as negative numbers.
-5. If a figure is unclear or ambiguous, return null — NEVER guess.
-6. A single narrow column of small integers on the far right is note references — SKIP ENTIRELY.
-7. Financial figures appear in wide columns aligned with row labels in the centre/left.
-8. Do not convert units — return exactly as stated in the document.
-9. If page is a cover, TOC, or director's report with no financial tables, return page_type: "other" and empty line_items array.`;
+page_type must be exactly one of: profit_loss | balance_sheet | cash_flow | notes | ratios | other
+unit must be exactly: Lakhs | Crores`;
 
   const content = [
     { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64 } },
@@ -518,8 +559,8 @@ function mergeVisionPageIntoYears(visionYears, pageResult) {
   if (!pageResult || !pageResult.line_items || pageResult.line_items.length === 0) return;
   if (pageResult.page_type === 'other') return;
 
-  const curYr = pageResult.financial_year_current;
-  const priYr = pageResult.financial_year_prior;
+  const curYr = pageResult.year_current || pageResult.financial_year_current;
+  const priYr = pageResult.year_prior || pageResult.financial_year_prior;
   if (!curYr) return;
 
   if (!visionYears[curYr]) visionYears[curYr] = { profit_loss: {}, balance_sheet: {}, cash_flow: {} };
@@ -536,14 +577,16 @@ function mergeVisionPageIntoYears(visionYears, pageResult) {
     const field = mapVisionLabelToField(lbl, section);
     if (!field) continue;
 
-    if (item.current_year_value != null && !isNaN(item.current_year_value)) {
+    const curVal = item.current_year ?? item.current_year_value;
+    const priVal = item.prior_year ?? item.prior_year_value;
+    if (curVal != null && !isNaN(curVal)) {
       if (visionYears[curYr][section][field] == null) {
-        visionYears[curYr][section][field] = item.current_year_value;
+        visionYears[curYr][section][field] = curVal;
       }
     }
-    if (priYr && item.prior_year_value != null && !isNaN(item.prior_year_value)) {
+    if (priYr && priVal != null && !isNaN(priVal)) {
       if (visionYears[priYr][section][field] == null) {
-        visionYears[priYr][section][field] = item.prior_year_value;
+        visionYears[priYr][section][field] = priVal;
       }
     }
   }
@@ -702,33 +745,66 @@ async function extractPdfContent(file, onProgress) {
   onProgress?.(`🔍 Analysing document structure... (${totalPages} pages detected)`);
 
   // ── STAGE 1: Document Intelligence ──────────────────────────────────────────
-  // Sample first 5 pages for metadata detection
+  // Sample first 10 pages + a window around page 25 (where business description / notes often appear)
   let sampleText = '';
-  const sampleCount = Math.min(5, totalPages);
+  const sampleCount = Math.min(10, totalPages);
   for (let i = 1; i <= sampleCount; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     sampleText += ' ' + content.items.map(item => item.str).join(' ');
   }
+  // Also sample a few mid-document pages for sector detection from notes/MDA
+  const midStart = Math.min(25, totalPages);
+  const midEnd   = Math.min(35, totalPages);
+  for (let i = midStart; i <= midEnd; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    sampleText += ' ' + content.items.map(item => item.str).join(' ');
+  }
   const docMeta = await detectMcaAndMetadata(sampleText);
-  const { isMCA, currency, unit, cin } = docMeta;
+  const { isMCA, currency, unit, cin, sector: detectedSector } = docMeta;
 
   onProgress?.(`💱 ${isMCA ? 'Indian MCA filing detected' : 'Document classified'} — Currency: ${currency}, Unit: ${unit}`);
 
-  // ── STAGE 2: Page Classification ─────────────────────────────────────────────
+  // ── STAGE 2: Smart Page Classification ───────────────────────────────────────
   onProgress?.('📋 Classifying pages...');
   const pageTexts = [];
   const financialPageNums = [];
+  const pageClassifications = {};
+  let auditorSignaturePageIdx = -1; // 0-indexed page where UDIN signature appears
 
   for (let i = 1; i <= totalPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     const text = content.items.map(item => item.str).join(' ');
     pageTexts.push(text);
-    if (FINANCIAL_PAGE_KEYWORDS.test(text) && text.length > 50) {
-      financialPageNums.push(i);
+
+    // Detect where auditor report ends (UDIN signature block)
+    if (auditorSignaturePageIdx < 0 && AUDITOR_SIGNATURE_RE.test(text)) {
+      auditorSignaturePageIdx = i - 1; // convert to 0-indexed
+      console.log(`[PageClassifier] Auditor signature found on page ${i}`);
     }
+
+    const cls = classifyFinancialPage(text);
+    pageClassifications[i] = cls;
   }
+
+  // Financial statements always start within 3 pages after auditor signature
+  const auditEnd1Indexed = auditorSignaturePageIdx >= 0 ? auditorSignaturePageIdx + 1 : 0;
+  console.log(`[PageClassifier] Auditor report ends at page ${auditEnd1Indexed || 'not found'}`);
+
+  for (let i = 1; i <= totalPages; i++) {
+    const cls = pageClassifications[i];
+    if (cls === 'skip') continue;
+
+    // Before the auditor report ends, only include pages with explicit financial statement structure
+    if (auditEnd1Indexed > 0 && i < auditEnd1Indexed) {
+      if (!['balance_sheet', 'profit_loss', 'cash_flow'].includes(cls)) continue;
+    }
+
+    financialPageNums.push(i);
+  }
+  console.log(`[PageClassifier] Financial pages detected: ${financialPageNums.join(', ')}`);
 
   const totalChars = pageTexts.reduce((s, t) => s + t.length, 0);
   const charsPerPage = totalPages > 0 ? totalChars / totalPages : 0;
@@ -782,6 +858,41 @@ async function extractPdfContent(file, onProgress) {
     console.warn('[SanityBlocking]', visionErrorLog);
   }
 
+  // Warn user if Vision found very few figures (may indicate wrong pages were sent)
+  const visionFigureCount = countValidFigures(visionYears);
+  if (financialPageNums.length > 0 && visionFigureCount < 10 && !isScanned) {
+    console.warn(`[Vision] Only ${visionFigureCount} valid figures extracted from ${financialPageNums.length} pages — possible page misclassification`);
+    onProgress?.(`⚠️ Limited data extracted (${visionFigureCount} figures) — retrying broader page scan...`);
+    // Fallback: if we found very little, try ANY page that has substantial numbers
+    const broadPageNums = [];
+    for (let i = 1; i <= totalPages; i++) {
+      if (financialPageNums.includes(i)) continue; // already processed
+      const t = pageTexts[i - 1] || '';
+      const numCount = (t.match(/\b\d{2,}(?:,\d{2,3})*(?:\.\d+)?\b/g) || []).length;
+      if (numCount >= 15 && t.length > 200 && pageClassifications[i] !== 'skip') {
+        broadPageNums.push(i);
+      }
+    }
+    if (broadPageNums.length > 0) {
+      console.log(`[Vision] Fallback: also scanning pages ${broadPageNums.join(', ')}`);
+      for (let vi = 0; vi < broadPageNums.length; vi++) {
+        const pageNum = broadPageNums[vi];
+        try {
+          const page = await pdf.getPage(pageNum);
+          const canvas = await renderPdfPageToCanvas(page, 2.0);
+          const base64 = canvas.toDataURL('image/png').split(',')[1];
+          const result = await callClaudeVisionForPage(base64, pageNum, totalPages, unit);
+          if (result && result.line_items && result.line_items.length > 0 && result.page_type !== 'other') {
+            mergeVisionPageIntoYears(visionYears, result);
+            visionPageLog.push({ page: pageNum, method: 'Claude Vision (fallback)', confidence: result.extraction_confidence || 'medium', pageType: result.page_type, itemCount: result.line_items.length });
+          }
+        } catch (vErr) {
+          console.warn(`[Vision fallback] Page ${pageNum} failed:`, vErr.message);
+        }
+      }
+    }
+  }
+
   // ── STAGE 3B: Tesseract OCR for scanned/hybrid pages ───────────────────────
   const ocrTexts = [...pageTexts];
   if (isScanned || isHybrid) {
@@ -812,7 +923,7 @@ async function extractPdfContent(file, onProgress) {
     text: finalText,
     method,
     warnings,
-    documentMetadata: { isMCA, currency, unit, cin, financialPageNums, totalPages, docType, visionPageLog },
+    documentMetadata: { isMCA, currency, unit, cin, sector: detectedSector, financialPageNums, totalPages, docType, visionPageLog },
     visionStructuredData: { years: visionYears, currency, unit, isMCA, errorLog: visionErrorLog },
   };
 }
@@ -1268,21 +1379,61 @@ function calculateRatios(fd, sectorHint = "general", fdPrior = null) {
 async function generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress, aggregatedPrior = null) {
   onProgress?.("Generating SWOT analysis and ratio interpretations...");
   const ratiosFlat = ratios.flatMap(r => r.items.map(i => `${i.name}: ${i.value} (${r.category})`)).join('\n');
-  const systemPrompt = `You are a senior financial analyst for an Indian private company. Generate SPECIFIC SWOT and ratio interpretations - no generic advice.
+  // Derive financial tone from actual data
+  const netMarginPct = (aggregated.netIncome != null && aggregated.revenue != null && aggregated.revenue > 0)
+    ? (aggregated.netIncome / aggregated.revenue) * 100 : null;
+  const currentRatio = (aggregated.currentAssets != null && aggregated.currentLiabilities != null && aggregated.currentLiabilities > 0)
+    ? aggregated.currentAssets / aggregated.currentLiabilities : null;
+  const debtEquity = (aggregated.totalDebt != null && aggregated.totalEquity != null && aggregated.totalEquity > 0)
+    ? aggregated.totalDebt / aggregated.totalEquity : null;
+  const revenueGrowth = (aggregatedPrior?.revenue != null && aggregated.revenue != null && aggregatedPrior.revenue > 0)
+    ? ((aggregated.revenue - aggregatedPrior.revenue) / aggregatedPrior.revenue) * 100 : null;
 
-Output ONLY JSON:
+  const toneTips = [
+    netMarginPct != null
+      ? netMarginPct > 20 ? 'The company is HIGHLY PROFITABLE. Use positive, confident language. Highlight profitability prominently.'
+        : netMarginPct > 5 ? 'The company is moderately profitable. Use balanced, analytical language.'
+        : netMarginPct > 0 ? 'The company has thin margins. Flag this but acknowledge any improving trends.'
+        : 'The company is LOSS-MAKING. Use careful analytical language focused on path to recovery. Do NOT be alarmist.'
+      : null,
+    currentRatio != null
+      ? currentRatio >= 2.0 ? 'Strong liquidity (current ratio ≥ 2). Highlight as strength.'
+        : currentRatio >= 1.0 ? 'Adequate liquidity.'
+        : 'Liquidity concern (current ratio < 1). Flag clearly but factually.'
+      : null,
+    debtEquity != null
+      ? debtEquity < 0.5 ? 'Conservative leverage. Highlight as strength.'
+        : debtEquity > 2.0 ? 'High leverage. Flag as risk factor.'
+        : 'Moderate leverage.'
+      : null,
+    revenueGrowth != null
+      ? revenueGrowth > 0 ? `Revenue grew ${revenueGrowth.toFixed(1)}% YoY. Highlight growth prominently.`
+        : `Revenue declined ${Math.abs(revenueGrowth).toFixed(1)}% YoY. Explain decline using available data. NEVER say revenue grew if it declined.`
+      : null,
+  ].filter(Boolean).join(' ');
+
+  const systemPrompt = `You are a senior financial analyst for an Indian private company. Generate SPECIFIC SWOT and ratio interpretations — no generic advice.
+
+TONE GUIDANCE based on actual financial data:
+${toneTips || 'Use balanced analytical language.'}
+
+CRITICAL RULES:
+- Never generate language suggesting governance failures or financial distress unless the data explicitly supports it.
+- Never blame FinSight extraction failures on the company.
+- If revenue declined, say it declined. Never misrepresent direction.
+- Reference actual numbers and the company name in every bullet point.
+
+Output ONLY JSON (no markdown, no extra text):
 {
-  "strengths": ["4-5 specific strengths"],
-  "weaknesses": ["4-5 specific weaknesses"],
-  "opportunities": ["4-5 specific opportunities"],
-  "threats": ["4-5 specific threats"],
-  "executiveOutlook": "2-3 sentences covering: overall financial health, primary concern or strength, and a forward-looking observation. Reference actual numbers and sector. Must be company-specific.",
+  "strengths": ["4-5 specific strengths with actual numbers"],
+  "weaknesses": ["4-5 specific weaknesses with actual numbers"],
+  "opportunities": ["4-5 specific opportunities relevant to sector and company scale"],
+  "threats": ["4-5 specific threats with actual data context"],
+  "executiveOutlook": "2-3 sentences: overall financial health, primary concern or strength, forward-looking observation. Reference actual numbers and sector.",
   "ratioInterpretations": [
-    {"ratio": "Gross Margin", "value": "X%", "meaning": "1-2 lines specific to THIS company in its sector"}
+    {"ratio": "ratio name", "value": "X%", "meaning": "1-2 lines specific to THIS company"}
   ]
-}
-
-Each bullet 1-2 sentences. Reference the company name and actual numbers.`;
+}`;
 
   const userMsg = `Company: ${companyInfo.name}
 Sector: ${companyInfo.sector || "Medical/Pharmaceutical"}
@@ -1565,15 +1716,18 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   }
 
   // Key-value pair filtering: skip sensitive / identity fields
-  const SENSITIVE_LABEL_RE = /pan|din|cin|gst|aadhaar|address|pin\s*code|tax.*number|registration.*number|passport/i;
-  const LOOKS_LIKE_ID = /^[A-Z0-9]{10,}$/;
+  const SENSITIVE_LABEL_RE = /\bpan\b|\bdin\b|\bcin\b|\bgst\b|aadhaar|address|pin\s*code|tax.*number|registration.*number|passport|\bmembership\s*no|\budin\b|firm\s+reg|icai|institute\s+of/i;
+  const LOOKS_LIKE_ID = /^[A-Z]{1,3}\d{6,}[A-Z]?$|^[A-Z0-9]{10,}$|^\d{8,}$/;
+  // Values that are clearly IDs/registrations — skip them
+  const SENSITIVE_VALUE_RE = /^[A-Z]{2}\d{4}[A-Z]{2}\d{4}[A-Z]{3}\d{6}$|^[A-Z]{5}\d{4}[A-Z]$|^[0-9]{12}$|\bUDIN\b/i;
   function shouldSkipKVPair(label, value) {
     if (!label) return true;
     if (SENSITIVE_LABEL_RE.test(label)) return true;
-    if (value == null || value === '' || value === 'null' || value === '0' || value === 'undefined') return true;
+    if (value == null || value === '' || value === 'null' || value === '0' || value === 'undefined' || value === 'None' || value === 'NA' || value === 'N/A') return true;
     const strVal = String(value).trim();
-    if (!strVal || strVal === '—') return false; // keep em-dashes
+    if (!strVal || strVal === '—') return false;
     if (LOOKS_LIKE_ID.test(strVal)) return true;
+    if (SENSITIVE_VALUE_RE.test(strVal)) return true;
     return false;
   }
 
@@ -5005,20 +5159,38 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   XLSX.utils.book_append_sheet(wb, wsCF, 'Cash Flow');
 
   // ── Sheet 5 · Key Ratios — sector-aware benchmarks ────────────────────────
-  const detectedSector = (documentMetadata.sector || '').toLowerCase();
+  const detectedSectorRaw = documentMetadata.sector || '';
+  const detectedSector = detectedSectorRaw.toLowerCase();
   const sectorBenchmarkMap = {
-    manufacturing:    { 'Gross Margin (%)': ['20','35'], 'EBITDA Margin (%)': ['10','18'], 'Net Margin (%)': ['4','8'], 'Operating Margin (%)': ['7','14'], 'Return on Equity (%)': ['12','20'], 'Return on Assets (%)': ['6','12'], 'Return on Capital Employed (%)': ['12','18'], 'Current Ratio': ['1.5','2.0'], 'Quick Ratio': ['0.8','1.2'], 'Debt-to-Equity': ['0.5','1.5'], 'Interest Coverage': ['3.0','6.0'], 'Inventory Turnover (x)': ['4','8'], 'Receivable Days (DSO)': ['45','75'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.5','1.0'] },
-    fmcg:             { 'Gross Margin (%)': ['40','60'], 'EBITDA Margin (%)': ['15','25'], 'Net Margin (%)': ['8','15'], 'Operating Margin (%)': ['12','20'], 'Return on Equity (%)': ['20','35'], 'Return on Assets (%)': ['12','20'], 'Return on Capital Employed (%)': ['20','35'], 'Current Ratio': ['1.0','1.5'], 'Quick Ratio': ['0.6','1.0'], 'Debt-to-Equity': ['0.1','0.5'], 'Interest Coverage': ['8','20'], 'Inventory Turnover (x)': ['8','15'], 'Receivable Days (DSO)': ['15','30'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['1.0','2.0'] },
-    it:               { 'Gross Margin (%)': ['55','75'], 'EBITDA Margin (%)': ['20','35'], 'Net Margin (%)': ['15','25'], 'Operating Margin (%)': ['18','30'], 'Return on Equity (%)': ['20','35'], 'Return on Assets (%)': ['15','25'], 'Return on Capital Employed (%)': ['20','35'], 'Current Ratio': ['2.0','3.5'], 'Quick Ratio': ['2.0','3.5'], 'Debt-to-Equity': ['0.0','0.3'], 'Interest Coverage': ['20','50'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['45','90'], 'Payable Days (DPO)': ['15','30'], 'Asset Turnover (x)': ['1.0','2.5'] },
-    healthcare:       { 'Gross Margin (%)': ['55','70'], 'EBITDA Margin (%)': ['20','35'], 'Net Margin (%)': ['12','20'], 'Operating Margin (%)': ['15','28'], 'Return on Equity (%)': ['15','25'], 'Return on Assets (%)': ['10','18'], 'Return on Capital Employed (%)': ['15','25'], 'Current Ratio': ['1.5','2.5'], 'Quick Ratio': ['1.0','2.0'], 'Debt-to-Equity': ['0.3','0.8'], 'Interest Coverage': ['5.0','15.0'], 'Inventory Turnover (x)': ['4','10'], 'Receivable Days (DSO)': ['45','90'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.4','0.8'] },
+    pharmaceuticals:  { 'Gross Margin (%)': ['55','70'], 'EBITDA Margin (%)': ['18','28'], 'Net Margin (%)': ['12','22'], 'Operating Margin (%)': ['15','25'], 'Return on Equity (%)': ['15','25'], 'Return on Assets (%)': ['10','18'], 'Return on Capital Employed (%)': ['15','25'], 'Current Ratio': ['2.0','3.5'], 'Quick Ratio': ['1.5','3.0'], 'Debt-to-Equity': ['0.0','0.5'], 'Interest Coverage': ['5.0','15.0'], 'Inventory Turnover (x)': ['4','8'], 'Receivable Days (DSO)': ['45','90'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.4','0.9'] },
+    chemicals:        { 'Gross Margin (%)': ['30','45'], 'EBITDA Margin (%)': ['15','22'], 'Net Margin (%)': ['8','15'], 'Operating Margin (%)': ['10','18'], 'Return on Equity (%)': ['12','20'], 'Return on Assets (%)': ['7','14'], 'Return on Capital Employed (%)': ['12','20'], 'Current Ratio': ['1.5','2.5'], 'Quick Ratio': ['1.0','1.8'], 'Debt-to-Equity': ['0.2','1.0'], 'Interest Coverage': ['4.0','10.0'], 'Inventory Turnover (x)': ['5','10'], 'Receivable Days (DSO)': ['45','75'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.6','1.2'] },
+    manufacturing:    { 'Gross Margin (%)': ['20','35'], 'EBITDA Margin (%)': ['8','15'], 'Net Margin (%)': ['4','10'], 'Operating Margin (%)': ['7','14'], 'Return on Equity (%)': ['8','15'], 'Return on Assets (%)': ['6','12'], 'Return on Capital Employed (%)': ['12','18'], 'Current Ratio': ['1.5','2.5'], 'Quick Ratio': ['0.8','1.2'], 'Debt-to-Equity': ['0.5','1.5'], 'Interest Coverage': ['3.0','6.0'], 'Inventory Turnover (x)': ['4','8'], 'Receivable Days (DSO)': ['45','75'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.5','1.0'] },
+    fmcg:             { 'Gross Margin (%)': ['40','60'], 'EBITDA Margin (%)': ['15','22'], 'Net Margin (%)': ['8','15'], 'Operating Margin (%)': ['12','20'], 'Return on Equity (%)': ['25','40'], 'Return on Assets (%)': ['12','20'], 'Return on Capital Employed (%)': ['20','35'], 'Current Ratio': ['1.0','2.0'], 'Quick Ratio': ['0.6','1.0'], 'Debt-to-Equity': ['0.1','0.5'], 'Interest Coverage': ['8','20'], 'Inventory Turnover (x)': ['8','15'], 'Receivable Days (DSO)': ['15','30'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['1.0','2.0'] },
+    it:               { 'Gross Margin (%)': ['60','80'], 'EBITDA Margin (%)': ['20','30'], 'Net Margin (%)': ['15','25'], 'Operating Margin (%)': ['18','30'], 'Return on Equity (%)': ['18','30'], 'Return on Assets (%)': ['15','25'], 'Return on Capital Employed (%)': ['20','35'], 'Current Ratio': ['2.0','4.0'], 'Quick Ratio': ['2.0','4.0'], 'Debt-to-Equity': ['0.0','0.2'], 'Interest Coverage': ['20','50'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['45','90'], 'Payable Days (DPO)': ['15','30'], 'Asset Turnover (x)': ['1.0','2.5'] },
     banking:          { 'Gross Margin (%)': ['—','—'], 'EBITDA Margin (%)': ['—','—'], 'Net Margin (%)': ['10','20'], 'Operating Margin (%)': ['—','—'], 'Return on Equity (%)': ['10','18'], 'Return on Assets (%)': ['1.0','2.0'], 'Return on Capital Employed (%)': ['—','—'], 'Current Ratio': ['—','—'], 'Quick Ratio': ['—','—'], 'Debt-to-Equity': ['—','—'], 'Interest Coverage': ['—','—'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['—','—'], 'Payable Days (DPO)': ['—','—'], 'Asset Turnover (x)': ['—','—'] },
-    'real estate':    { 'Gross Margin (%)': ['30','50'], 'EBITDA Margin (%)': ['20','35'], 'Net Margin (%)': ['8','20'], 'Operating Margin (%)': ['15','30'], 'Return on Equity (%)': ['8','18'], 'Return on Assets (%)': ['3','8'], 'Return on Capital Employed (%)': ['8','15'], 'Current Ratio': ['1.0','2.0'], 'Quick Ratio': ['0.5','1.0'], 'Debt-to-Equity': ['1.0','3.0'], 'Interest Coverage': ['2.0','5.0'], 'Inventory Turnover (x)': ['0.3','1.0'], 'Receivable Days (DSO)': ['60','120'], 'Payable Days (DPO)': ['30','90'], 'Asset Turnover (x)': ['0.1','0.4'] },
+    'real estate':    { 'Gross Margin (%)': ['25','45'], 'EBITDA Margin (%)': ['20','35'], 'Net Margin (%)': ['8','18'], 'Operating Margin (%)': ['15','30'], 'Return on Equity (%)': ['8','15'], 'Return on Assets (%)': ['3','8'], 'Return on Capital Employed (%)': ['8','15'], 'Current Ratio': ['1.0','2.0'], 'Quick Ratio': ['0.5','1.0'], 'Debt-to-Equity': ['0.5','2.5'], 'Interest Coverage': ['2.0','5.0'], 'Inventory Turnover (x)': ['0.3','1.0'], 'Receivable Days (DSO)': ['60','120'], 'Payable Days (DPO)': ['30','90'], 'Asset Turnover (x)': ['0.1','0.4'] },
     infrastructure:   { 'Gross Margin (%)': ['20','40'], 'EBITDA Margin (%)': ['25','45'], 'Net Margin (%)': ['5','15'], 'Operating Margin (%)': ['15','35'], 'Return on Equity (%)': ['8','15'], 'Return on Assets (%)': ['3','8'], 'Return on Capital Employed (%)': ['8','14'], 'Current Ratio': ['1.0','1.5'], 'Quick Ratio': ['0.8','1.2'], 'Debt-to-Equity': ['1.0','3.0'], 'Interest Coverage': ['2.0','4.0'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['60','120'], 'Payable Days (DPO)': ['30','90'], 'Asset Turnover (x)': ['0.2','0.5'] },
-    default:          { 'Gross Margin (%)': ['30','50'], 'EBITDA Margin (%)': ['12','22'], 'Net Margin (%)': ['5','12'], 'Operating Margin (%)': ['8','18'], 'Return on Equity (%)': ['10','20'], 'Return on Assets (%)': ['5','12'], 'Return on Capital Employed (%)': ['10','18'], 'Current Ratio': ['1.2','2.0'], 'Quick Ratio': ['0.8','1.5'], 'Debt-to-Equity': ['0.3','1.5'], 'Interest Coverage': ['3.0','8.0'], 'Inventory Turnover (x)': ['3','8'], 'Receivable Days (DSO)': ['30','75'], 'Payable Days (DPO)': ['25','60'], 'Asset Turnover (x)': ['0.5','1.5'] },
+    trading:          { 'Gross Margin (%)': ['5','20'], 'EBITDA Margin (%)': ['2','8'], 'Net Margin (%)': ['1','5'], 'Operating Margin (%)': ['1.5','6'], 'Return on Equity (%)': ['10','20'], 'Return on Assets (%)': ['4','10'], 'Return on Capital Employed (%)': ['8','15'], 'Current Ratio': ['1.2','2.0'], 'Quick Ratio': ['0.8','1.5'], 'Debt-to-Equity': ['0.3','1.5'], 'Interest Coverage': ['2.0','6.0'], 'Inventory Turnover (x)': ['8','20'], 'Receivable Days (DSO)': ['20','50'], 'Payable Days (DPO)': ['20','45'], 'Asset Turnover (x)': ['1.5','4.0'] },
+    default:          { 'Gross Margin (%)': ['25','45'], 'EBITDA Margin (%)': ['10','20'], 'Net Margin (%)': ['5','12'], 'Operating Margin (%)': ['7','16'], 'Return on Equity (%)': ['10','20'], 'Return on Assets (%)': ['5','12'], 'Return on Capital Employed (%)': ['10','18'], 'Current Ratio': ['1.2','2.0'], 'Quick Ratio': ['0.8','1.5'], 'Debt-to-Equity': ['0.3','1.5'], 'Interest Coverage': ['3.0','8.0'], 'Inventory Turnover (x)': ['3','8'], 'Receivable Days (DSO)': ['30','75'], 'Payable Days (DPO)': ['25','60'], 'Asset Turnover (x)': ['0.5','1.5'] },
   };
-  const sectorKey = Object.keys(sectorBenchmarkMap).find(k => detectedSector.includes(k)) || 'default';
+  // Map detected sector names (from detectMcaAndMetadata) to benchmark keys
+  const sectorAliasMap = {
+    'pharmaceuticals': 'pharmaceuticals',
+    'specialty chemicals': 'chemicals',
+    'chemicals': 'chemicals',
+    'it': 'it',
+    'fmcg': 'fmcg',
+    'banking': 'banking',
+    'real estate': 'real estate',
+    'infrastructure': 'infrastructure',
+    'trading': 'trading',
+    'manufacturing': 'manufacturing',
+  };
+  const sectorKey = sectorAliasMap[detectedSector]
+    || Object.keys(sectorBenchmarkMap).find(k => k !== 'default' && detectedSector.includes(k))
+    || 'default';
   const SECTOR_BENCHMARKS = sectorBenchmarkMap[sectorKey];
-  const sectorLabel = sectorKey.charAt(0).toUpperCase() + sectorKey.slice(1);
+  const sectorLabel = detectedSectorRaw || (sectorKey.charAt(0).toUpperCase() + sectorKey.slice(1));
 
   // Traffic-light status: compare ratio value to [low, high] range
   const getRatioStatus = (rawV, bKey, lowerIsBetter) => {
