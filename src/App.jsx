@@ -283,6 +283,26 @@ async function loadPdfJs() {
   return lib;
 }
 
+async function checkPdfHasText(file) {
+  try {
+    const pdfjsLib = await loadPdfJs();
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let totalText = '';
+    const pagesToSample = Math.min(3, pdf.numPages);
+    for (let i = 1; i <= pagesToSample; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      totalText += content.items.map(item => item.str).join(' ');
+    }
+    const charsPerPage = Math.round(totalText.length / pagesToSample);
+    return { hasText: charsPerPage > 200, charsPerPage, totalPages: pdf.numPages };
+  } catch (e) {
+    console.error('[checkPdfHasText] Check failed:', e);
+    return { hasText: true, charsPerPage: 0, totalPages: 0 };
+  }
+}
+
 async function extractPdfContent(file) {
   const pdfjsLib = await loadPdfJs();
   const arrayBuffer = await file.arrayBuffer();
@@ -1745,6 +1765,28 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
 
 // ─── BRIEF COMPANY NOTE ─────────────────────────────────────────────────────
 
+function getFallbackNarrative(companyInfo, aggregated, swot) {
+  const toStrArr = (arr) => (Array.isArray(arr) ? arr : []).filter(s => typeof s === 'string');
+  return {
+    aboutCompany: {
+      type: companyInfo.sector || 'Business Operations',
+      headquarters: null,
+      overview: `${companyInfo.name} operates in the ${companyInfo.sector || 'business'} sector. This brief presents key financial highlights and analysis from the company's filing for ${companyInfo.period || 'the reporting period'}.`,
+      coreOfferings: []
+    },
+    keyInsights: toStrArr(swot?.strengths).slice(0, 4).map(s => s.replace(/^[•\-]\s*/, '').slice(0, 150)).filter(Boolean),
+    financialNarrative: swot?.executiveOutlook || 'See financial highlights table for detailed metrics.',
+    businessModel: {
+      coreModel: `${companyInfo.name} generates revenue through its core operations in ${companyInfo.sector || 'its industry'}.`,
+      revenueDrivers: [],
+      valueProposition: ''
+    },
+    keyDifferentiators: toStrArr(swot?.strengths).slice(0, 3).map(s => s.replace(/^[•\-]\s*/, '').slice(0, 80)).filter(Boolean),
+    risks: toStrArr(swot?.weaknesses).slice(0, 3).map(s => s.replace(/^[•\-]\s*/, '').slice(0, 150)).filter(Boolean),
+    summary: swot?.executiveOutlook || `${companyInfo.name} — financial brief based on available filing data.`
+  };
+}
+
 async function generateBriefNarrative(companyInfo, aggregated, aggregatedPrior, ratios, swot, chunkResults) {
   const contextSnippets = chunkResults.slice(0, 3)
     .flatMap(c => (c.blocks || []).filter(b => b.type === 'paragraph_block').map(b => (b.paragraphs || []).join(' ')))
@@ -1807,10 +1849,31 @@ Rules: Use INR/₹, not USD. Include real numbers. Return null for genuinely una
     system: 'You are a senior financial analyst writing research notes for Indian private companies. Output valid JSON only.',
     userMsg, maxTokens: 3000
   });
-  let cleaned = raw.trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
-  const s = cleaned.indexOf('{'), e = cleaned.lastIndexOf('}');
-  if (s >= 0 && e >= 0) cleaned = cleaned.slice(s, e + 1);
-  try { return JSON.parse(cleaned); } catch { return {}; }
+
+  const extractJSON = (text) => {
+    if (!text) return null;
+    try { return JSON.parse(text); } catch { /* continue */ }
+    let cleaned = text.trim()
+      .replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+    try { return JSON.parse(cleaned); } catch { /* continue */ }
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) { try { return JSON.parse(match[0]); } catch { /* continue */ } }
+    const fixed = (match ? match[0] : cleaned)
+      .replace(/,(\s*[}\]])/g, '$1')
+      .replace(/[""]/g, '"')
+      .replace(/['']/g, "'");
+    try { return JSON.parse(fixed); } catch (e) {
+      console.error('[BriefNarrative] All JSON parse strategies failed:', { original: text.slice(0, 300), error: e.message });
+      return null;
+    }
+  };
+
+  const parsed = extractJSON(raw);
+  if (!parsed) {
+    console.warn('[BriefNarrative] Using fallback narrative');
+    return getFallbackNarrative(companyInfo, aggregated, swot);
+  }
+  return parsed;
 }
 
 async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggregatedPrior, ratios, swot, briefNarrative) {
@@ -1888,8 +1951,9 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
   const hasSubs = /subsidiar|holding\s+compan|associate\s+compan/i.test(allTxt);
   const hasHistory = !!(cin || incYear || hasSubs);
 
-  const nb = briefNarrative || {};
-  const about = nb.aboutCompany || {};
+  const nb = (briefNarrative && typeof briefNarrative === 'object' && !Array.isArray(briefNarrative))
+    ? briefNarrative : getFallbackNarrative(companyInfo, aggregated, swot);
+  const about = (nb.aboutCompany && typeof nb.aboutCompany === 'object') ? nb.aboutCompany : {};
 
   // ── Ratios lookup ─────────────────────────────────────────────────────────
   const getR = (cat, name) => ratios.find(c => c.category === cat)?.items.find(i => i.name === name);
@@ -1966,14 +2030,14 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
   if (companyInfo.period)  ch.push(kv('Reporting Period', companyInfo.period));
   if (companyInfo.rounding) ch.push(kv('Financial Unit', `${companyInfo.rounding} of ${companyInfo.currency || 'INR'}`));
   if (about.overview)      { ch.push(blank()); ch.push(body(about.overview)); }
-  if (about.coreOfferings?.length) {
+  if (Array.isArray(about.coreOfferings) && about.coreOfferings.length) {
     ch.push(blank());
     ch.push(pg([run('Core Offerings', { size: 22, bold: true })], { sp: { before: 100, after: 60 } }));
     about.coreOfferings.forEach(o => ch.push(bullet(o)));
   }
 
   // ── Key Insights ──────────────────────────────────────────────────────────
-  if (nb.keyInsights?.length) {
+  if (Array.isArray(nb.keyInsights) && nb.keyInsights.length) {
     ch.push(h1('Key Insights', true));
     nb.keyInsights.forEach(ins => ch.push(bullet(ins)));
   }
@@ -1996,11 +2060,11 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
   }
 
   // ── Business Model ────────────────────────────────────────────────────────
-  if (nb.businessModel) {
+  if (nb.businessModel && typeof nb.businessModel === 'object') {
     const bm = nb.businessModel;
     ch.push(h1('Business Model', true));
     if (bm.coreModel) ch.push(body(bm.coreModel));
-    if (bm.revenueDrivers?.length) {
+    if (Array.isArray(bm.revenueDrivers) && bm.revenueDrivers.length) {
       ch.push(blank());
       ch.push(pg([run('Revenue Drivers', { size: 22, bold: true })], { sp: { before: 80, after: 60 } }));
       bm.revenueDrivers.forEach(d => ch.push(bullet(d)));
@@ -2009,7 +2073,7 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
   }
 
   // ── Key Differentiators ───────────────────────────────────────────────────
-  if (nb.keyDifferentiators?.length) {
+  if (Array.isArray(nb.keyDifferentiators) && nb.keyDifferentiators.length) {
     ch.push(h1('Key Differentiators', true));
     nb.keyDifferentiators.forEach(d => ch.push(bullet(d)));
   }
@@ -2024,8 +2088,8 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
 
   // ── Risks & Outlook ───────────────────────────────────────────────────────
   ch.push(h1('Risks & Outlook', true));
-  if (nb.risks?.length) { ch.push(h2('Key Risks')); nb.risks.forEach(r => ch.push(bullet(r))); }
-  if (swot?.threats?.length) { ch.push(blank()); ch.push(h2('External Threats')); swot.threats.slice(0, 3).forEach(th => ch.push(bullet(th))); }
+  if (Array.isArray(nb.risks) && nb.risks.length) { ch.push(h2('Key Risks')); nb.risks.forEach(r => ch.push(bullet(r))); }
+  if (Array.isArray(swot?.threats) && swot.threats.length) { ch.push(blank()); ch.push(h2('External Threats')); swot.threats.slice(0, 3).forEach(th => ch.push(bullet(th))); }
   if (swot?.executiveOutlook) { ch.push(blank()); ch.push(h2('Outlook')); ch.push(body(swot.executiveOutlook)); }
 
   // ── Summary ───────────────────────────────────────────────────────────────
@@ -2105,6 +2169,12 @@ function validateExtractedData(agg) {
   }
   if (warnings.length > 0) console.warn('[FinSight] Extraction warnings:', warnings);
   return warnings;
+}
+
+function hasAnyFinancialData(agg) {
+  if (!agg) return false;
+  const criticalFields = ['revenue', 'totalAssets', 'totalLiabilities', 'totalEquity', 'netIncome'];
+  return criticalFields.some(field => agg[field] != null && agg[field] !== 0);
 }
 
 async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
@@ -2193,6 +2263,10 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
     const aggregated = aggregateFinancialData(chunkResults);
     computeDerivedFinancials(aggregated);
     validateExtractedData(aggregated);
+    const noFinancialData = !hasAnyFinancialData(aggregated);
+    if (noFinancialData) {
+      console.warn('[FinSight] No financial data found — PDF may be scanned or financial statements not in expected format');
+    }
     const aggregatedPrior = aggregatePriorFinancialData(chunkResults);
     computeDerivedFinancials(aggregatedPrior);
     let sectorHint = companyInfo.sector || "";
@@ -2304,14 +2378,19 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       }
     }
 
+    let briefWordErr = null;
     if (selectedOutputs.briefWord) {
       try {
         onProgress?.("Generating company narrative (AI)...");
         const briefNarrative = await generateBriefNarrative(companyInfo, aggregated, aggregatedPrior, ratios, swot, chunkResults);
         onProgress?.("Building brief company note...");
         briefWordResult = await generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggregatedPrior, ratios, swot, briefNarrative);
+        if (!briefWordResult?.blob) throw new Error('Brief Word generator returned no blob');
+        console.log('[BriefWord] ✓ Generated successfully', { fileName: briefWordResult.fileName, size: briefWordResult.blob.size });
       } catch (briefErr) {
-        console.error("[processPrivateCompanyDoc] Brief Word generation failed:", briefErr);
+        briefWordErr = briefErr.message || 'Generation failed';
+        console.error('[BriefWord] Generation failed:', briefErr);
+        console.error('[BriefWord] Stack:', briefErr.stack);
       }
     }
 
@@ -2332,6 +2411,8 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       excelFileName: excelResult?.fileName || null,
       briefWordBlob: briefWordResult?.blob || null,
       briefWordFileName: briefWordResult?.fileName || null,
+      briefWordError: briefWordErr,
+      noFinancialData,
       companyInfo,
       chunkCount: chunks.length,
       failedChunks,
@@ -3088,7 +3169,14 @@ function PeriodDropdown({ value, onChange }) {
 }
 
 function DocumentReadyScreen({ docReady, onReset }) {
-  const { pdfBlob, pdfFileName, docxBlob, docxFileName, excelBlob, excelFileName, briefWordBlob, briefWordFileName, companyName, summary } = docReady;
+  const { pdfBlob, pdfFileName, docxBlob, docxFileName, excelBlob, excelFileName,
+    briefWordBlob, briefWordFileName, briefWordError, noFinancialData,
+    selectedOutputs = {}, companyName, summary } = docReady;
+  const errBox = (msg) => (
+    <div style={{ padding: '10px 14px', background: '#FEF3F2', border: '1px solid #F4B5B5', borderRadius: 8, color: '#9A3412', fontSize: 13, textAlign: 'left', lineHeight: 1.5 }}>
+      ⚠ {msg} Other deliverables are unaffected.
+    </div>
+  );
   const btn = (variant) => {
     const base = { width: "100%", height: 48, borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, transition: "opacity 0.15s", border: "none" };
     if (variant === "primary")   return { ...base, background: C.brown,    color: "#fff" };
@@ -3101,6 +3189,11 @@ function DocumentReadyScreen({ docReady, onReset }) {
       <div style={{ width: 56, height: 56, borderRadius: "50%", background: C.greenBg, border: `2px solid ${C.green}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", fontSize: 26 }}>✓</div>
       <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Your document is ready!</div>
       <div style={{ fontSize: 13.5, fontWeight: 600, color: C.brown, marginBottom: 16 }}>{companyName}</div>
+      {noFinancialData && (
+        <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 10, padding: '10px 14px', marginBottom: 14, textAlign: 'left', fontSize: 12.5, color: '#92400E', lineHeight: 1.6 }}>
+          ⚠ Limited financial data was extracted. The PDF may contain scanned images instead of text. Try the MCA portal XBRL/text-based PDF version for better results.
+        </div>
+      )}
       <div style={{ background: C.brownLight, borderRadius: 10, padding: "12px 16px", marginBottom: 20, textAlign: "left" }}>
         {[
           summary.sectionCount > 0 && `${summary.sectionCount} sections organised`,
@@ -3115,30 +3208,42 @@ function DocumentReadyScreen({ docReady, onReset }) {
         ))}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
-        {briefWordBlob && (
+        {briefWordBlob ? (
           <button style={btn("primary")} onClick={() => triggerBlobDownload(briefWordBlob, briefWordFileName)}>
             <span>📄</span><span>Download Brief Word Note</span>
           </button>
-        )}
-        {excelBlob && (
+        ) : selectedOutputs.briefWord && briefWordError
+          ? errBox(`Brief Word doc failed. Reason: ${briefWordError}`)
+          : null
+        }
+        {excelBlob ? (
           <button style={btn("excel")} onClick={() => triggerBlobDownload(excelBlob, excelFileName)}>
             <span>📊</span><span>Download Excel Workbook</span>
           </button>
-        )}
+        ) : selectedOutputs.excel && !excelBlob
+          ? errBox('Excel workbook generation failed.')
+          : null
+        }
         {(briefWordBlob || excelBlob) && (pdfBlob || docxBlob) && (
           <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
         )}
-        {pdfBlob && (
+        {pdfBlob ? (
           <button style={btn("secondary")} onClick={() => triggerBlobDownload(pdfBlob, pdfFileName)}>
             <span>📕</span>
             <span>Download Detailed PDF{summary.fileSizeKB > 0 ? ` · ${summary.fileSizeKB < 1024 ? summary.fileSizeKB + ' KB' : (summary.fileSizeKB / 1024).toFixed(1) + ' MB'}` : ''}</span>
           </button>
-        )}
-        {docxBlob && (
+        ) : selectedOutputs.detailedPdf && !pdfBlob
+          ? errBox('Detailed PDF generation failed.')
+          : null
+        }
+        {docxBlob ? (
           <button style={btn("secondary")} onClick={() => triggerBlobDownload(docxBlob, docxFileName)}>
             <span>📘</span><span>Download Detailed Word</span>
           </button>
-        )}
+        ) : selectedOutputs.detailedWord && !docxBlob
+          ? errBox('Detailed Word doc generation failed.')
+          : null
+        }
         {!briefWordBlob && !excelBlob && !pdfBlob && !docxBlob && (
           <div style={{ fontSize: 12.5, color: C.red }}>Document generation failed. Please try again.</div>
         )}
@@ -3438,6 +3543,7 @@ function FinSightApp() {
   const [selectedOutputs, setSelectedOutputs] = useState({ briefWord: true, excel: true, detailedPdf: false, detailedWord: false });
   const [privateDocStage, setPrivateDocStage] = useState('idle');
   const [privateDocFile, setPrivateDocFile] = useState(null);
+  const [scannedPdfWarn, setScannedPdfWarn] = useState(null);
 
   useEffect(() => {
     if (screen !== "loading") return;
@@ -3474,8 +3580,9 @@ function FinSightApp() {
     setPrivateDocError("");
   };
 
-  const handlePrivateDocProcess = async (file, outputs) => {
+  const runPrivateDocProcess = async (file, outputs) => {
     setPrivateDocLoading(true); setPrivateDocError(""); setPrivateDocProgress(""); setDocReady(null);
+    setScannedPdfWarn(null);
     setPrivateDocStage('processing');
     try {
       const result = await processPrivateCompanyDoc(file, outputs, (msg) => setPrivateDocProgress(msg));
@@ -3488,6 +3595,9 @@ function FinSightApp() {
         excelFileName: result.excelFileName,
         briefWordBlob: result.briefWordBlob,
         briefWordFileName: result.briefWordFileName,
+        briefWordError: result.briefWordError,
+        noFinancialData: result.noFinancialData,
+        selectedOutputs: outputs,
         companyName: result.companyInfo?.name || 'Private Company',
         summary: {
           sectionCount: result.sectionCount,
@@ -3506,6 +3616,17 @@ function FinSightApp() {
       setPrivateDocProgress("");
       setPrivateDocStage('uploaded');
     }
+  };
+
+  const handlePrivateDocProcess = async (file, outputs) => {
+    try {
+      const textCheck = await checkPdfHasText(file);
+      if (!textCheck.hasText) {
+        setScannedPdfWarn({ file, outputs, charsPerPage: textCheck.charsPerPage, totalPages: textCheck.totalPages });
+        return;
+      }
+    } catch { /* if check fails, proceed anyway */ }
+    await runPrivateDocProcess(file, outputs);
   };
 
   const downloadExcel = async () => {
@@ -3583,21 +3704,44 @@ function FinSightApp() {
         </div>
 
         {docReady
-          ? <DocumentReadyScreen docReady={docReady} onReset={() => { setDocReady(null); setPrivateDocStage('idle'); setPrivateDocFile(null); }} />
-          : (privateDocStage === 'uploaded' && !privateDocLoading)
-            ? <DeliverableSelectionScreen
-                file={privateDocFile}
-                selectedOutputs={selectedOutputs}
-                onToggle={(key) => setSelectedOutputs(prev => ({ ...prev, [key]: !prev[key] }))}
-                onCancel={() => { setPrivateDocStage('idle'); setPrivateDocFile(null); setPrivateDocError(""); }}
-                onGenerate={() => handlePrivateDocProcess(privateDocFile, selectedOutputs)}
-              />
-            : <PrivateDocUploadZone
-                onFileSelected={handlePrivateFileSelected}
-                isProcessing={privateDocLoading}
-                progress={privateDocProgress}
-                error={privateDocError}
-              />
+          ? <DocumentReadyScreen docReady={docReady} onReset={() => { setDocReady(null); setPrivateDocStage('idle'); setPrivateDocFile(null); setScannedPdfWarn(null); }} />
+          : scannedPdfWarn
+            ? (
+              <div style={{ width: "100%", maxWidth: 480, margin: "16px auto 0", background: C.bgCard, border: `1.5px solid #FCD34D`, borderRadius: 14, padding: "24px 24px 20px", boxShadow: C.shadowMd }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#92400E', marginBottom: 10 }}>⚠ PDF Appears to Be Scanned</div>
+                <div style={{ fontSize: 13, color: C.textSec, lineHeight: 1.7, marginBottom: 16 }}>
+                  Only ~{scannedPdfWarn.charsPerPage} characters per page detected across the first 3 pages — this suggests the PDF contains scanned images rather than searchable text.
+                  <br /><br />
+                  Extraction may return limited or no financial data. For best results, use an MCA portal XBRL/text-based PDF.
+                  <br /><br />
+                  You can still proceed — structured sections will be organised, but financial tables may be empty.
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={() => { setScannedPdfWarn(null); setPrivateDocStage('idle'); setPrivateDocFile(null); }}
+                    style={{ flex: 1, height: 42, borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.bgSidebar, color: C.textPrimary, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                    Cancel
+                  </button>
+                  <button onClick={() => runPrivateDocProcess(scannedPdfWarn.file, scannedPdfWarn.outputs)}
+                    style={{ flex: 2, height: 42, borderRadius: 10, border: 'none', background: '#D97706', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                    Proceed Anyway →
+                  </button>
+                </div>
+              </div>
+            )
+            : (privateDocStage === 'uploaded' && !privateDocLoading)
+              ? <DeliverableSelectionScreen
+                  file={privateDocFile}
+                  selectedOutputs={selectedOutputs}
+                  onToggle={(key) => setSelectedOutputs(prev => ({ ...prev, [key]: !prev[key] }))}
+                  onCancel={() => { setPrivateDocStage('idle'); setPrivateDocFile(null); setPrivateDocError(""); }}
+                  onGenerate={() => handlePrivateDocProcess(privateDocFile, selectedOutputs)}
+                />
+              : <PrivateDocUploadZone
+                  onFileSelected={handlePrivateFileSelected}
+                  isProcessing={privateDocLoading}
+                  progress={privateDocProgress}
+                  error={privateDocError}
+                />
         }
 
         <div style={{ marginTop: 16, fontSize: 11.5, color: C.textMuted, textAlign: "center", maxWidth: 640, lineHeight: 1.6 }}>
