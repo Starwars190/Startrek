@@ -602,6 +602,10 @@ function aggregateFinancialData(chunkResults) {
       }
     }
   }
+  // If short-term borrowings were found but long-term was never extracted, the LT
+  // line almost certainly exists in the filing at zero — treat null as 0 in that case.
+  if (aggregated.longTermDebt == null && aggregated.shortTermDebt != null)
+    aggregated.longTermDebt = 0;
   return aggregated;
 }
 
@@ -615,6 +619,8 @@ function aggregatePriorFinancialData(chunkResults) {
       }
     }
   }
+  if (aggregated.longTermDebt == null && aggregated.shortTermDebt != null)
+    aggregated.longTermDebt = 0;
   return aggregated;
 }
 
@@ -694,7 +700,7 @@ function calculateRatios(fd, sectorHint = "general", fdPrior = null) {
     r("Net Margin",            safeMul(safe(fd.netIncome, fd.revenue), 100),       "percent",   "Net Income / Revenue × 100",                 "Bottom-line profitability after all costs."),
     r("Return on Equity (ROE)",safeMul(safe(fd.netIncome, fd.totalEquity), 100),   "percent",   "Net Income / Total Equity × 100",            "Returns generated for shareholders."),
     r("Return on Assets (ROA)",safeMul(safe(fd.netIncome, fd.totalAssets), 100),   "percent",   "Net Income / Total Assets × 100",            "Asset utilization efficiency."),
-    r("ROCE",                  safeMul(safe(fd.operatingProfit, capitalEmployed), 100), "percent","Operating Profit / Capital Employed × 100", "Return on all capital deployed (equity + debt)."),
+    r("ROCE", (fd.operatingProfit != null && capitalEmployed != null && capitalEmployed > 0) ? (fd.operatingProfit / capitalEmployed) * 100 : null, "percent", "Operating Profit / (Equity + Total Debt) × 100", "Return on all capital deployed (equity + debt). India's preferred return metric. Above 15% is strong."),
   ]});
 
   ratios.push({ category: "Liquidity Ratios", items: [
