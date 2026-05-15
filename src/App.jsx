@@ -451,12 +451,11 @@ async function extractPdfContent(file, onProgress) {
     return { text: pageTexts.join('\n\n'), method: 'text', warnings: [] };
   }
 
-  // Layer 3: Scanned PDF detected — OCR each low-quality page with Tesseract
+  // Layer 3: Tesseract OCR for scanned pages — all output kept regardless of confidence
   console.log(`[Extraction] Scanned PDF (~${Math.round(charsPerPage)} chars/page). Starting OCR...`);
   onProgress?.('Scanned PDF detected — running OCR (this may take a few minutes)...');
 
   const ocrTexts = [...pageTexts];
-  const lowConfidencePageNums = [];
   let tesseractOk = true;
 
   for (let i = 1; i <= pdf.numPages; i++) {
@@ -465,52 +464,21 @@ async function extractPdfContent(file, onProgress) {
       try {
         const page = await pdf.getPage(i);
         const canvas = await renderPdfPageToCanvas(page, 2.0);
-        const { text, confidence } = await ocrPageWithTesseract(canvas);
-        if (confidence >= 65 && text.trim().length > 50) {
-          ocrTexts[i - 1] = text;
-          continue;
-        }
+        const { text } = await ocrPageWithTesseract(canvas);
+        if (text.trim().length > 20) ocrTexts[i - 1] = text;
       } catch (tessErr) {
         console.warn('[OCR] Tesseract unavailable:', tessErr.message);
         tesseractOk = false;
       }
     }
-    lowConfidencePageNums.push(i);
-  }
-
-  // Layer 4: Claude Vision for pages Tesseract couldn't handle
-  if (lowConfidencePageNums.length > 0) {
-    console.log(`[Extraction] ${lowConfidencePageNums.length} page(s) escalated to Claude Vision`);
-    onProgress?.(`Running Claude Vision OCR on ${lowConfidencePageNums.length} page(s)...`);
-    const BATCH = 3;
-    for (let b = 0; b < lowConfidencePageNums.length; b += BATCH) {
-      const batchNums = lowConfidencePageNums.slice(b, b + BATCH);
-      try {
-        const pageImages = await Promise.all(batchNums.map(async (num) => {
-          const pg = await pdf.getPage(num);
-          const canvas = await renderPdfPageToCanvas(pg, 1.5);
-          return { base64: canvas.toDataURL('image/png').split(',')[1] };
-        }));
-        const visionText = await callClaudeVision({
-          pageImages,
-          extractionPrompt: `Extract ALL text from these ${batchNums.length} document page(s) exactly as shown. Include every number, table cell, header, label, and body text. Preserve table structure using spacing. No commentary — plain text only.`,
-          maxTokens: 4000,
-        });
-        ocrTexts[batchNums[0] - 1] = visionText;
-        for (let j = 1; j < batchNums.length; j++) ocrTexts[batchNums[j] - 1] = '';
-      } catch (visionErr) {
-        console.error('[Extraction] Claude Vision batch failed:', visionErr.message);
-      }
-    }
   }
 
   const finalText = ocrTexts.join('\n\n');
-  const method = lowConfidencePageNums.length > 0 ? 'vision' : 'ocr';
   const warnings = finalText.trim().length < 500
     ? ['Very limited text was extracted. Financial data may be incomplete or missing.']
     : [];
 
-  return { text: finalText, method, warnings };
+  return { text: finalText, method: 'ocr', warnings };
 }
 
 function chunkText(text, maxCharsPerChunk = 12000, overlap = 500) {
@@ -2603,100 +2571,269 @@ function mergeFinancialYearData(base, incoming) {
   return merged;
 }
 
-async function extractFinancialsFromScannedPdf(file, onProgress) {
+// ─── Tesseract-only financial extraction pipeline (no Claude API) ─────────
+
+function parseIndianNum(s) {
+  if (!s) return null;
+  s = String(s).trim();
+  const neg = (s.startsWith('(') && s.endsWith(')')) || /^[-−]/.test(s);
+  s = s.replace(/[()₹Rs.,\s−]/g, '').replace(/^-/, '');
+  const n = parseFloat(s);
+  return isNaN(n) ? null : neg ? -n : n;
+}
+
+function numsAfterPos(line, pos) {
+  const slice = pos > 0 ? line.slice(pos) : line;
+  const out = [];
+  for (const m of slice.matchAll(/\([\d,]+(?:\.\d+)?\)|[-−]?\s*[\d,]+(?:\.\d+)?/g)) {
+    const n = parseIndianNum(m[0]);
+    if (n === null) continue;
+    const a = Math.abs(n);
+    if (Number.isInteger(a) && a >= 1985 && a <= 2040) continue; // year-shaped integer
+    if (Number.isInteger(a) && a < 10) continue;                 // page-number-sized integer
+    out.push(n);
+  }
+  return out;
+}
+
+const METRIC_DEFS = [
+  { key: 'revenue',             section: 'profit_loss',   include: [/revenue\s+from\s+oper|net\s+(?:revenue|sales)|turnover|gross\s+revenue/i],                    exclude: [/other\s+(?:income|revenue)/i] },
+  { key: 'other_income',        section: 'profit_loss',   include: [/\bother\s+income\b/i] },
+  { key: 'gross_profit',        section: 'profit_loss',   include: [/\bgross\s+profit\b/i] },
+  { key: 'ebitda',              section: 'profit_loss',   include: [/\bebitda\b/i] },
+  { key: 'ebit',                section: 'profit_loss',   include: [/\bebit\b(?!da)/i, /operating\s+profit/i],                                                      exclude: [/ebitda/i] },
+  { key: 'depreciation',        section: 'profit_loss',   include: [/depreciation|amortis/i] },
+  { key: 'interest_expense',    section: 'profit_loss',   include: [/finance\s+cost|interest\s+(?:expense|paid|on\s+loan)|borrowing\s+cost/i] },
+  { key: 'pbt',                 section: 'profit_loss',   include: [/profit\s+before\s+tax|\bpbt\b/i] },
+  { key: 'tax_expense',         section: 'profit_loss',   include: [/(?:total\s+)?tax\s+expense|income\s+tax\s+expense|provision\s+for\s+tax/i],                   exclude: [/deferred\s+tax\s+(?:asset|liab)/i] },
+  { key: 'net_income',          section: 'profit_loss',   include: [/profit\s+(?:for\s+the\s+(?:year|period)|after\s+tax)|net\s+profit\s+after|net\s+income|\bpat\b/i], exclude: [/before\s+tax/i] },
+  { key: 'total_assets',        section: 'balance_sheet', include: [/\btotal\s+assets\b/i] },
+  { key: 'current_assets',      section: 'balance_sheet', include: [/total\s+current\s+assets/i] },
+  { key: 'non_current_assets',  section: 'balance_sheet', include: [/total\s+non.?current\s+assets/i] },
+  { key: 'fixed_assets',        section: 'balance_sheet', include: [/(?:net\s+block|property,?\s+plant\s+and\s+equip|tangible\s+assets)/i] },
+  { key: 'cash_and_equivalents',section: 'balance_sheet', include: [/cash\s+and\s+(?:cash\s+)?equivalents|cash\s+and\s+bank/i] },
+  { key: 'total_equity',        section: 'balance_sheet', include: [/total\s+equity|(?:shareholders?|stockholders?)[\s'’]*(?:equity|funds)|net\s+worth/i] },
+  { key: 'total_liabilities',   section: 'balance_sheet', include: [/\btotal\s+liabilities\b/i],                                                                    exclude: [/current\s+liabilities/i] },
+  { key: 'current_liabilities', section: 'balance_sheet', include: [/total\s+current\s+liabilities/i] },
+  { key: 'total_debt',          section: 'balance_sheet', include: [/total\s+(?:long.?term\s+)?borrowing|total\s+debt/i] },
+  { key: 'cfo',                 section: 'cash_flow',     include: [/cash\s+(?:from|generated\s+(?:by|from)|used\s+in)\s+operating|(?:net\s+cash\s+)?operating\s+activities/i] },
+  { key: 'cfi',                 section: 'cash_flow',     include: [/cash\s+(?:from|used\s+in)\s+investing|(?:net\s+cash\s+)?investing\s+activities/i] },
+  { key: 'cff',                 section: 'cash_flow',     include: [/cash\s+(?:from|used\s+in)\s+financing|(?:net\s+cash\s+)?financing\s+activities/i] },
+  { key: 'net_change_in_cash',  section: 'cash_flow',     include: [/net\s+(?:change|increase|decrease)\s+in\s+cash|net\s+cash\s+(?:flow|position)/i] },
+];
+
+function detectYearsFromText(text) {
+  const found = new Map();
+  const lines = text.split('\n');
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
+    for (const m of line.matchAll(/\bFY\s*(\d{4})\b/gi))
+      if (!found.has(`FY${m[1]}`)) found.set(`FY${m[1]}`, li);
+    // 2023-24 → FY2024
+    for (const m of line.matchAll(/\b(20\d{2})-(\d{2})\b/g)) {
+      const yr = `FY${2000 + parseInt(m[2], 10)}`;
+      if (!found.has(yr)) found.set(yr, li);
+    }
+    // 2023-2024
+    for (const m of line.matchAll(/\b20\d{2}-(20\d{2})\b/g))
+      if (!found.has(`FY${m[1]}`)) found.set(`FY${m[1]}`, li);
+    // March 2024 / 31st March 2024
+    for (const m of line.matchAll(/\bMarch\s+(?:\d{1,2}[,\s]+)?(20\d{2})\b/gi))
+      if (!found.has(`FY${m[1]}`)) found.set(`FY${m[1]}`, li);
+    // 31.03.2024 / 31/03/2024
+    for (const m of line.matchAll(/\b31[./]0?3[./](20\d{2})\b/g))
+      if (!found.has(`FY${m[1]}`)) found.set(`FY${m[1]}`, li);
+  }
+  // Most-recent year first
+  return [...found.keys()].sort((a, b) => parseInt(b.slice(2), 10) - parseInt(a.slice(2), 10));
+}
+
+function detectUnitFromText(text) {
+  if (/\b(?:in\s+)?crore|\bCr\.?\b/i.test(text)) return 'Crores';
+  if (/\b(?:in\s+)?lakh|\bLk\.?\b/i.test(text)) return 'Lakhs';
+  return 'Lakhs';
+}
+
+function detectCurrencyFromText(text) {
+  if (/\bUSD\b|\$/.test(text)) return 'USD';
+  if (/\bGBP\b|£/.test(text)) return 'GBP';
+  return 'INR';
+}
+
+function detectCompanyNameFromText(lines) {
+  for (const line of lines.slice(0, 30)) {
+    if (line.length > 5 && line.length < 100 && /(?:limited|ltd\.?|private|pvt\.?|llp|inc\.?|corp\.?)\b/i.test(line))
+      return line.replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+
+function parseFinancialsFromText(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const detectedYears = detectYearsFromText(text);
+  const unit = detectUnitFromText(text);
+  const currency = detectCurrencyFromText(text);
+  const companyName = detectCompanyNameFromText(lines);
+
+  const currentYear = detectedYears[0] || `FY${new Date().getFullYear()}`;
+  const priorYear = detectedYears[1] || null;
+
+  const yearsData = {};
+  yearsData[currentYear] = { profit_loss: {}, balance_sheet: {}, cash_flow: {}, ratios: {} };
+  if (priorYear) yearsData[priorYear] = { profit_loss: {}, balance_sheet: {}, cash_flow: {}, ratios: {} };
+
+  for (const def of METRIC_DEFS) {
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      const lLine = line.toLowerCase();
+      if (!def.include.some(p => p.test(lLine))) continue;
+      if (def.exclude?.some(p => p.test(lLine))) continue;
+
+      let kwEnd = 0;
+      for (const p of def.include) {
+        const m = lLine.match(p);
+        if (m) kwEnd = Math.max(kwEnd, (m.index ?? 0) + m[0].length);
+      }
+
+      let nums = numsAfterPos(line, kwEnd);
+      // Look-ahead: values sometimes appear on the next line
+      if (nums.length === 0 && li + 1 < lines.length)
+        nums = numsAfterPos(lines[li + 1], 0);
+
+      if (nums.length === 0) continue;
+
+      if (nums[0] != null) yearsData[currentYear][def.section][def.key] = nums[0];
+      if (nums[1] != null && priorYear) yearsData[priorYear][def.section][def.key] = nums[1];
+      break; // first matching line wins per metric
+    }
+  }
+
+  return { years: yearsData, company_name: companyName, currency, unit };
+}
+
+async function extractFinancialsWithTesseract(file, onProgress) {
   const pdfjs = await loadPdfJs();
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+
+  let pdf;
+  try {
+    pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  } catch (err) {
+    const msg = (err.message || '').toLowerCase();
+    if (msg.includes('password') || msg.includes('encrypt')) throw new Error('PASSWORD_PROTECTED');
+    throw new Error('CORRUPT_PDF');
+  }
+
   const totalPages = pdf.numPages;
-  onProgress?.(`📄 Reading PDF pages... (0/${totalPages})`);
-
-  const allYears = {};
-  let detectedCompanyName = null;
-  let detectedCurrency = 'INR';
-  let detectedUnit = 'Lakhs';
   const pageMetadata = [];
-  const visionQueue = [];
+  const allPageText = new Array(totalPages).fill('');
+  const ocrQueue = []; // { idx, canvas, pageNum }
 
+  // Layer 1 + 2: Text extraction and per-page scanned detection
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     onProgress?.(`📄 Reading PDF pages... (${pageNum}/${totalPages})`);
-    let canvas;
-    try {
-      const page = await pdf.getPage(pageNum);
-      canvas = await renderPdfPageToCanvas(page, 3.0);
-    } catch (e) {
-      pageMetadata.push({ page: pageNum, method: 'failed', reason: e.message });
-      continue;
-    }
-    let ocrResult = { text: '', confidence: 0 };
-    try {
-      onProgress?.(`🔍 Running OCR on page ${pageNum}...`);
-      ocrResult = await ocrPageWithTesseract(canvas);
-    } catch (e) { /* OCR failed — will use Vision */ }
+    const page = await pdf.getPage(pageNum);
 
-    const hasFinancialKw = /revenue|profit|loss|assets|liabilities|equity|income|expense|balance|cash|turnover|borrowing/i.test(ocrResult.text);
-    const hasNumbers = /\d{3,}/.test(ocrResult.text);
+    let textLayerText = '';
+    try {
+      const content = await page.getTextContent();
+      textLayerText = content.items.map(item => item.str).join(' ');
+    } catch (_) { /* text layer unavailable */ }
 
-    if (hasFinancialKw || hasNumbers) {
-      const meta = { page: pageNum, method: 'vision-queued', confidence: ocrResult.confidence };
-      pageMetadata.push(meta);
-      visionQueue.push({ pageNum, canvas, meta });
+    const hasText = textLayerText.trim().length > 500;
+    const hasNumbers = /\d{3,}/.test(textLayerText);
+
+    if (hasText && hasNumbers) {
+      // Layer 1 fast path: digital text is usable
+      allPageText[pageNum - 1] = textLayerText;
+      pageMetadata.push({ page: pageNum, method: 'text', chars: textLayerText.length });
     } else {
-      pageMetadata.push({ page: pageNum, method: 'skipped', reason: 'no financial content detected' });
+      // Layer 2: scanned — rasterize at scale 3.0 ≈ 300 DPI (assumes 96 DPI screen baseline)
+      console.log(`[Tesseract] Page ${pageNum}: scanned (~${textLayerText.trim().length} chars), queuing OCR`);
+      try {
+        const canvas = await renderPdfPageToCanvas(page, 3.0);
+        ocrQueue.push({ idx: pageNum - 1, canvas, pageNum });
+        pageMetadata.push({ page: pageNum, method: 'ocr-queued' });
+      } catch (renderErr) {
+        allPageText[pageNum - 1] = textLayerText;
+        pageMetadata.push({ page: pageNum, method: 'render-failed', chars: textLayerText.length });
+      }
     }
   }
 
-  const BATCH_SIZE = 2;
-  for (let i = 0; i < visionQueue.length; i += BATCH_SIZE) {
-    const batch = visionQueue.slice(i, i + BATCH_SIZE);
-    const pageNums = batch.map(p => p.pageNum).join(', ');
-    onProgress?.(`🤖 Claude Vision extracting financials from pages ${pageNums}...`);
-
-    const pageImages = batch.map(p => {
-      const dataURL = p.canvas.toDataURL('image/png');
-      return { base64: dataURL.split(',')[1], pageNum: p.pageNum };
-    });
-
-    let raw = '';
+  // Layer 3: Single shared Tesseract worker for all scanned pages
+  if (ocrQueue.length > 0) {
+    onProgress?.(`🔍 Detected ${ocrQueue.length} scanned page(s) — starting OCR...`);
+    const Tesseract = await loadTesseract();
+    let worker = null;
     try {
-      raw = await callClaudeVisionForFinancials(pageImages);
-    } catch (e) {
-      console.error(`[ScannedExcel] Vision failed for pages ${pageNums}:`, e);
-      for (const p of batch) p.meta.method = 'vision-failed';
-      continue;
-    }
-
-    let parsed = null;
-    try { parsed = JSON.parse(raw); } catch {}
-    if (!parsed) {
-      const m = raw.match(/\{[\s\S]*\}/);
-      if (m) { try { parsed = JSON.parse(m[0]); } catch {} }
-    }
-    if (!parsed) {
-      const fixed = raw.replace(/,(\s*[}\]])/g, '$1');
-      try { parsed = JSON.parse(fixed); } catch {}
-    }
-
-    if (parsed) {
-      if (parsed.company_name && !detectedCompanyName) detectedCompanyName = parsed.company_name;
-      if (parsed.currency) detectedCurrency = parsed.currency;
-      if (parsed.unit) detectedUnit = parsed.unit;
-      if (parsed.years && typeof parsed.years === 'object') {
-        for (const [yr, data] of Object.entries(parsed.years)) {
-          if (!allYears[yr]) {
-            allYears[yr] = data;
-            onProgress?.(`✅ ${yr} data extracted`);
-          } else {
-            allYears[yr] = mergeFinancialYearData(allYears[yr], data);
-          }
+      worker = await Tesseract.createWorker('eng', 1, {
+        workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+        langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+        corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      });
+      for (let q = 0; q < ocrQueue.length; q++) {
+        const { idx, canvas, pageNum } = ocrQueue[q];
+        onProgress?.(`🔍 OCR page ${pageNum} of ${totalPages} (${q + 1}/${ocrQueue.length})...`);
+        try {
+          const { data } = await worker.recognize(canvas);
+          allPageText[idx] = data.text || '';
+          const meta = pageMetadata.find(m => m.page === pageNum);
+          if (meta) { meta.method = 'ocr'; meta.confidence = Math.round(data.confidence); }
+        } catch (ocrErr) {
+          console.warn(`[Tesseract] OCR failed page ${pageNum}:`, ocrErr.message);
+          const meta = pageMetadata.find(m => m.page === pageNum);
+          if (meta) meta.method = 'ocr-failed';
         }
       }
-      for (const p of batch) p.meta.method = 'vision-success';
-    } else {
-      for (const p of batch) p.meta.method = 'vision-parse-failed';
+    } catch (workerErr) {
+      console.error('[Tesseract] Worker init failed:', workerErr.message);
+      onProgress?.('⚠ OCR engine unavailable — financial data extraction may be limited');
+    } finally {
+      try { await worker?.terminate(); } catch (_) {}
     }
   }
 
-  return { years: allYears, company_name: detectedCompanyName, currency: detectedCurrency, unit: detectedUnit, pageMetadata, totalPages };
+  const combinedText = allPageText.join('\n\n');
+  onProgress?.('📊 Parsing financial data from extracted text...');
+
+  // Layer 4: Regex-based financial parser — no Claude API required
+  const parsed = parseFinancialsFromText(combinedText);
+  const sortedYears = Object.keys(parsed.years).sort();
+
+  for (const yr of sortedYears) onProgress?.(`✅ ${yr} data extracted`);
+
+  // Layer 5: Validation
+  const validationWarnings = validateScannedData(parsed.years, sortedYears);
+
+  // Chronological order check
+  if (sortedYears.length > 1) {
+    const nums = sortedYears.map(y => parseInt(y.replace('FY', ''), 10));
+    for (let i = 1; i < nums.length; i++) {
+      if (nums[i] <= nums[i - 1]) {
+        validationWarnings.push(`Years not in chronological order: ${sortedYears.join(', ')}`);
+        break;
+      }
+    }
+  }
+
+  if (validationWarnings.length > 0) {
+    validationWarnings.forEach(w => console.warn('[Tesseract Validation]', w));
+    onProgress?.(`⚠ ${validationWarnings.length} validation issue(s) flagged — see Excel warnings sheet`);
+  } else if (sortedYears.length > 0) {
+    onProgress?.('✅ Financial data validated successfully');
+  }
+
+  return {
+    years: parsed.years,
+    company_name: parsed.company_name,
+    currency: parsed.currency,
+    unit: parsed.unit,
+    pageMetadata,
+    totalPages,
+    validationWarnings,
+    extractionMethod: 'tesseract',
+  };
 }
 
 function validateScannedData(years, sortedYears) {
@@ -3194,11 +3331,10 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
       onProgress?.("Generating Excel workbook...");
       try {
         const useScannedPipeline = fname.endsWith('.pdf') &&
-          !apiUnavailable &&
           (extractionMethod === 'ocr' || extractionMethod === 'vision' || noFinancialData);
         if (useScannedPipeline) {
-          onProgress?.("Scanned PDF detected — running Vision extraction for structured Excel...");
-          const scannedData = await extractFinancialsFromScannedPdf(file, onProgress);
+          onProgress?.("Scanned PDF detected — running Tesseract extraction for structured Excel...");
+          const scannedData = await extractFinancialsWithTesseract(file, onProgress);
           excelResult = await generateScannedExcel(scannedData, companyInfo, onProgress);
         } else {
           excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot);
