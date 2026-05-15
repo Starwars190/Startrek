@@ -4027,41 +4027,142 @@ function PendingAnalysisBanner({ onRetry }) {
   );
 }
 
-const ACTIVITY_LABELS = ["🧠 AI is reading...", "📝 Extracting data...", "🔍 Analyzing structure..."];
+const PIPELINE_STEPS = [
+  { id: 'read',    label: 'Reading document',            icon: '📄' },
+  { id: 'split',   label: 'Splitting into sections',     icon: '🔍' },
+  { id: 'extract', label: 'Extracting financial data',   icon: '📊' },
+  { id: 'analyse', label: 'Calculating ratios & SWOT',   icon: '🔢' },
+  { id: 'excel',   label: 'Building Excel workbook',     icon: '📑' },
+  { id: 'docs',    label: 'Generating documents',        icon: '📝' },
+];
+
+function getStepIndex(msg) {
+  if (!msg) return -1;
+  // Test from last step to first so more-specific patterns win
+  if (/generating.*pdf|generating.*word|generating company narr|building brief|generating brief|generating detailed|pdf generation|large document.*pdf/i.test(msg)) return 5;
+  if (/generating excel|building excel workbook|excel ready|scanned.*vision extraction|📊 building excel/i.test(msg)) return 4;
+  if (/calculating.*ratio|generating swot|building bar chart|done:.*section/i.test(msg)) return 3;
+  if (/processing section|processed section|🤖 claude vision|extracting financials from pages|✅.*data extracted/i.test(msg)) return 2;
+  if (/splitting document|document has \d+.*section|beginning ai|beginning.*processing/i.test(msg)) return 1;
+  if (/reading your document|📄 reading|running ocr|🔍 running ocr|scanned pdf|claude vision ocr|running claude vision/i.test(msg)) return 0;
+  return -1;
+}
+
+function ProcessingSteps({ progress, error, elapsedSecs }) {
+  const hwRef = useRef(-1);
+  const stepIdx = getStepIndex(progress);
+  if (stepIdx > hwRef.current) hwRef.current = stepIdx;
+  // Default to step 0 so the first step shows active immediately
+  const hw = hwRef.current === -1 ? 0 : hwRef.current;
+
+  const pageMatch = progress?.match(/\((\d+)\/(\d+)\)/);
+  const chunkMatch = progress?.match(/section (\d+) of (\d+)/i);
+
+  const mins = Math.floor(elapsedSecs / 60);
+  const secs = elapsedSecs % 60;
+  const elapsedStr = mins > 0 ? `${mins}m ${String(secs).padStart(2, '0')}s` : `${elapsedSecs}s`;
+
+  const getState = (i) => {
+    if (error && i === hw) return 'error';
+    if (i < hw) return 'done';
+    if (i === hw) return 'active';
+    return 'pending';
+  };
+
+  return (
+    <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '20px 24px', boxShadow: C.shadowMd }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, gap: 10 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: C.textPrimary }}>Processing your document</div>
+        <div style={{ fontSize: 12, color: C.textSec, background: C.brownLight, borderRadius: 20, padding: '3px 10px', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+          ⏱ {elapsedStr}
+        </div>
+      </div>
+      {PIPELINE_STEPS.map((step, i) => {
+        const state = getState(i);
+        const isLast = i === PIPELINE_STEPS.length - 1;
+        return (
+          <div key={step.id} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+            {/* Circle + connector line */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: state === 'done' ? C.green : state === 'active' ? C.amberBg : state === 'error' ? C.redBg : '#FAFAFA',
+                border: `2px solid ${state === 'done' ? C.green : state === 'active' ? C.amber : state === 'error' ? C.red : C.border}`,
+                transition: 'background 0.3s, border-color 0.3s',
+              }}>
+                {state === 'done' && <span style={{ color: '#fff', fontSize: 13, fontWeight: 700, lineHeight: 1 }}>✓</span>}
+                {state === 'active' && (
+                  <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: '50%', border: `2px solid ${C.amber}`, borderTopColor: 'transparent', animation: 'fs-spin 0.8s linear infinite' }} />
+                )}
+                {state === 'error' && <span style={{ color: C.red, fontSize: 13, fontWeight: 700, lineHeight: 1 }}>✕</span>}
+                {state === 'pending' && <span style={{ color: C.textMuted, fontSize: 10, fontWeight: 600 }}>{i + 1}</span>}
+              </div>
+              {!isLast && (
+                <div style={{ width: 2, flex: 1, minHeight: 20, marginTop: 2, marginBottom: 2, borderRadius: 1, background: state === 'done' ? C.green : C.border, opacity: state === 'done' ? 0.4 : 0.2, transition: 'background 0.3s' }} />
+              )}
+            </div>
+            {/* Label + subtext */}
+            <div style={{ flex: 1, paddingBottom: isLast ? 0 : 16, paddingTop: 4 }}>
+              <div style={{
+                fontSize: 13.5,
+                fontWeight: state === 'active' ? 700 : 500,
+                color: state === 'done' ? C.textSec : state === 'active' ? C.textPrimary : state === 'error' ? C.red : C.textMuted,
+                display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap',
+                transition: 'color 0.2s',
+              }}>
+                <span>{step.icon}</span>
+                <span>{step.label}</span>
+                {state === 'active' && pageMatch && i === 0 && (
+                  <span style={{ fontSize: 12, fontWeight: 400, color: C.textSec }}>({pageMatch[1]} / {pageMatch[2]})</span>
+                )}
+              </div>
+              {state === 'active' && progress && (
+                <div style={{ fontSize: 11.5, color: C.textSec, marginTop: 4, fontStyle: 'italic', lineHeight: 1.5, wordBreak: 'break-word' }}>
+                  {progress}
+                </div>
+              )}
+              {state === 'active' && chunkMatch && i === 2 && (() => {
+                const done = parseInt(chunkMatch[1], 10);
+                const total = parseInt(chunkMatch[2], 10);
+                const pct = Math.round((done / total) * 100);
+                return (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textMuted, marginBottom: 3 }}>
+                      <span>Sections processed</span><span>{done} / {total}</span>
+                    </div>
+                    <div style={{ height: 5, background: C.border, borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${pct}%`, background: C.brown, borderRadius: 3, transition: 'width 0.4s ease' }} />
+                    </div>
+                  </div>
+                );
+              })()}
+              {state === 'error' && error && (
+                <div style={{ fontSize: 12, color: C.red, marginTop: 4, lineHeight: 1.5 }}>{error}</div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}`, fontSize: 11.5, color: C.textMuted, textAlign: 'center' }}>
+        Multi-pass processing — typically 3–5 minutes for large documents
+      </div>
+    </div>
+  );
+}
 
 function PrivateDocUploadZone({ onFileSelected, isProcessing, progress, error }) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
-
   const [elapsedSecs, setElapsedSecs] = useState(0);
-  const [activityIdx, setActivityIdx] = useState(0);
   const startTimeRef = useRef(null);
 
   useEffect(() => {
-    if (!isProcessing) { setElapsedSecs(0); setActivityIdx(0); startTimeRef.current = null; return; }
+    if (!isProcessing) { setElapsedSecs(0); startTimeRef.current = null; return; }
     startTimeRef.current = Date.now();
-    const elapsedTimer = setInterval(() => {
-      setElapsedSecs(Math.floor((Date.now() - startTimeRef.current) / 1000));
-    }, 1000);
-    const activityTimer = setInterval(() => {
-      setActivityIdx(idx => (idx + 1) % ACTIVITY_LABELS.length);
-    }, 2000);
-    return () => { clearInterval(elapsedTimer); clearInterval(activityTimer); };
+    const timer = setInterval(() => setElapsedSecs(Math.floor((Date.now() - startTimeRef.current) / 1000)), 1000);
+    return () => clearInterval(timer);
   }, [isProcessing]);
-
-  const chunkMatch = progress?.match(/section (\d+) of (\d+)/i);
-  const chunksComplete = chunkMatch ? parseInt(chunkMatch[1], 10) : 0;
-  const chunksTotal = chunkMatch ? parseInt(chunkMatch[2], 10) : 0;
-  const showBar = chunksTotal > 0;
-  const barPct = showBar ? Math.round((chunksComplete / chunksTotal) * 100) : 0;
-  const slowChunk = elapsedSecs > 0 && showBar && chunksComplete < chunksTotal &&
-    (elapsedSecs - chunksComplete * 3) > 60;
-
-  const elapsedMins = Math.floor(elapsedSecs / 60);
-  const elapsedRemSecs = elapsedSecs % 60;
-  const elapsedStr = elapsedMins > 0
-    ? `${elapsedMins}m ${String(elapsedRemSecs).padStart(2, "0")}s`
-    : `${elapsedSecs}s`;
 
   const handleDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
   const handleDragLeave = (e) => { e.preventDefault(); setIsDragging(false); };
@@ -4074,50 +4175,25 @@ function PrivateDocUploadZone({ onFileSelected, isProcessing, progress, error })
 
   return (
     <div style={{ width: "100%", maxWidth: 720, margin: "16px auto 0" }}>
-      <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onClick={!isProcessing ? () => fileInputRef.current?.click() : undefined}
-        style={{ padding: "28px 24px", background: isDragging ? C.brownLight : (isProcessing ? "#F5F5F5" : C.bgCard), border: `2px dashed ${isDragging ? C.brown : C.border}`, borderRadius: 14, cursor: isProcessing ? "wait" : "pointer", transition: "all 0.2s", textAlign: "center", opacity: isProcessing ? 0.85 : 1, boxShadow: C.shadow }}>
-        <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.xml,.xbrl,.xlsx,.xls" onChange={(e) => handleFile(e.target.files[0])} style={{ display: "none" }} disabled={isProcessing} />
-        {!isProcessing ? (
-          <>
+      {isProcessing ? (
+        <ProcessingSteps progress={progress} error={error} elapsedSecs={elapsedSecs} />
+      ) : (
+        <>
+          <div
+            onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            style={{ padding: "28px 24px", background: isDragging ? C.brownLight : C.bgCard, border: `2px dashed ${isDragging ? C.brown : C.border}`, borderRadius: 14, cursor: "pointer", transition: "all 0.2s", textAlign: "center", boxShadow: C.shadow }}
+          >
+            <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.xml,.xbrl,.xlsx,.xls" onChange={(e) => handleFile(e.target.files[0])} style={{ display: "none" }} />
             <div style={{ fontSize: 32, marginBottom: 10 }}>📄</div>
             <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Upload Private Company Financials</div>
             <div style={{ fontSize: 12.5, color: C.textSec, marginBottom: 8 }}>Upload PDF or Word document — drag & drop here, or click to browse</div>
             <div style={{ fontSize: 11, color: C.textMuted, fontStyle: "italic" }}>Clean XBRL output · Times New Roman · Page borders · Bar charts · SWOT · Ratio interpretations</div>
-          </>
-        ) : (
-          <>
-            <div style={{ fontSize: 24, marginBottom: 10, animation: "fs-spin 2s linear infinite", display: "inline-block" }}>⚙️</div>
-
-            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginBottom: 8 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: C.brown }}>{progress || "Processing..."}</div>
-              <div style={{ fontSize: 12, color: C.textMuted, background: C.brownLight, borderRadius: 6, padding: "2px 8px", fontVariantNumeric: "tabular-nums" }}>Elapsed: {elapsedStr}</div>
-            </div>
-
-            {showBar && (
-              <div style={{ margin: "8px auto 4px", maxWidth: 400 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.textMuted, marginBottom: 4 }}>
-                  <span>Sections processed</span>
-                  <span>{chunksComplete} / {chunksTotal}</span>
-                </div>
-                <div style={{ height: 8, background: C.border, borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${barPct}%`, background: C.brown, borderRadius: 4, transition: "width 0.5s ease" }} />
-                </div>
-              </div>
-            )}
-
-            {slowChunk && (
-              <div style={{ marginTop: 10, padding: "6px 12px", background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 6, fontSize: 11.5, color: C.amber, display: "inline-block" }}>
-                ⚠ Large section detected — taking longer than usual, please wait...
-              </div>
-            )}
-
-            <div style={{ marginTop: 10, fontSize: 12, color: C.textSec, fontStyle: "italic" }}>{ACTIVITY_LABELS[activityIdx]}</div>
-            <div style={{ marginTop: 4, fontSize: 11, color: C.textMuted }}>Multi-pass processing — typically 3-5 minutes for large documents</div>
-          </>
-        )}
-      </div>
-      {error && (
-        <div style={{ marginTop: 12, padding: "10px 14px", background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, fontSize: 12.5, color: C.red }}>⚠ {error}</div>
+          </div>
+          {error && (
+            <div style={{ marginTop: 12, padding: "10px 14px", background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, fontSize: 12.5, color: C.red }}>⚠ {error}</div>
+          )}
+        </>
       )}
     </div>
   );
