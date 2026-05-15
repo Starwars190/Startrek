@@ -501,8 +501,10 @@ OUTPUT JSON STRUCTURE (return ONLY this, no markdown)
     "tradePayables": null or number,
     "revenue": null or number, "grossProfit": null or number,
     "operatingProfit": null or number, "ebitda": null or number,
+    "pbt": null or number,
     "netIncome": null or number, "interestExpense": null or number,
-    "tax": null or number, "cogs": null or number,
+    "tax": null or number, "totalTax": null or number,
+    "cogs": null or number,
     "depreciation": null or number, "operatingCashFlow": null or number,
     "investingCashFlow": null or number, "financingCashFlow": null or number
   },
@@ -516,8 +518,10 @@ OUTPUT JSON STRUCTURE (return ONLY this, no markdown)
     "tradePayables": null or number,
     "revenue": null or number, "grossProfit": null or number,
     "operatingProfit": null or number, "ebitda": null or number,
+    "pbt": null or number,
     "netIncome": null or number, "interestExpense": null or number,
-    "tax": null or number, "cogs": null or number,
+    "tax": null or number, "totalTax": null or number,
+    "cogs": null or number,
     "depreciation": null or number, "operatingCashFlow": null or number,
     "investingCashFlow": null or number, "financingCashFlow": null or number
   }
@@ -528,7 +532,31 @@ REMEMBER:
 - PRESERVE every preamble narrative section (Financial Highlights, POSH, Secretarial Standards, etc.)
 - financialDataExtracted = CURRENT YEAR values (numbers only). Convert "34,149.08" to 34149.08.
 - financialDataExtractedPrior = PRIOR YEAR values (the comparative column, typically labeled "Previous Year" or the earlier date range).
-- COGS = Cost of Materials Consumed + Purchases of Stock-in-Trade + Changes in Inventory of Finished Goods/WIP. Do NOT include Employee Benefits, Finance Costs, Depreciation, Other Expenses, or Tax.
+
+P&L EXTRACTION — CRITICAL (read carefully):
+From the Statement of Profit and Loss, map these EXACT lines:
+  "Revenue from Operations" / "Total Revenue" / "Total Income" → revenue
+  "Cost of Materials Consumed" + "Purchases of Stock-in-Trade" + "Changes in Inventory of FG/WIP" → cogs
+    (cogs = sum of those three items ONLY. Do NOT include Employee Benefits, Finance Costs, Depreciation, Other Expenses, or Tax)
+  "Finance Costs" / "Interest Expense" → interestExpense
+  "Depreciation and Amortization" → depreciation
+  "Profit/(Loss) before tax" (the line AFTER exceptional items, BEFORE tax) → pbt
+  "Total Tax Expense" (sum of Current Tax + Deferred Tax) → totalTax
+    Also store totalTax in the "tax" field.
+  "Profit/(Loss) for the period" / "Profit/(Loss) for the year" (the FINAL line after tax) → netIncome
+
+CRITICAL VALIDATION — before you return the JSON, verify:
+  netIncome MUST NOT equal totalTax exactly. If they match exactly, you mis-identified a line — re-read and fix.
+  pbt should approximately equal netIncome + totalTax. If not, flag with a note but still return your best values.
+  Do NOT return null for netIncome or pbt if a line with that label appears in the chunk — even if it's negative.
+
+BALANCE SHEET EXTRACTION — CRITICAL:
+  "Long-term Borrowings" (Non-current Liabilities section) → longTermDebt
+    If this line exists with value 0, return 0 (not null). Return null ONLY if the line is absent from the filing.
+    Do NOT confuse "Deferred Tax Liabilities" with longTermDebt — they are different items.
+  "Short-term Borrowings" (Current Liabilities section) → shortTermDebt
+  "Trade Payables" / "Creditors for goods/services" → tradePayables
+
 - tradePayables = Trade Payables / Creditors for goods/services (from Balance Sheet Notes or current liabilities breakdown).`;
 }
 
@@ -560,7 +588,7 @@ const FINANCIAL_KEYS = [
   "totalAssets","currentAssets","nonCurrentAssets","totalLiabilities","currentLiabilities",
   "nonCurrentLiabilities","totalEquity","longTermDebt","shortTermDebt","inventory",
   "receivables","cash","fixedAssets","tradePayables","revenue","grossProfit","operatingProfit",
-  "ebitda","netIncome","interestExpense","tax","cogs","depreciation",
+  "ebitda","pbt","netIncome","interestExpense","tax","totalTax","cogs","depreciation",
   "operatingCashFlow","investingCashFlow","financingCashFlow"
 ];
 
@@ -591,10 +619,27 @@ function aggregatePriorFinancialData(chunkResults) {
 }
 
 function computeDerivedFinancials(agg) {
+  // Prefer totalTax over the ambiguous "tax" field (AI sometimes mis-maps)
+  if (agg.totalTax != null && agg.tax == null) agg.tax = agg.totalTax;
+
+  // Detect tax === netIncome extraction bug and clear the bad field
+  if (agg.tax != null && agg.netIncome != null && agg.tax === agg.netIncome) {
+    console.warn('[computeDerivedFinancials] tax === netIncome — extraction error detected; clearing tax');
+    agg.tax = null;
+    // If we have pbt and netIncome we can back-calculate tax
+    if (agg.pbt != null) agg.tax = agg.pbt - agg.netIncome;
+  }
+
   if (agg.grossProfit == null && agg.revenue != null && agg.cogs != null)
     agg.grossProfit = agg.revenue - agg.cogs;
+
+  // Prefer pbt-based operatingProfit (pbt + interestExpense = EBIT ≈ operatingProfit)
+  if (agg.operatingProfit == null && agg.pbt != null && agg.interestExpense != null)
+    agg.operatingProfit = agg.pbt + agg.interestExpense;
+  // Fallback: back-calculate from netIncome
   if (agg.operatingProfit == null && agg.netIncome != null && agg.interestExpense != null && agg.tax != null)
     agg.operatingProfit = agg.netIncome + agg.interestExpense + agg.tax;
+
   if (agg.ebitda == null && agg.operatingProfit != null && agg.depreciation != null)
     agg.ebitda = agg.operatingProfit + agg.depreciation;
   if (agg.currentAssets != null && agg.currentLiabilities != null)
@@ -615,7 +660,10 @@ function calculateRatios(fd, sectorHint = "general", fdPrior = null) {
   const safeMul = (n, m) => (n != null && m != null && !isNaN(n) && !isNaN(m)) ? (n * m) : null;
   const safeAdd = (...vals) => vals.every(v => v != null && !isNaN(v)) ? vals.reduce((a, b) => a + b, 0) : null;
 
-  const capitalEmployed = safeAdd(fd.totalEquity ?? null, fd.longTermDebt ?? null, fd.shortTermDebt ?? null);
+  // Capital employed: requires equity; debt components default to 0 if absent
+  const capitalEmployed = fd.totalEquity != null
+    ? (fd.totalEquity ?? 0) + (fd.longTermDebt ?? 0) + (fd.shortTermDebt ?? 0)
+    : null;
   const totalDebt = (fd.longTermDebt != null || fd.shortTermDebt != null)
     ? (fd.longTermDebt ?? 0) + (fd.shortTermDebt ?? 0) : null;
   const workingCapital = (fd.currentAssets != null && fd.currentLiabilities != null)
@@ -1689,6 +1737,29 @@ async function generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, 
   }
 }
 
+function validateExtractedData(agg) {
+  const warnings = [];
+  if (agg.tax != null && agg.netIncome != null && agg.tax === agg.netIncome)
+    warnings.push(`Tax equals Net Income exactly (${agg.tax}) — likely extraction error`);
+  if (agg.revenue != null && agg.cogs != null && agg.grossProfit != null) {
+    const computed = agg.revenue - agg.cogs;
+    if (Math.abs(agg.grossProfit - computed) > 1)
+      warnings.push(`Gross Profit mismatch: extracted ${agg.grossProfit} vs computed ${computed.toFixed(2)}`);
+  }
+  if (agg.pbt != null && agg.netIncome != null && agg.tax != null) {
+    const expectedPbt = agg.netIncome + agg.tax;
+    if (Math.abs(agg.pbt - expectedPbt) > 1)
+      warnings.push(`PBT mismatch: extracted ${agg.pbt} vs (NI+Tax)=${expectedPbt.toFixed(2)}`);
+  }
+  if (agg.totalAssets != null && agg.totalLiabilities != null && agg.totalEquity != null) {
+    const expectedAssets = agg.totalLiabilities + agg.totalEquity;
+    if (agg.totalAssets > 0 && Math.abs(agg.totalAssets - expectedAssets) / agg.totalAssets > 0.05)
+      warnings.push(`Balance Sheet gap: Assets=${agg.totalAssets}, L+E=${expectedAssets.toFixed(2)}`);
+  }
+  if (warnings.length > 0) console.warn('[FinSight] Extraction warnings:', warnings);
+  return warnings;
+}
+
 async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
   try {
     onProgress?.("Reading your document...");
@@ -1774,6 +1845,7 @@ async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
     onProgress?.(progressSuffix);
     const aggregated = aggregateFinancialData(chunkResults);
     computeDerivedFinancials(aggregated);
+    validateExtractedData(aggregated);
     const aggregatedPrior = aggregatePriorFinancialData(chunkResults);
     computeDerivedFinancials(aggregatedPrior);
     let sectorHint = companyInfo.sector || "";
