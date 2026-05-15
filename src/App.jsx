@@ -1115,23 +1115,39 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     BorderStyle, AlignmentType, WidthType, PageNumber, Header, Footer, ShadingType, ImageRun
   } = docx;
 
-  const BLACK = "000000", BROWN = "8B4513";
-  const GREY_BORDER = "808080", LIGHT_BG = "F5EFE7";
+  // Goldman Sachs / Corporate color palette
+  const NAVY  = "1A365D";
+  const GOLD  = "B7860F";
+  const DK    = "1A202C";
+  const MID   = "4A5568";
+  const LIGHT = "E8EFF8";
+  const WHITE = "FFFFFF";
+  const BLACK = "000000";
 
-  const cellBorder = {
-    top: { style: BorderStyle.SINGLE, size: 4, color: GREY_BORDER },
-    bottom: { style: BorderStyle.SINGLE, size: 4, color: GREY_BORDER },
-    left: { style: BorderStyle.SINGLE, size: 4, color: GREY_BORDER },
-    right: { style: BorderStyle.SINGLE, size: 4, color: GREY_BORDER },
+  const noBorder = { style: BorderStyle.NONE, size: 0, color: WHITE };
+  const noBorders = { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder };
+
+  const navyBorder = {
+    top:    { style: BorderStyle.SINGLE, size: 6, color: NAVY },
+    bottom: { style: BorderStyle.SINGLE, size: 6, color: NAVY },
+    left:   { style: BorderStyle.SINGLE, size: 6, color: NAVY },
+    right:  { style: BorderStyle.SINGLE, size: 6, color: NAVY },
+  };
+
+  const thinBorder = {
+    top:    { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
+    bottom: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
+    left:   { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
+    right:  { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
   };
 
   const txt = (str, opts = {}) => new TextRun({
     text: String(str || ""),
-    font: opts.font || "Times New Roman",
+    font: opts.font || "Calibri",
     size: opts.size || 22,
     bold: opts.bold || false,
     italics: opts.italics || false,
-    color: opts.color || BLACK,
+    color: opts.color || DK,
   });
 
   const para = (children, opts = {}) => new Paragraph({
@@ -1142,64 +1158,290 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
 
   const cell = (children, opts = {}) => new TableCell({
     children: Array.isArray(children) ? children : [children],
-    borders: cellBorder,
+    borders: opts.borders || thinBorder,
     width: opts.width,
     shading: opts.shading,
-    verticalAlign: "center",
-    margins: opts.margins || { top: 100, bottom: 100, left: 120, right: 120 },
+    verticalAlign: opts.verticalAlign || "center",
+    margins: opts.margins || { top: 100, bottom: 100, left: 140, right: 140 },
   });
 
+  // Section header: large navy centered heading
   const sectionHeader = (number, title) => para(
-    [txt(`${number ? number + " " : ""}${humanizeTitle(title)}`, {
-      font: "Times New Roman", size: 32, bold: true, color: BROWN
+    [txt(`${number ? number + "  " : ""}${humanizeTitle(title)}`, {
+      font: "Calibri", size: 34, bold: true, color: NAVY
     })],
-    { align: AlignmentType.CENTER, spacing: { before: 700, after: 250, line: 380 } }
+    { align: AlignmentType.LEFT, spacing: { before: 600, after: 200, line: 360 } }
   );
 
+  // Horizontal rule via table
+  const hrule = (color = "C5D3E8", thickness = 8) => new Table({
+    rows: [new TableRow({ children: [new TableCell({
+      children: [new Paragraph({ children: [] })],
+      borders: { top: { style: BorderStyle.SINGLE, size: thickness, color }, bottom: noBorder, left: noBorder, right: noBorder },
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
+    })] })],
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
+  });
+
   const subSectionHeader = (title) => para(
-    [txt(humanizeTitle(title), { font: "Times New Roman", size: 26, bold: true, color: BROWN })],
-    { spacing: { before: 450, after: 180, line: 340 } }
+    [txt(humanizeTitle(title), { font: "Calibri", size: 26, bold: true, color: NAVY })],
+    { spacing: { before: 400, after: 160, line: 340 } }
   );
 
   const subheading = (title) => para(
-    [txt(humanizeTitle(title), { font: "Times New Roman", size: 24, bold: true, color: BROWN })],
-    { spacing: { before: 300, after: 150, line: 320 } }
+    [txt(humanizeTitle(title), { font: "Calibri", size: 23, bold: true, color: NAVY })],
+    { spacing: { before: 260, after: 120, line: 320 } }
   );
 
   const disclaimer = (rounding) => para(
     [txt(`Unless otherwise specified, all monetary values are in ${rounding || "Lakhs"} of INR`, {
-      font: "Times New Roman", size: 20, italics: true, color: BROWN
+      font: "Calibri", size: 18, italics: true, color: MID
     })],
-    { align: AlignmentType.RIGHT, spacing: { before: 100, after: 200 } }
+    { align: AlignmentType.RIGHT, spacing: { before: 80, after: 160 } }
   );
 
-  const blankLine = () => para([txt("", { size: 12 })], { spacing: { before: 100, after: 100 } });
+  const blankLine = () => para([txt("", { size: 12 })], { spacing: { before: 80, after: 80 } });
   const pageBreak = () => new Paragraph({ children: [new TextRun({ text: "" })], pageBreakBefore: true });
 
-  const allSections = [];
-
-  // TITLE PAGE
-  allSections.push(para([txt("", { size: 16 })], { spacing: { before: 400 } }));
-  allSections.push(para(
-    [txt(companyInfo.name || "PRIVATE COMPANY", {
-      font: "Times New Roman", size: 40, bold: true, color: BROWN
-    })],
-    { align: AlignmentType.CENTER, spacing: { before: 800, after: 300, line: 440 } }
-  ));
-  if (companyInfo.period) {
-    allSections.push(para(
-      [txt(`Standalone Financial Statements`, { font: "Times New Roman", size: 28, italics: true })],
-      { align: AlignmentType.CENTER, spacing: { before: 200, after: 120 } }
-    ));
-    allSections.push(para(
-      [txt(`for the period ${preserveDateRanges(companyInfo.period)}`, { font: "Times New Roman", size: 24, italics: true })],
-      { align: AlignmentType.CENTER, spacing: { before: 60, after: 400 } }
-    ));
+  // Traffic-light logic for ratios
+  const RATIO_BENCHMARKS = {
+    'Gross Margin (%)':         { low: 20,  high: 60  },
+    'Net Margin (%)':           { low: 0,   high: 80, warnLow: 0 },
+    'EBITDA Margin (%)':        { low: 8,   high: 40  },
+    'Current Ratio':            { low: 1.2, high: 3.0 },
+    'Quick Ratio':              { low: 0.8, high: 2.5 },
+    'Debt-to-Equity':           { low: 0,   high: 1.5, invertLogic: true },
+    'Return on Equity (%)':     { low: 10,  high: 30  },
+    'Return on Assets (%)':     { low: 5,   high: 20  },
+    'Interest Coverage':        { low: 2,   high: 10  },
+    'Inventory Turnover':       { low: 3,   high: 15  },
+  };
+  function getRatioLight(name, rawValue) {
+    if (rawValue == null || isNaN(rawValue)) return '⚪';
+    const b = RATIO_BENCHMARKS[name];
+    if (!b) return '⚪';
+    if (b.invertLogic) return rawValue <= b.high ? '🟢' : rawValue <= b.high * 1.5 ? '🟡' : '🔴';
+    if (rawValue >= b.low && rawValue <= b.high) return '🟢';
+    if (rawValue >= b.low * 0.7 && rawValue <= b.high * 1.3) return '🟡';
+    return '🔴';
   }
-  allSections.push(disclaimer(companyInfo.rounding));
+
+  // Key-value pair filtering: skip sensitive / identity fields
+  const SENSITIVE_LABEL_RE = /pan|din|cin|gst|aadhaar|address|pin\s*code|tax.*number|registration.*number|passport/i;
+  const LOOKS_LIKE_ID = /^[A-Z0-9]{10,}$/;
+  function shouldSkipKVPair(label, value) {
+    if (!label) return true;
+    if (SENSITIVE_LABEL_RE.test(label)) return true;
+    if (value == null || value === '' || value === 'null' || value === '0' || value === 'undefined') return true;
+    const strVal = String(value).trim();
+    if (!strVal || strVal === '—') return false; // keep em-dashes
+    if (LOOKS_LIKE_ID.test(strVal)) return true;
+    return false;
+  }
+
+  const allSections = [];
+  const reportDate = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE 1 — COVER PAGE (Goldman Sachs style)
+  // ═══════════════════════════════════════════════════════════════
+
+  // Top navy banner
+  allSections.push(new Table({
+    rows: [new TableRow({ children: [new TableCell({
+      children: [new Paragraph({ children: [new TextRun({ text: "  ", size: 6 })] })],
+      shading: { type: ShadingType.SOLID, color: NAVY },
+      borders: noBorders,
+      margins: { top: 200, bottom: 200, left: 100, right: 100 },
+    })] })],
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
+  }));
+
+  // Logo placeholder box
+  allSections.push(blankLine());
+  allSections.push(new Table({
+    rows: [new TableRow({ children: [
+      new TableCell({ children: [new Paragraph({ children: [], spacing: { before: 200 } })], borders: noBorders, width: { size: 25, type: WidthType.PERCENTAGE }, margins: { top: 0, bottom: 0, left: 0, right: 0 } }),
+      new TableCell({
+        children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "[ COMPANY LOGO ]", font: "Calibri", size: 22, color: NAVY, bold: true })], spacing: { before: 300, after: 300 } })],
+        borders: navyBorder,
+        shading: { type: ShadingType.SOLID, color: "F0F5FC" },
+        width: { size: 50, type: WidthType.PERCENTAGE },
+        margins: { top: 200, bottom: 200, left: 200, right: 200 },
+      }),
+      new TableCell({ children: [new Paragraph({ children: [], spacing: { before: 200 } })], borders: noBorders, width: { size: 25, type: WidthType.PERCENTAGE }, margins: { top: 0, bottom: 0, left: 0, right: 0 } }),
+    ] })],
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
+  }));
+
   allSections.push(blankLine());
 
-  // CRITICAL v6.0: Track seen headings to prevent duplicates
+  // Company name
+  allSections.push(para(
+    [txt(companyInfo.name || "PRIVATE COMPANY", { font: "Calibri", size: 52, bold: true, color: NAVY })],
+    { align: AlignmentType.CENTER, spacing: { before: 400, after: 200, line: 440 } }
+  ));
+
+  // Horizontal rule (navy)
+  allSections.push(hrule(NAVY, 12));
+
+  allSections.push(para(
+    [txt("FINANCIAL ANALYSIS REPORT", { font: "Calibri", size: 28, bold: true, color: NAVY })],
+    { align: AlignmentType.CENTER, spacing: { before: 240, after: 120 } }
+  ));
+
+  if (companyInfo.period) {
+    allSections.push(para(
+      [txt(`Period: ${preserveDateRanges(companyInfo.period)}`, { font: "Calibri", size: 20, italics: true, color: MID })],
+      { align: AlignmentType.CENTER, spacing: { before: 100, after: 80 } }
+    ));
+  }
+
+  allSections.push(para(
+    [txt("Prepared by: FinSight AI", { font: "Calibri", size: 16, italics: true, color: MID })],
+    { align: AlignmentType.CENTER, spacing: { before: 80, after: 60 } }
+  ));
+  allSections.push(para(
+    [txt(reportDate, { font: "Calibri", size: 16, color: MID })],
+    { align: AlignmentType.CENTER, spacing: { before: 60, after: 300 } }
+  ));
+
+  // Bottom disclaimer
+  allSections.push(hrule("C5D3E8", 6));
+  allSections.push(para(
+    [txt("CONFIDENTIAL  —  For internal use only. This report has been prepared for informational purposes and does not constitute investment advice or an offer to buy or sell any security.", { font: "Calibri", size: 16, italics: true, color: MID })],
+    { align: AlignmentType.CENTER, spacing: { before: 120, after: 100 } }
+  ));
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE 2 — TABLE OF CONTENTS
+  // ═══════════════════════════════════════════════════════════════
+  allSections.push(pageBreak());
+  allSections.push(para(
+    [txt("TABLE OF CONTENTS", { font: "Calibri", size: 32, bold: true, color: NAVY })],
+    { align: AlignmentType.LEFT, spacing: { before: 200, after: 200 } }
+  ));
+  allSections.push(hrule(NAVY, 10));
+  allSections.push(blankLine());
+
+  const tocEntries = [
+    ["1", "Executive Summary", "Key highlights, financial performance and investment thesis"],
+    ["2", "Financial Statements", "Profit & Loss, Balance Sheet and Cash Flow analysis"],
+    ["3", "Revenue & Profitability", "Revenue trends, margin analysis and EBITDA breakdown"],
+    ["4", "Balance Sheet Analysis", "Asset composition, liabilities and capital structure"],
+    ["5", "Cash Flow Analysis", "Operating, investing and financing cash flows"],
+    ["6", "Working Capital", "Liquidity, receivables, payables and inventory management"],
+    ["7", "Capital Structure", "Debt profile, equity base and leverage analysis"],
+    ["8", "Financial Ratios Analysis", "Key ratios with traffic-light performance indicators"],
+    ["9", "SWOT Analysis", "Strengths, weaknesses, opportunities and threats"],
+    ["10", "Charts & Visuals", "Graphical representation of key financial metrics"],
+  ];
+  const tocRows = [];
+  tocRows.push(new TableRow({
+    tableHeader: true,
+    children: [
+      cell(para(txt("No.", { font: "Calibri", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 6, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 120, right: 120 } }),
+      cell(para(txt("Section", { font: "Calibri", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 30, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 120, right: 120 } }),
+      cell(para(txt("Description", { font: "Calibri", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 64, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 120, right: 120 } }),
+    ]
+  }));
+  for (let i = 0; i < tocEntries.length; i++) {
+    const [num, section, desc] = tocEntries[i];
+    const isAlt = i % 2 === 0;
+    const bg = isAlt ? LIGHT : WHITE;
+    tocRows.push(new TableRow({
+      children: [
+        cell(para(txt(num, { font: "Calibri", size: 20, bold: true, color: NAVY }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 6, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(section, { font: "Calibri", size: 20, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 30, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(desc, { font: "Calibri", size: 19, color: MID }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 64, type: WidthType.PERCENTAGE } }),
+      ]
+    }));
+  }
+  allSections.push(new Table({ rows: tocRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE 3 — EXECUTIVE SUMMARY
+  // ═══════════════════════════════════════════════════════════════
+  allSections.push(pageBreak());
+  allSections.push(sectionHeader("1", "Executive Summary"));
+  allSections.push(hrule(NAVY, 8));
+  allSections.push(blankLine());
+
+  // Executive outlook paragraphs
+  const execOutlook = swot?.executiveOutlook || "";
+  const outlookParas = execOutlook ? splitNarrativeIntoParagraphs(execOutlook) : [];
+  const mainParas = outlookParas.slice(0, outlookParas.length > 1 ? outlookParas.length - 1 : outlookParas.length);
+  const lastPara = outlookParas.length > 1 ? outlookParas[outlookParas.length - 1] : null;
+
+  for (const p of mainParas) {
+    if (!p || !p.trim()) continue;
+    allSections.push(para(
+      [txt(fullClean(p.trim()), { font: "Calibri", size: 22, color: DK })],
+      { align: AlignmentType.JUSTIFIED, spacing: { before: 140, after: 160, line: 340 } }
+    ));
+  }
+
+  // Key financial highlights box
+  const highlightItems = [];
+  if (ratios && ratios.length > 0) {
+    const allItems = ratios.flatMap(cat => cat.items || []);
+    const findRatio = (name) => allItems.find(it => it.name === name || (it.name || '').includes(name.split(' ')[0]));
+    const gm = findRatio('Gross Margin (%)');
+    const nm = findRatio('Net Margin (%)');
+    const cr = findRatio('Current Ratio');
+    if (gm && gm.value !== '—') highlightItems.push(`Gross Margin: ${gm.value}`);
+    if (nm && nm.value !== '—') highlightItems.push(`Net Margin: ${nm.value}`);
+    if (cr && cr.value !== '—') highlightItems.push(`Current Ratio: ${cr.value}`);
+  }
+  if (highlightItems.length > 0) {
+    allSections.push(subSectionHeader("Key Financial Highlights"));
+    for (const hi of highlightItems) {
+      allSections.push(para(
+        [txt("  ●  ", { font: "Calibri", size: 22, bold: true, color: NAVY }), txt(hi, { font: "Calibri", size: 22, color: DK })],
+        { spacing: { before: 80, after: 80, line: 320 }, indent: { left: 360, hanging: 220 } }
+      ));
+    }
+  }
+
+  // Critical risks
+  const topThreats = (swot?.threats || []).slice(0, 3);
+  if (topThreats.length > 0) {
+    allSections.push(subSectionHeader("Critical Risks"));
+    for (const risk of topThreats) {
+      if (!risk || !risk.trim()) continue;
+      allSections.push(para(
+        [txt("  ⚠  ", { font: "Calibri", size: 22, bold: true, color: "C04040" }), txt(risk.trim(), { font: "Calibri", size: 22, color: DK })],
+        { spacing: { before: 80, after: 80, line: 320 }, indent: { left: 360, hanging: 260 } }
+      ));
+    }
+  }
+
+  // Investment thesis
+  const thesisPara = lastPara
+    ? fullClean(lastPara.trim())
+    : `${companyInfo.name || "The Company"} demonstrates key financial characteristics that merit careful analysis by investors and stakeholders. The financial data extracted from official filings has been analyzed to provide an objective assessment of operational and financial performance.`;
+  if (thesisPara) {
+    allSections.push(subSectionHeader("Investment Thesis"));
+    allSections.push(new Table({
+      rows: [new TableRow({ children: [new TableCell({
+        children: [para([txt(thesisPara, { font: "Calibri", size: 21, italics: true, color: DK })], { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 120, line: 340 } })],
+        shading: { type: ShadingType.SOLID, color: LIGHT },
+        borders: { top: { style: BorderStyle.SINGLE, size: 12, color: NAVY }, bottom: noBorder, left: noBorder, right: noBorder },
+        margins: { top: 200, bottom: 200, left: 240, right: 240 },
+      })] })],
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
+    }));
+  }
+  allSections.push(disclaimer(companyInfo.rounding));
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGES 4+ — CONTENT SECTIONS (from chunkResults)
+  // ═══════════════════════════════════════════════════════════════
+
   const seenHeadings = new Set();
   const headingKey = (number, title) => `${(number || '').toLowerCase()}::${humanizeTitle(title || '').toLowerCase()}`;
 
@@ -1213,8 +1455,9 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       const key = headingKey(chunkResult.sectionNumber, newSection);
       if (!seenHeadings.has(key)) {
         seenHeadings.add(key);
-        if (!firstSection) allSections.push(pageBreak());
+        allSections.push(pageBreak());
         allSections.push(sectionHeader(chunkResult.sectionNumber, newSection));
+        allSections.push(hrule(NAVY, 8));
         allSections.push(disclaimer(companyInfo.rounding));
         allSections.push(blankLine());
         firstSection = false;
@@ -1229,6 +1472,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
         seenHeadings.add(key);
         allSections.push(pageBreak());
         allSections.push(sectionHeader(block.sectionNumber || "", block.title || ""));
+        allSections.push(hrule(NAVY, 8));
         allSections.push(disclaimer(companyInfo.rounding));
         allSections.push(blankLine());
         currentSectionTitle = block.title || currentSectionTitle;
@@ -1248,7 +1492,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
           const cleanP = fullClean(p.trim());
           if (!cleanP) continue;
           allSections.push(para(
-            [txt(cleanP, { font: "Times New Roman", size: 22 })],
+            [txt(cleanP, { font: "Calibri", size: 22 })],
             { align: AlignmentType.JUSTIFIED, spacing: { before: 140, after: 180, line: 340 } }
           ));
         }
@@ -1259,8 +1503,8 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
           const cleanItem = fullClean(item.trim());
           if (!cleanItem) continue;
           allSections.push(para(
-            [txt("•  ", { font: "Times New Roman", size: 22, bold: true, color: BROWN }), txt(cleanItem, { font: "Times New Roman", size: 22 })],
-            { align: AlignmentType.LEFT, spacing: { before: 80, after: 80, line: 320 }, indent: { left: 360, hanging: 200 } }
+            [txt("●  ", { font: "Calibri", size: 22, bold: true, color: NAVY }), txt(cleanItem, { font: "Calibri", size: 22, color: DK })],
+            { align: AlignmentType.LEFT, spacing: { before: 80, after: 80, line: 320 }, indent: { left: 360, hanging: 220 } }
           ));
         }
       } else if (block.type === "key_value_table" && block.pairs && block.pairs.length > 0) {
@@ -1269,11 +1513,12 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
         for (const pair of block.pairs) {
           if (!pair || !pair.label) continue;
           const labelClean = fullClean(pair.label);
+          if (shouldSkipKVPair(labelClean, pair.value)) continue;
           const valueClean = pair.value == null ? "—" : fullClean(String(pair.value)) || "—";
           tableRows.push(new TableRow({
             children: [
-              cell(para(txt(labelClean, { font: "Times New Roman", size: 22, bold: true }), { spacing: { before: 80, after: 80 } }), { width: { size: 42, type: WidthType.PERCENTAGE } }),
-              cell(para(txt(valueClean, { font: "Times New Roman", size: 22 }), { spacing: { before: 80, after: 80 } }), { width: { size: 58, type: WidthType.PERCENTAGE } })
+              cell(para(txt(labelClean, { font: "Calibri", size: 21, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { width: { size: 42, type: WidthType.PERCENTAGE }, borders: thinBorder }),
+              cell(para(txt(valueClean, { font: "Calibri", size: 21, color: MID }), { spacing: { before: 80, after: 80 } }), { width: { size: 58, type: WidthType.PERCENTAGE }, borders: thinBorder })
             ]
           }));
         }
@@ -1283,41 +1528,41 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
         }
       } else if (block.type === "table" && block.headers && block.headers.length > 0) {
         if (block.title) allSections.push(subheading(block.title));
-        
-        // CRITICAL v6.0: Wide table handling
+
         const numCols = block.headers.length;
         const isWideTable = numCols >= 5;
         const isVeryWideTable = numCols >= 7;
-        
+
         const fontSize = isVeryWideTable ? 14 : (isWideTable ? 16 : 20);
         const headerFontSize = isVeryWideTable ? 14 : (isWideTable ? 16 : 18);
         const cellPadding = isWideTable
-          ? { top: 50, bottom: 50, left: 70, right: 70 }
-          : { top: 100, bottom: 100, left: 120, right: 120 };
-        
+          ? { top: 60, bottom: 60, left: 80, right: 80 }
+          : { top: 100, bottom: 100, left: 140, right: 140 };
+
         const firstColPct = isVeryWideTable ? 22 : (isWideTable ? 28 : 35);
         const otherColPct = (100 - firstColPct) / Math.max(1, (numCols - 1));
         const colWidths = [firstColPct, ...Array(numCols - 1).fill(otherColPct)];
-        
+
         const tableRows = [];
-        // Header row with cleaned XBRL tags
         tableRows.push(new TableRow({
           tableHeader: true,
           children: block.headers.map((h, ci) => {
             const cleanH = fullClean(String(h || ""));
             return cell(
-              para(txt(cleanH, { font: "Times New Roman", size: headerFontSize, bold: true, color: BROWN }),
+              para(txt(cleanH, { font: "Calibri", size: headerFontSize, bold: true, color: WHITE }),
                    { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }),
-              { shading: { type: ShadingType.SOLID, color: LIGHT_BG }, margins: cellPadding, width: { size: colWidths[ci], type: WidthType.PERCENTAGE } }
+              { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, margins: cellPadding, width: { size: colWidths[ci], type: WidthType.PERCENTAGE } }
             );
           })
         }));
-        
+
         if (Array.isArray(block.rows)) {
-          for (const row of block.rows) {
+          for (let ri = 0; ri < block.rows.length; ri++) {
+            const row = block.rows[ri];
             if (!Array.isArray(row)) continue;
             if (!isRowMeaningful(row, 0)) continue;
             const isTotal = String(row[0] || "").toLowerCase().includes("total");
+            const isAlt = ri % 2 === 0;
             tableRows.push(new TableRow({
               children: row.map((val, colIdx) => {
                 let formatted;
@@ -1328,11 +1573,14 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
                 }
                 const isNumeric = colIdx > 0 && (isNumericString(val) || formatted === "—" || formatted.startsWith("("));
                 return cell(
-                  para(txt(formatted, { font: "Times New Roman", size: fontSize, bold: isTotal }), { align: isNumeric ? AlignmentType.RIGHT : AlignmentType.LEFT, spacing: { before: 50, after: 50 } }),
-                  { 
+                  para(txt(formatted, { font: "Calibri", size: fontSize, bold: isTotal, color: isTotal ? NAVY : DK }), { align: isNumeric ? AlignmentType.RIGHT : AlignmentType.LEFT, spacing: { before: 50, after: 50 } }),
+                  {
                     margins: cellPadding,
                     width: { size: colWidths[colIdx] || otherColPct, type: WidthType.PERCENTAGE },
-                    ...(isTotal ? { shading: { type: ShadingType.SOLID, color: "FAF7F2" } } : {})
+                    borders: thinBorder,
+                    shading: isTotal
+                      ? { type: ShadingType.SOLID, color: LIGHT }
+                      : (isAlt ? { type: ShadingType.SOLID, color: "F7FAFF" } : undefined),
                   }
                 );
               })
@@ -1349,19 +1597,22 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
   // CHARTS SECTION
+  // ═══════════════════════════════════════════════════════════════
   if (chartImages && chartImages.length > 0) {
     allSections.push(pageBreak());
-    allSections.push(sectionHeader("[600100]", "Financial Performance Charts"));
+    allSections.push(sectionHeader("10", "Financial Performance Charts"));
+    allSections.push(hrule(NAVY, 8));
     allSections.push(para(
-      [txt("Visual representation of key financial metrics extracted from the financial statements.", { font: "Times New Roman", size: 22, italics: true })],
+      [txt("Visual representation of key financial metrics extracted from the financial statements.", { font: "Calibri", size: 22, italics: true, color: MID })],
       { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 240 } }
     ));
     for (const chart of chartImages) {
       try {
         const imgBytes = dataURLToUint8Array(chart.dataURL);
         allSections.push(para(
-          [txt(chart.caption || "", { font: "Times New Roman", size: 22, bold: true, color: BROWN })],
+          [txt(chart.caption || "", { font: "Calibri", size: 22, bold: true, color: NAVY })],
           { align: AlignmentType.CENTER, spacing: { before: 200, after: 100 } }
         ));
         allSections.push(new Paragraph({
@@ -1373,34 +1624,44 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     }
   }
 
-  // RATIOS SECTION
+  // ═══════════════════════════════════════════════════════════════
+  // RATIOS SECTION — with traffic-light indicators
+  // ═══════════════════════════════════════════════════════════════
   if (ratios && ratios.length > 0) {
     allSections.push(pageBreak());
-    allSections.push(sectionHeader("[500100]", "Financial Ratios Analysis"));
+    allSections.push(sectionHeader("8", "Financial Ratios Analysis"));
+    allSections.push(hrule(NAVY, 8));
     allSections.push(disclaimer(companyInfo.rounding));
     allSections.push(para(
-      [txt("The following ratios have been calculated from the financial data extracted from this document. Ratios marked with em-dash (—) indicate insufficient data in the source document for calculation.", { font: "Times New Roman", size: 22, italics: true })],
-      { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 240 } }
+      [txt("Ratios calculated from extracted financial data. Traffic-light indicator: 🟢 Within benchmark  🟡 Near benchmark  🔴 Outside benchmark  ⚪ No benchmark available.", { font: "Calibri", size: 20, italics: true, color: MID })],
+      { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 200 } }
     ));
     for (const category of ratios) {
       allSections.push(subheading(category.category));
       const ratioRows = [];
+      // Header row
       ratioRows.push(new TableRow({
         tableHeader: true,
         children: [
-          cell(para(txt("Ratio", { font: "Times New Roman", size: 20, bold: true, color: BROWN }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: LIGHT_BG }, width: { size: 28, type: WidthType.PERCENTAGE } }),
-          cell(para(txt("Value", { font: "Times New Roman", size: 20, bold: true, color: BROWN }), { align: AlignmentType.CENTER, spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: LIGHT_BG }, width: { size: 15, type: WidthType.PERCENTAGE } }),
-          cell(para(txt("Formula", { font: "Times New Roman", size: 20, bold: true, color: BROWN }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: LIGHT_BG }, width: { size: 27, type: WidthType.PERCENTAGE } }),
-          cell(para(txt("Interpretation", { font: "Times New Roman", size: 20, bold: true, color: BROWN }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: LIGHT_BG }, width: { size: 30, type: WidthType.PERCENTAGE } })
+          cell(para(txt("", { font: "Calibri", size: 18 }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 5, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 80, right: 80 } }),
+          cell(para(txt("Ratio", { font: "Calibri", size: 19, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 25, type: WidthType.PERCENTAGE } }),
+          cell(para(txt("Value", { font: "Calibri", size: 19, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 13, type: WidthType.PERCENTAGE } }),
+          cell(para(txt("Formula", { font: "Calibri", size: 19, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 27, type: WidthType.PERCENTAGE } }),
+          cell(para(txt("Interpretation", { font: "Calibri", size: 19, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 30, type: WidthType.PERCENTAGE } }),
         ]
       }));
-      for (const item of category.items) {
+      for (let ri = 0; ri < category.items.length; ri++) {
+        const item = category.items[ri];
+        const isAlt = ri % 2 === 0;
+        const lightEmoji = getRatioLight(item.name, item.rawValue);
+        const bg = isAlt ? LIGHT : WHITE;
         ratioRows.push(new TableRow({
           children: [
-            cell(para(txt(item.name, { font: "Times New Roman", size: 20, bold: true }), { spacing: { before: 80, after: 80 } })),
-            cell(para(txt(item.value, { font: "Times New Roman", size: 20, bold: true, color: item.value === "—" ? "999999" : BROWN }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } })),
-            cell(para(txt(item.formula, { font: "Times New Roman", size: 18, italics: true, color: "555555" }), { spacing: { before: 80, after: 80 } })),
-            cell(para(txt(item.interpretation, { font: "Times New Roman", size: 18, color: "444444" }), { spacing: { before: 80, after: 80 } }))
+            cell(para(txt(lightEmoji, { font: "Calibri", size: 18 }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 5, type: WidthType.PERCENTAGE }, margins: { top: 80, bottom: 80, left: 60, right: 60 } }),
+            cell(para(txt(item.name, { font: "Calibri", size: 20, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+            cell(para(txt(item.value, { font: "Calibri", size: 20, bold: true, color: item.value === "—" || item.value === "—" ? "999999" : NAVY }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+            cell(para(txt(item.formula, { font: "Calibri", size: 17, italics: true, color: MID }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+            cell(para(txt(item.interpretation, { font: "Calibri", size: 17, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
           ]
         }));
       }
@@ -1409,117 +1670,185 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     }
   }
 
-  // SWOT SECTION
+  // ═══════════════════════════════════════════════════════════════
+  // SWOT SECTION — enhanced with closing section
+  // ═══════════════════════════════════════════════════════════════
   if (swot) {
     allSections.push(pageBreak());
-    allSections.push(sectionHeader("[700100]", "SWOT Analysis"));
+    allSections.push(sectionHeader("9", "SWOT Analysis"));
+    allSections.push(hrule(NAVY, 8));
     allSections.push(disclaimer(companyInfo.rounding));
     allSections.push(para(
-      [txt(`Company-specific SWOT analysis for ${companyInfo.name || "the Company"} based on extracted financial data.`, { font: "Times New Roman", size: 22, italics: true })],
+      [txt(`Company-specific SWOT analysis for ${companyInfo.name || "the Company"} based on extracted financial data.`, { font: "Calibri", size: 22, italics: true, color: MID })],
       { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 240 } }
     ));
-    const swotCell = (title, items, color, bgColor) => {
+
+    const swotCellFn = (title, items, textColor, bgColor, borderColor) => {
       const children = [];
-      children.push(para([txt(title, { font: "Times New Roman", size: 24, bold: true, color: color })], { align: AlignmentType.CENTER, spacing: { before: 150, after: 200 } }));
+      children.push(para([txt(title, { font: "Calibri", size: 23, bold: true, color: textColor })],
+        { align: AlignmentType.CENTER, spacing: { before: 180, after: 200 } }));
       if (items && items.length > 0) {
         for (const item of items) {
           if (!item || !item.trim()) continue;
           children.push(para(
-            [txt("• ", { font: "Times New Roman", size: 22, bold: true, color: color }), txt(item.trim(), { font: "Times New Roman", size: 21 })],
-            { spacing: { before: 100, after: 100, line: 320 }, indent: { left: 240, hanging: 180 } }
+            [txt("●  ", { font: "Calibri", size: 20, bold: true, color: textColor }), txt(item.trim(), { font: "Calibri", size: 20, color: DK })],
+            { spacing: { before: 120, after: 120, line: 340 }, indent: { left: 280, hanging: 200 } }
           ));
         }
-      } else children.push(para([txt("No data available", { font: "Times New Roman", size: 20, italics: true, color: "999999" })], { align: AlignmentType.CENTER }));
+      } else {
+        children.push(para([txt("No data available", { font: "Calibri", size: 19, italics: true, color: "999999" })], { align: AlignmentType.CENTER }));
+      }
       return new TableCell({
-        children, borders: cellBorder, shading: { type: ShadingType.SOLID, color: bgColor },
-        margins: { top: 200, bottom: 200, left: 200, right: 200 },
-        width: { size: 50, type: WidthType.PERCENTAGE }, verticalAlign: "top"
+        children,
+        borders: {
+          top: { style: BorderStyle.SINGLE, size: 8, color: borderColor },
+          bottom: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
+          left: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
+          right: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
+        },
+        shading: { type: ShadingType.SOLID, color: bgColor },
+        margins: { top: 240, bottom: 240, left: 240, right: 240 },
+        width: { size: 50, type: WidthType.PERCENTAGE },
+        verticalAlign: "top",
       });
     };
+
     allSections.push(new Table({
       rows: [
         new TableRow({ children: [
-          swotCell("STRENGTHS", swot.strengths || [], "2D7D5C", "F0FAF5"),
-          swotCell("WEAKNESSES", swot.weaknesses || [], "C04040", "FDF2F2"),
+          swotCellFn("STRENGTHS", swot.strengths || [], "1B6B4A", "EDF7F2", "1B6B4A"),
+          swotCellFn("WEAKNESSES", swot.weaknesses || [], "C04040", "FDF2F2", "C04040"),
         ]}),
         new TableRow({ children: [
-          swotCell("OPPORTUNITIES", swot.opportunities || [], "3B82B0", "F0F6FC"),
-          swotCell("THREATS", swot.threats || [], "A8761F", "FEF7E6"),
+          swotCellFn("OPPORTUNITIES", swot.opportunities || [], "1A5276", "EBF5FB", "1A5276"),
+          swotCellFn("THREATS", swot.threats || [], "884400", "FFF8EE", "B7860F"),
         ]})
       ],
-      width: { size: 100, type: WidthType.PERCENTAGE }
+      width: { size: 100, type: WidthType.PERCENTAGE },
     }));
     allSections.push(blankLine());
+
+    // Ratio interpretations table below SWOT
     if (swot.ratioInterpretations && swot.ratioInterpretations.length > 0) {
-      allSections.push(pageBreak());
+      allSections.push(blankLine());
       allSections.push(subSectionHeader("Company-Specific Ratio Interpretations"));
       allSections.push(para(
-        [txt(`What each ratio means specifically for ${companyInfo.name || "the Company"}.`, { font: "Times New Roman", size: 22, italics: true })],
-        { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 240 } }
+        [txt(`What each ratio means specifically for ${companyInfo.name || "the Company"}.`, { font: "Calibri", size: 21, italics: true, color: MID })],
+        { align: AlignmentType.JUSTIFIED, spacing: { before: 100, after: 200 } }
       ));
       const interpRows = [];
       interpRows.push(new TableRow({
         tableHeader: true,
         children: [
-          cell(para(txt("Ratio", { font: "Times New Roman", size: 20, bold: true, color: BROWN }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: LIGHT_BG }, width: { size: 25, type: WidthType.PERCENTAGE } }),
-          cell(para(txt("Value", { font: "Times New Roman", size: 20, bold: true, color: BROWN }), { align: AlignmentType.CENTER, spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: LIGHT_BG }, width: { size: 15, type: WidthType.PERCENTAGE } }),
-          cell(para(txt(`What This Means for ${companyInfo.name || "the Company"}`, { font: "Times New Roman", size: 20, bold: true, color: BROWN }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: LIGHT_BG }, width: { size: 60, type: WidthType.PERCENTAGE } })
+          cell(para(txt("Ratio", { font: "Calibri", size: 19, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 25, type: WidthType.PERCENTAGE } }),
+          cell(para(txt("Value", { font: "Calibri", size: 19, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 15, type: WidthType.PERCENTAGE } }),
+          cell(para(txt(`What This Means for ${companyInfo.name || "the Company"}`, { font: "Calibri", size: 19, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 60, type: WidthType.PERCENTAGE } }),
         ]
       }));
-      for (const interp of swot.ratioInterpretations) {
+      for (let ri = 0; ri < swot.ratioInterpretations.length; ri++) {
+        const interp = swot.ratioInterpretations[ri];
+        const bg = ri % 2 === 0 ? LIGHT : WHITE;
         interpRows.push(new TableRow({
           children: [
-            cell(para(txt(interp.ratio || "—", { font: "Times New Roman", size: 20, bold: true }), { spacing: { before: 100, after: 100 } })),
-            cell(para(txt(interp.value || "—", { font: "Times New Roman", size: 20, bold: true, color: BROWN }), { align: AlignmentType.CENTER, spacing: { before: 100, after: 100 } })),
-            cell(para(txt(interp.meaning || "—", { font: "Times New Roman", size: 20 }), { align: AlignmentType.JUSTIFIED, spacing: { before: 100, after: 100, line: 320 } }))
+            cell(para(txt(interp.ratio || "—", { font: "Calibri", size: 19, bold: true, color: DK }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+            cell(para(txt(interp.value || "—", { font: "Calibri", size: 19, bold: true, color: NAVY }), { align: AlignmentType.CENTER, spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+            cell(para(txt(interp.meaning || "—", { font: "Calibri", size: 19, color: DK }), { align: AlignmentType.JUSTIFIED, spacing: { before: 100, after: 100, line: 320 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
           ]
         }));
       }
       allSections.push(new Table({ rows: interpRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      allSections.push(blankLine());
     }
+
+    // Closing section — risks summary + outlook
+    allSections.push(blankLine());
+    allSections.push(subSectionHeader("Risks & Outlook"));
+    const risksText = (swot.threats || []).slice(0, 5).filter(Boolean).map((t, i) => `${i + 1}. ${t.trim()}`).join("  |  ");
+    if (risksText) {
+      allSections.push(para(
+        [txt("Key Risks: ", { font: "Calibri", size: 21, bold: true, color: "C04040" }), txt(risksText, { font: "Calibri", size: 20, color: DK })],
+        { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 160, line: 340 } }
+      ));
+    }
+    const outlookText = execOutlook
+      ? fullClean(execOutlook.trim()).substring(0, 500) + (execOutlook.length > 500 ? "..." : "")
+      : `${companyInfo.name || "The Company"}'s financial performance reflects the broader dynamics of its operating environment. Management's ability to address identified risks while capitalising on available opportunities will be pivotal for sustained value creation.`;
+    allSections.push(para(
+      [txt(outlookText, { font: "Calibri", size: 21, italics: true, color: DK })],
+      { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 200, line: 340 } }
+    ));
   }
 
-  // FOOTER
+  // ═══════════════════════════════════════════════════════════════
+  // CLOSING PAGE
+  // ═══════════════════════════════════════════════════════════════
   allSections.push(pageBreak());
+  allSections.push(new Table({
+    rows: [new TableRow({ children: [new TableCell({
+      children: [
+        para([txt("FinSight AI", { font: "Calibri", size: 34, bold: true, color: WHITE })], { align: AlignmentType.CENTER, spacing: { before: 300, after: 100 } }),
+        para([txt("Financial Intelligence. Delivered.", { font: "Calibri", size: 22, italics: true, color: "C5D3E8" })], { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }),
+        para([txt(`by ${AUTHOR_NAME}  |  finsightai.org`, { font: "Calibri", size: 18, color: "C5D3E8" })], { align: AlignmentType.CENTER, spacing: { before: 80, after: 300 } }),
+      ],
+      shading: { type: ShadingType.SOLID, color: NAVY },
+      borders: noBorders,
+      margins: { top: 400, bottom: 400, left: 400, right: 400 },
+    })] })],
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
+  }));
+  allSections.push(blankLine());
   allSections.push(para(
-    [txt(`Generated by FinSight AI · by ${AUTHOR_NAME} · finsightai.org`, { font: "Times New Roman", size: 20, italics: true, color: "888888" })],
-    { align: AlignmentType.CENTER, spacing: { before: 400, after: 100 } }
+    [txt("This document is for informational purposes only and does not constitute investment advice, a solicitation, or an offer to purchase or sell any security or financial instrument.", { font: "Calibri", size: 18, italics: true, color: MID })],
+    { align: AlignmentType.CENTER, spacing: { before: 200, after: 100 } }
   ));
   allSections.push(para(
-    [txt(`This document is for informational purposes only and does not constitute investment advice.`, { font: "Times New Roman", size: 18, italics: true, color: "999999" })],
-    { align: AlignmentType.CENTER, spacing: { before: 100, after: 100 } }
+    [txt(`© ${new Date().getFullYear()} FinSight AI. All rights reserved.`, { font: "Calibri", size: 16, color: MID })],
+    { align: AlignmentType.CENTER, spacing: { before: 60, after: 100 } }
   ));
 
-  const docTitle = `${companyInfo.name || "Private Company"} - Organized Financial Statements`;
+  const docTitle = `${companyInfo.name || "Private Company"} - Financial Analysis Report`;
   const doc = new Document({
     creator: 'FinSight AI',
     title: docTitle,
-    description: 'AI-organized financial statements with ratios, SWOT, and charts',
-    subject: 'Organized financial statements',
-    keywords: 'financial-statements,MCA,XBRL,ratios,SWOT',
-    styles: { default: { document: { run: { font: "Times New Roman", size: 22 }, paragraph: { spacing: { line: 320 } } } } },
+    description: 'Goldman Sachs-style financial analysis report with ratios, SWOT, and charts',
+    subject: 'Financial Analysis Report',
+    keywords: 'financial-statements,MCA,XBRL,ratios,SWOT,FinSight',
+    styles: { default: { document: { run: { font: "Calibri", size: 22 }, paragraph: { spacing: { line: 320 } } } } },
     sections: [{
       properties: {
         page: {
           size: { width: 12240, height: 15840 },
-          margin: { top: 1200, right: 1200, bottom: 1200, left: 1200, header: 720, footer: 720 },
+          margin: { top: 1100, right: 1100, bottom: 1100, left: 1100, header: 700, footer: 700 },
           borders: {
-            pageBorderTop: { style: BorderStyle.SINGLE, size: 12, color: "8B4513", space: 24 },
-            pageBorderRight: { style: BorderStyle.SINGLE, size: 12, color: "8B4513", space: 24 },
-            pageBorderBottom: { style: BorderStyle.SINGLE, size: 12, color: "8B4513", space: 24 },
-            pageBorderLeft: { style: BorderStyle.SINGLE, size: 12, color: "8B4513", space: 24 }
+            pageBorderTop:    { style: BorderStyle.SINGLE, size: 12, color: NAVY, space: 24 },
+            pageBorderRight:  { style: BorderStyle.SINGLE, size: 12, color: NAVY, space: 24 },
+            pageBorderBottom: { style: BorderStyle.SINGLE, size: 12, color: NAVY, space: 24 },
+            pageBorderLeft:   { style: BorderStyle.SINGLE, size: 12, color: NAVY, space: 24 },
           }
         }
       },
       headers: {
         default: new Header({
           children: [
-            para(
-              [txt(`${companyInfo.name || "Private Company"}${companyInfo.period ? "    Standalone Financial Statements for period " + preserveDateRanges(companyInfo.period) : ""}`, {
-                font: "Times New Roman", size: 18, italics: true, bold: true, color: BROWN
-              })],
-              { align: AlignmentType.CENTER, spacing: { before: 0, after: 0 } }
-            )
+            new Table({
+              width: { size: 100, type: WidthType.PERCENTAGE },
+              borders: { top: noBorder, bottom: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" }, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
+              rows: [new TableRow({
+                children: [
+                  new TableCell({
+                    width: { size: 55, type: WidthType.PERCENTAGE },
+                    borders: noBorders,
+                    children: [new Paragraph({ children: [new TextRun({ text: "FinSight AI  |  CONFIDENTIAL", bold: true, size: 16, color: NAVY, font: "Calibri" })], spacing: { before: 0, after: 60 } })],
+                  }),
+                  new TableCell({
+                    width: { size: 45, type: WidthType.PERCENTAGE },
+                    borders: noBorders,
+                    children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: `${companyInfo.name || ""}${companyInfo.period ? "  |  " + preserveDateRanges(companyInfo.period) : ""}`, italics: true, size: 15, color: MID, font: "Calibri" })], spacing: { before: 0, after: 60 } })],
+                  }),
+                ]
+              })]
+            })
           ]
         })
       },
@@ -1528,28 +1857,23 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
           children: [
             new Table({
               width: { size: 100, type: WidthType.PERCENTAGE },
-              borders: {
-                top: { style: BorderStyle.SINGLE, size: 4, color: "E8E1D8" },
-                bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE },
-                right: { style: BorderStyle.NONE }, insideH: { style: BorderStyle.NONE },
-                insideV: { style: BorderStyle.NONE },
-              },
+              borders: { top: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" }, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
               rows: [new TableRow({
                 children: [
                   new TableCell({
                     width: { size: 33, type: WidthType.PERCENTAGE },
-                    borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
-                    children: [new Paragraph({ children: [new TextRun({ text: "FinSight AI", bold: true, size: 16, color: BROWN, font: "Times New Roman" })], spacing: { before: 60, after: 0 } })]
+                    borders: noBorders,
+                    children: [new Paragraph({ children: [new TextRun({ text: reportDate, size: 15, color: MID, font: "Calibri" })], spacing: { before: 60, after: 0 } })],
                   }),
                   new TableCell({
                     width: { size: 34, type: WidthType.PERCENTAGE },
-                    borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
-                    children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `Generated ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`, italics: true, size: 14, color: "9E9890", font: "Times New Roman" })], spacing: { before: 60, after: 0 } })]
+                    borders: noBorders,
+                    children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "FINANCIAL ANALYSIS REPORT", bold: true, size: 15, color: NAVY, font: "Calibri" })], spacing: { before: 60, after: 0 } })],
                   }),
                   new TableCell({
                     width: { size: 33, type: WidthType.PERCENTAGE },
-                    borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
-                    children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "Page ", size: 16, color: "6B6158", font: "Times New Roman" }), new TextRun({ children: [PageNumber.CURRENT], size: 16, color: "6B6158", font: "Times New Roman" }), new TextRun({ text: " of ", size: 16, color: "6B6158", font: "Times New Roman" }), new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 16, color: "6B6158", font: "Times New Roman" })], spacing: { before: 60, after: 0 } })]
+                    borders: noBorders,
+                    children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "Page ", size: 15, color: MID, font: "Calibri" }), new TextRun({ children: [PageNumber.CURRENT], size: 15, color: NAVY, font: "Calibri" }), new TextRun({ text: " of ", size: 15, color: MID, font: "Calibri" }), new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 15, color: NAVY, font: "Calibri" })], spacing: { before: 60, after: 0 } })],
                   }),
                 ]
               })]
@@ -3595,62 +3919,219 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
 
   const wb = XLSX.utils.book_new();
 
+  // ── Style helpers (xlsx-js-style) ─────────────────────────────────────────
+  const HDR_STYLE = {
+    fill: { patternType: 'solid', fgColor: { rgb: '1B4332' } },
+    font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 10, name: 'Calibri' },
+    alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+  };
+  const ALT_STYLE = {
+    fill: { patternType: 'solid', fgColor: { rgb: 'F0F4F0' } },
+    alignment: { vertical: 'center', wrapText: false },
+  };
+  const TOTAL_STYLE = {
+    font: { bold: true, name: 'Calibri', sz: 10 },
+    border: {
+      top: { style: 'thin', color: { rgb: '1B4332' } },
+      bottom: { style: 'medium', color: { rgb: '1B4332' } },
+    },
+    alignment: { vertical: 'center' },
+  };
+  const NEG_STYLE = { font: { color: { rgb: 'C0392B' }, name: 'Calibri', sz: 10 } };
+  const TITLE_STYLE = { font: { bold: true, sz: 13, name: 'Calibri', color: { rgb: '1B4332' } } };
+  const SUB_HDR_STYLE = { font: { italic: true, sz: 9, name: 'Calibri', color: { rgb: '555555' } } };
+
+  // Apply consistent styles to a worksheet
+  function styleSheet(ws, dataRows, headerRows, totalRowLabels) {
+    headerRows = headerRows || 1;
+    totalRowLabels = totalRowLabels || [];
+    const ref = ws['!ref'];
+    if (!ref) return;
+    const range = XLSX.utils.decode_range(ref);
+    for (let r = range.s.r; r <= range.e.r; r++) {
+      const isHeader = r < headerRows;
+      const rowData = dataRows[r] || [];
+      const rowLabel = String(rowData[0] || '').toLowerCase().trim();
+      const isTotal = totalRowLabels.some(t => rowLabel.includes(t.toLowerCase()));
+      const isAlt = !isHeader && !isTotal && r % 2 === 0;
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const addr = XLSX.utils.encode_cell({ r, c });
+        if (!ws[addr]) continue;
+        const v = ws[addr].v;
+        const isNeg = typeof v === 'number' && v < 0;
+        if (isHeader) {
+          ws[addr].s = { ...HDR_STYLE };
+        } else if (isTotal) {
+          ws[addr].s = {
+            ...TOTAL_STYLE,
+            ...(isNeg ? { font: { ...TOTAL_STYLE.font, color: { rgb: 'C0392B' } } } : {}),
+          };
+        } else {
+          ws[addr].s = {
+            ...(isAlt ? ALT_STYLE : { alignment: { vertical: 'center' } }),
+            ...(isNeg ? NEG_STYLE : {}),
+          };
+        }
+      }
+    }
+    // Title row (row 0) special styling
+    const titleAddr = XLSX.utils.encode_cell({ r: 0, c: 0 });
+    if (ws[titleAddr]) ws[titleAddr].s = TITLE_STYLE;
+    const subHdrAddr = XLSX.utils.encode_cell({ r: 1, c: 0 });
+    if (ws[subHdrAddr]) ws[subHdrAddr].s = SUB_HDR_STYLE;
+  }
+
   // ── Shared row builders ───────────────────────────────────────────────────
   // Safe number — keep null as null so cells stay blank
   const n  = (v) => (v != null && !isNaN(v) && isFinite(v)) ? v : null;
-  // YoY % as decimal fraction (Excel % format multiplies ×100 for display)
-  const yoyFrac = (c, pr) => (c != null && pr != null && pr !== 0)
-    ? ((c - pr) / Math.abs(pr))
-    : null;
-  // YoY % as formatted string (for sheets where we can't use number format)
-  const yoyStr  = (c, pr) => {
-    const f = yoyFrac(c, pr);
-    return f == null ? '—' : `${f >= 0 ? '+' : ''}${(f * 100).toFixed(1)}%`;
+  // YoY % as formatted string
+  const yoyStr = (c, pr) => {
+    if (c == null || pr == null || pr === 0) return '—';
+    const f = (c - pr) / Math.abs(pr);
+    return `${f >= 0 ? '+' : ''}${(f * 100).toFixed(1)}%`;
+  };
+  // CAGR helper for P&L (1-year growth displayed as % string)
+  const cagr = (cur, pri) => (cur != null && pri != null && pri > 0)
+    ? `${((cur / pri - 1) * 100).toFixed(1)}%`
+    : '—';
+
+  const subHdr = `Values in ${unit} of ${currency}  |  Period: ${period}  |  Generated: ${todayStr}`;
+
+  // Historical N/A placeholder (em-dash looks cleaner than "N/A")
+  const NA = '—';
+
+  // A data row — with 4 historical N/A columns prepended + optional prior + current + YoY + CAGR
+  // For P&L (withCagr=true): Particulars | FY20 | FY21 | FY22 | FY23 | [prior] | cur | YoY% | CAGR
+  // For BS/CF (withCagr=false): Particulars | FY20 | FY21 | FY22 | FY23 | [prior] | cur | [YoY%]
+  const dr = (label, curr, prior, withCagr) => {
+    const base = [label, NA, NA, NA, NA]; // Particulars + FY20-FY23 historical
+    if (hasPrior) {
+      base.push(n(prior));
+      base.push(n(curr));
+      base.push(yoyStr(curr, prior));
+      if (withCagr) base.push(cagr(curr, prior));
+    } else {
+      base.push(n(curr));
+      if (withCagr) base.push(NA);
+    }
+    return base;
   };
 
-  const subHdr  = `Values in ${unit} of ${currency}  |  Period: ${period}  |  Generated: ${todayStr}`;
-
-  // A data row with 2 or 4 columns depending on hasPrior
-  const dr = (label, curr, prior) => hasPrior
-    ? [label, n(curr), n(prior), yoyStr(curr, prior)]
-    : [label, n(curr)];
-
-  // A section-header label row (visually separates groups)
-  const sh = (label) => hasPrior ? [`── ${label}`, null, null, null] : [`── ${label}`, null];
+  // Section-header label row
+  const sh = (label) => {
+    const base = [`── ${label}`, null, null, null, null];
+    if (hasPrior) { base.push(null); base.push(null); base.push(null); }
+    else { base.push(null); }
+    return base;
+  };
 
   // Column widths for financial sheets
   const finCols = hasPrior
-    ? [{ wch: 40 }, { wch: 17 }, { wch: 17 }, { wch: 12 }]
-    : [{ wch: 40 }, { wch: 17 }];
+    ? [{ wch: 38 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 15 }, { wch: 15 }, { wch: 9 }]
+    : [{ wch: 38 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 15 }];
+
+  const finColsPL = hasPrior
+    ? [{ wch: 38 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 15 }, { wch: 15 }, { wch: 9 }, { wch: 9 }]
+    : [{ wch: 38 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 15 }, { wch: 9 }];
 
   const colHdrs = hasPrior
-    ? ['Particulars', fyLabels.cur, fyLabels.pri, 'YoY %']
-    : ['Particulars', fyLabels.cur];
+    ? ['Particulars', 'FY20', 'FY21', 'FY22', 'FY23', fyLabels.pri, fyLabels.cur, 'YoY %']
+    : ['Particulars', 'FY20', 'FY21', 'FY22', 'FY23', fyLabels.cur];
+
+  const colHdrsPL = hasPrior
+    ? ['Particulars', 'FY20', 'FY21', 'FY22', 'FY23', fyLabels.pri, fyLabels.cur, 'YoY %', 'CAGR']
+    : ['Particulars', 'FY20', 'FY21', 'FY22', 'FY23', fyLabels.cur, 'CAGR'];
+
+  // ── Sheet 0 · Charts Data (inserted first) ────────────────────────────────
+  const ebitdaA = n(a.ebitda);
+  const netIncA = n(a.netIncome);
+  const revenueA = n(a.revenue);
+  const ebitdaP = n(p.ebitda);
+  const netIncP = n(p.netIncome);
+  const revenueP = n(p.revenue);
+  const grossMrgA = (revenueA && a.grossProfit != null) ? +((a.grossProfit / revenueA) * 100).toFixed(2) : null;
+  const ebitdaMrgA = (revenueA && ebitdaA != null) ? +((ebitdaA / revenueA) * 100).toFixed(2) : null;
+  const netMrgA = (revenueA && netIncA != null) ? +((netIncA / revenueA) * 100).toFixed(2) : null;
+  const grossMrgP = (revenueP && p.grossProfit != null) ? +((p.grossProfit / revenueP) * 100).toFixed(2) : null;
+  const ebitdaMrgP = (revenueP && ebitdaP != null) ? +((ebitdaP / revenueP) * 100).toFixed(2) : null;
+  const netMrgP = (revenueP && netIncP != null) ? +((netIncP / revenueP) * 100).toFixed(2) : null;
+
+  const chartRows = [
+    [`${name} — Chart Data (Insert Charts in Excel)`],
+    [`To create charts: select a data table → Insert → Chart. Suggested chart types are noted in each section.`],
+    [''],
+    [`SECTION 1: Revenue Trend (${currency} in ${unit}) — Suggested: Line or Column chart`],
+    ['Year', 'Revenue', 'EBITDA', 'Net Income'],
+    ['FY2020', NA, NA, NA],
+    ['FY2021', NA, NA, NA],
+    ['FY2022', NA, NA, NA],
+    ['FY2023', NA, NA, NA],
+    ...(hasPrior ? [[fyLabels.pri, revenueP, ebitdaP, netIncP]] : []),
+    [fyLabels.cur, revenueA, ebitdaA, netIncA],
+    [''],
+    [`SECTION 2: Margin Trends (%) — Suggested: Line chart`],
+    ['Year', 'Gross Margin%', 'EBITDA Margin%', 'Net Margin%'],
+    ['FY2020', NA, NA, NA],
+    ['FY2021', NA, NA, NA],
+    ['FY2022', NA, NA, NA],
+    ['FY2023', NA, NA, NA],
+    ...(hasPrior ? [[fyLabels.pri, grossMrgP, ebitdaMrgP, netMrgP]] : []),
+    [fyLabels.cur, grossMrgA, ebitdaMrgA, netMrgA],
+    [''],
+    [`SECTION 3: Balance Sheet Composition (${currency} in ${unit}) — Suggested: Stacked bar chart`],
+    ['Category', fyLabels.cur],
+    ['Total Equity', n(a.totalEquity)],
+    ['Total Debt', n(a.totalDebt)],
+    ['Current Liabilities', n(a.currentLiabilities)],
+    [''],
+    [`SECTION 4: Cash Flow Summary (${currency} in ${unit}) — Suggested: Clustered column chart`],
+    ['Category', fyLabels.cur],
+    ['Operating (CFO)', n(a.operatingCashFlow)],
+    ['Investing (CFI)', n(a.investingCashFlow)],
+    ['Financing (CFF)', n(a.financingCashFlow)],
+  ];
+  const wsCharts = XLSX.utils.aoa_to_sheet(chartRows);
+  wsCharts['!cols'] = [{ wch: 36 }, { wch: 15 }, { wch: 15 }, { wch: 15 }];
+  // Style chart section headers (rows 3, 12, 21, 26)
+  [3, 12, 21, 26].forEach(r => {
+    const addr = XLSX.utils.encode_cell({ r, c: 0 });
+    if (wsCharts[addr]) wsCharts[addr].s = { ...HDR_STYLE };
+  });
+  // Style column header rows (rows 4, 13, 22, 27)
+  [4, 13, 22, 27].forEach(r => {
+    for (let c = 0; c < 4; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (wsCharts[addr]) wsCharts[addr].s = { ...HDR_STYLE };
+    }
+  });
+  wsCharts['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: chartRows.length - 1, c: 3 } });
+  XLSX.utils.book_append_sheet(wb, wsCharts, 'Chart Data');
 
   // ── Sheet 1 · P&L ─────────────────────────────────────────────────────────
   const plRows = [
     [`${name} — Profit & Loss Statement`],
     [subHdr],
     [''],
-    colHdrs,
+    colHdrsPL,
     sh('REVENUE'),
-    dr('Total Revenue',                a.revenue,         p.revenue),
-    dr('Cost of Goods Sold (COGS)',     a.cogs,            p.cogs),
-    dr('Gross Profit',                 a.grossProfit,     p.grossProfit),
+    dr('Total Revenue',                a.revenue,         p.revenue,         true),
+    dr('Cost of Goods Sold (COGS)',     a.cogs,            p.cogs,            true),
+    dr('Gross Profit',                 a.grossProfit,     p.grossProfit,     true),
     [''],
     sh('OPERATING EXPENSES'),
-    dr('Depreciation & Amortisation',  a.depreciation,    p.depreciation),
-    dr('Interest / Finance Costs',     a.interestExpense, p.interestExpense),
+    dr('Depreciation & Amortisation',  a.depreciation,    p.depreciation,    true),
+    dr('Interest / Finance Costs',     a.interestExpense, p.interestExpense, true),
     [''],
     sh('PROFITABILITY'),
-    dr('EBITDA',                       a.ebitda,          p.ebitda),
-    dr('Operating Profit (EBIT)',      a.operatingProfit, p.operatingProfit),
-    dr('Profit Before Tax (PBT)',      a.pbt,             p.pbt),
-    dr('Tax',                          a.tax,             p.tax),
-    dr('Net Income / PAT',             a.netIncome,       p.netIncome),
+    dr('EBITDA',                       a.ebitda,          p.ebitda,          true),
+    dr('Operating Profit (EBIT)',      a.operatingProfit, p.operatingProfit, true),
+    dr('Profit Before Tax (PBT)',      a.pbt,             p.pbt,             true),
+    dr('Tax',                          a.tax,             p.tax,             true),
+    dr('Net Income / PAT',             a.netIncome,       p.netIncome,       true),
   ];
   const wsPL = XLSX.utils.aoa_to_sheet(plRows);
-  wsPL['!cols'] = finCols;
+  wsPL['!cols'] = finColsPL;
+  styleSheet(wsPL, plRows, 4, ['gross profit', 'ebitda', 'net income / pat', 'total revenue']);
   XLSX.utils.book_append_sheet(wb, wsPL, 'P&L');
 
   // ── Sheet 2 · Balance Sheet ───────────────────────────────────────────────
@@ -3685,6 +4166,7 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   ];
   const wsBS = XLSX.utils.aoa_to_sheet(bsRows);
   wsBS['!cols'] = finCols;
+  styleSheet(wsBS, bsRows, 4, ['total assets', 'total liabilities', 'total equity / net worth', '  total debt']);
   XLSX.utils.book_append_sheet(wb, wsBS, 'Balance Sheet');
 
   // ── Sheet 3 · Cash Flow ───────────────────────────────────────────────────
@@ -3707,43 +4189,72 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   }
   const wsCF = XLSX.utils.aoa_to_sheet(cfRows);
   wsCF['!cols'] = finCols;
+  styleSheet(wsCF, cfRows, 4, ['net change in cash']);
   XLSX.utils.book_append_sheet(wb, wsCF, 'Cash Flow');
 
-  // ── Sheet 4 · Ratios ──────────────────────────────────────────────────────
+  // ── Sheet 4 · Ratios — with sector benchmarks ─────────────────────────────
+  const SECTOR_BENCHMARKS = {
+    'Gross Margin (%)':                   '35–45%',
+    'Net Margin (%)':                     '8–15%',
+    'EBITDA Margin (%)':                  '15–25%',
+    'Operating Margin (%)':               '12–20%',
+    'Return on Equity (%)':               '12–18%',
+    'Return on Assets (%)':               '8–14%',
+    'Return on Capital Employed (%)':     '15–20%',
+    'Current Ratio':                      '1.5–2.0x',
+    'Quick Ratio':                        '1.0–1.5x',
+    'Debt-to-Equity':                     '0.3–0.8x',
+    'Interest Coverage':                  '3.0–5.0x',
+    'Inventory Turnover':                 '4–8x',
+    'Receivables Days (DSO)':             '45–75 days',
+    'Payable Days (DPO)':                 '30–60 days',
+    'Asset Turnover':                     '0.8–1.5x',
+  };
+
   const ratRows = [
     [`${name} — Financial Ratios`],
     [`Period: ${period}  |  Generated: ${todayStr}`],
+    [`Benchmarks: Indian Medical Devices & Healthcare Sector`],
     [''],
-    ['Category', 'Ratio', 'Value', 'Formula', 'Interpretation'],
+    ['Category', 'Ratio', 'Value', 'Sector Benchmark', 'Formula', 'Interpretation'],
   ];
   for (const cat of (ratios || [])) {
     for (const item of (cat.items || [])) {
       const rawV = item.rawValue;
       const val  = (rawV != null && !isNaN(rawV) && isFinite(rawV)) ? rawV : '—';
       ratRows.push([
-        cat.category || '',
-        item.name    || '',
+        cat.category        || '',
+        item.name           || '',
         val,
+        SECTOR_BENCHMARKS[item.name] || '—',
         item.formula        || '',
         item.interpretation || '',
       ]);
     }
-    ratRows.push(['', '', '', '', '']); // blank separator between categories
+    ratRows.push(['', '', '', '', '', '']); // blank separator between categories
   }
   if (swot?.ratioInterpretations?.length) {
-    ratRows.push(['Company-Specific Interpretations', '', '', '', '']);
+    ratRows.push(['Company-Specific Interpretations', '', '', '', '', '']);
     for (const interp of swot.ratioInterpretations) {
       ratRows.push([
         'Company-Specific',
         interp.ratio  || '',
         interp.value  || '—',
+        '—',
         '',
         interp.meaning || '',
       ]);
     }
   }
   const wsRatios = XLSX.utils.aoa_to_sheet(ratRows);
-  wsRatios['!cols'] = [{ wch: 26 }, { wch: 28 }, { wch: 12 }, { wch: 30 }, { wch: 55 }];
+  wsRatios['!cols'] = [{ wch: 24 }, { wch: 28 }, { wch: 12 }, { wch: 18 }, { wch: 28 }, { wch: 50 }];
+  // Style header row (row 4)
+  for (let c = 0; c < 6; c++) {
+    const addr = XLSX.utils.encode_cell({ r: 4, c });
+    if (wsRatios[addr]) wsRatios[addr].s = { ...HDR_STYLE };
+  }
+  const ratTitleAddr = XLSX.utils.encode_cell({ r: 0, c: 0 });
+  if (wsRatios[ratTitleAddr]) wsRatios[ratTitleAddr].s = TITLE_STYLE;
   XLSX.utils.book_append_sheet(wb, wsRatios, 'Ratios');
 
   // ── Sheet 5 · SWOT ────────────────────────────────────────────────────────
@@ -3777,8 +4288,9 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   try {
     const { years: vYears, sortedYears: vSorted } = wrapAggToYears(aggregated, aggregatedPrior);
     const vRes = validateFinancialData(vYears, vSorted);
-    // col 1 = current ('cur'), col 2 = prior ('pri') when present
-    const colToYrFin = hasPrior ? { 1: 'cur', 2: 'pri' } : { 1: 'cur' };
+    // col offset shifts by +4 (historical N/A columns) — map to expanded column indices
+    // Historical cols 1-4 are N/A; actual data starts at col 5 (cur) or 5+6 (pri/cur)
+    const colToYrFin = hasPrior ? { 6: 'cur', 5: 'pri' } : { 5: 'cur' };
     applyValidationStyles(wsPL, {
       5:  { section: 'profit_loss', field: 'revenue' },
       7:  { section: 'profit_loss', field: 'gross_profit' },
