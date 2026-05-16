@@ -1,8 +1,6 @@
 // FinSight AI — Backend API Proxy
 // This keeps your Anthropic API key safe on the server
 
-export const config = { maxDuration: 60 };
-
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
