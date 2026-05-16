@@ -9,20 +9,18 @@ import * as docxLib from "docx";
 const CLERK_PUB_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
 const C = {
-  bgPage: "#FFFFFF", bgSidebar: "#F5F7FA", bgCard: "#FFFFFF",
-  border: "#E8ECF0", borderHover: "#CBD5E1",
-  accent: "#0D7A3E", accentDark: "#0A5F30", accentLight: "#E8F5EE",
-  textPrimary: "#0A1628", textSec: "#6B7280", textMuted: "#9CA3AF",
-  green: "#0D7A3E", greenBg: "#E8F5EE",
-  red: "#DC2626", redBg: "#FEF2F2",
-  amber: "#D97706", amberBg: "#FFFBEB",
-  navy: "#0A1628",
-  brown: "#0A1628",
-  brownLight: "#F5F7FA",
-  chartA: "#0D7A3E", chartB: "#0A1628", chartC: "#2563EB",
-  chartD: "#7C3AED", chartE: "#D97706", chartF: "#059669",
-  shadow: "0 1px 3px rgba(10,22,40,.06), 0 2px 8px rgba(10,22,40,.04)",
-  shadowMd: "0 4px 20px rgba(10,22,40,.10), 0 1px 4px rgba(10,22,40,.06)",
+  bgPage: "#F9F7F4", bgSidebar: "#EFEBE4", bgCard: "#FFFFFF",
+  border: "#E8E1D8", borderHover: "#DDD2C2",
+  accent: "#CF6B4E", accentDark: "#A8553C", accentLight: "#FDF0EC",
+  textPrimary: "#1F1B18", textSec: "#6B6158", textMuted: "#9E9890",
+  green: "#2D7D5C", greenBg: "#F0FAF5",
+  red: "#C04040", redBg: "#FDF2F2",
+  amber: "#A8761F", amberBg: "#FEF7E6",
+  brown: "#8B4513", brownLight: "#F5EFE7",
+  chartA: "#CF6B4E", chartB: "#2D7D5C", chartC: "#3B82B0",
+  chartD: "#7C5CB8", chartE: "#D9A441", chartF: "#8B6F47",
+  shadow: "0 1px 3px rgba(0,0,0,.05), 0 2px 8px rgba(0,0,0,.03)",
+  shadowMd: "0 2px 12px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.04)",
 };
 
 const API_URL = "/api/claude";
@@ -41,7 +39,6 @@ const PERIODS = [
 const DEFAULT_PERIOD = "1_year";
 
 async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
-  console.log('CALLING CLAUDE API');
   const RETRYABLE = new Set([429, 503, 529]);
   const MAX_RETRIES = 3;
   const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: "user", content: userMsg }] };
@@ -93,6 +90,39 @@ async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
       throw new Error(json.error.message || "API call failed");
     }
     return json.content.filter(b => b.type === "text").map(b => b.text).join("");
+  }
+}
+
+async function callClaudeVision({ pageImages, extractionPrompt, maxTokens = 4000 }) {
+  const content = [
+    ...pageImages.map(img => ({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: img.base64 }
+    })),
+    { type: 'text', text: extractionPrompt }
+  ];
+  const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: 'user', content }] };
+  const RETRYABLE = new Set([429, 503, 529]);
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120_000);
+    let res;
+    try {
+      res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') { if (attempt > 3) throw new Error('Vision extraction timed out'); continue; }
+      throw err;
+    }
+    clearTimeout(timeoutId);
+    if (RETRYABLE.has(res.status)) {
+      if (attempt > 3) throw new Error('Rate limit on vision extraction');
+      await new Promise(r => setTimeout(r, 60000 * attempt));
+      continue;
+    }
+    const json = await res.json();
+    if (json.error) throw new Error(json.error.message || 'Vision API failed');
+    return json.content.filter(b => b.type === 'text').map(b => b.text).join('');
   }
 }
 
@@ -277,6 +307,17 @@ async function loadDocx() {
   return docxLib;
 }
 
+async function loadTesseract() {
+  if (window.Tesseract) return window.Tesseract;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    script.onload = () => resolve(window.Tesseract);
+    script.onerror = () => reject(new Error('Failed to load Tesseract OCR'));
+    document.head.appendChild(script);
+  });
+}
+
 async function extractWordContent(file) {
   const mammoth = await loadMammoth();
   const arrayBuffer = await file.arrayBuffer();
@@ -359,16 +400,708 @@ async function checkPdfHasText(file) {
   }
 }
 
-function safeParseClaudeResponse(text) {
+async function renderPdfPageToCanvas(pdfPage, scale = 2.0) {
+  const viewport = pdfPage.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+  const ctx = canvas.getContext('2d');
+  await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+  return canvas;
+}
+
+async function ocrPageWithTesseract(canvas) {
+  const Tesseract = await loadTesseract();
+  const worker = await Tesseract.createWorker('eng', 1, {
+    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+  });
+  const { data } = await worker.recognize(canvas);
+  await worker.terminate();
+  return { text: data.text || '', confidence: data.confidence || 0 };
+}
+
+// ── STAGE 1-3: New PDF Extraction Pipeline ────────────────────────────────────
+
+const FINANCIAL_PAGE_KEYWORDS = /revenue|turnover|profit.*loss|balance\s*sheet|cash\s*flow|assets|liabilities|equity|depreciation|particulars|lakhs|crores|₹|rs\.\s*\d|statement\s+of|schedule/i;
+
+async function detectMcaAndMetadata(sampleText) {
+  const isMCA = /\bCIN\b|\bCompanies Act,?\s*2013\b|\bMinistry of Corporate Affairs\b|\bRegistrar of Companies\b|\bMCA\b|\bForm\s+AOC/i.test(sampleText);
+  // For Indian MCA filings ALWAYS force INR — never auto-detect
+  const currency = isMCA ? 'INR' : (/\bUSD\b|\$/.test(sampleText) ? 'USD' : (/\bGBP\b|£/.test(sampleText) ? 'GBP' : 'INR'));
+  const unit = /(?:amount|value|figure)s?\s+(?:in|are)\s+(?:indian\s+rupees?\s+in\s+)?crore|₹\s*(?:in\s+)?crore|\bCr\.\b/i.test(sampleText) ? 'Crores' : 'Lakhs';
+  const cinMatch = sampleText.match(/\b([UL]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6})\b/);
+  const cin = cinMatch ? cinMatch[1] : null;
+  const periodMatch = sampleText.match(/(?:31st?\s+March|March\s+31),?\s+(20\d{2})/i) || sampleText.match(/\b(20\d{2})-(\d{2})\b/);
+  let period = null;
+  if (periodMatch) {
+    period = periodMatch[1] ? `FY${periodMatch[1]}` : null;
+  }
+  return { isMCA, currency, unit, cin, period };
+}
+
+async function callClaudeVisionForPage(base64, pageNum, totalPages, unit) {
+  const prompt = `You are a senior financial analyst extracting data from an Indian company annual report. This is page ${pageNum} of ${totalPages}.
+
+Extract ALL financial figures with surgical precision.
+Return ONLY this JSON structure, nothing else:
+
+{
+  "page_type": "profit_loss",
+  "financial_year_current": "FY20XX",
+  "financial_year_prior": "FY20XX",
+  "currency": "INR",
+  "unit": "${unit || 'Lakhs'}",
+  "line_items": [
+    {
+      "label": "exact label as written in document",
+      "category": "revenue",
+      "current_year_value": null,
+      "prior_year_value": null,
+      "is_subtotal": false,
+      "is_total": false
+    }
+  ],
+  "extraction_confidence": "high",
+  "notes": ""
+}
+
+page_type must be one of: profit_loss | balance_sheet | cash_flow | notes | schedules | other
+category must be one of: revenue | expense | asset | liability | equity | cash_flow | ratio | other
+
+ABSOLUTE RULES — violating these means wrong output:
+1. NEVER confuse page numbers with financial figures. Page numbers are 1-500 appearing alone at top or bottom margin.
+2. NEVER confuse footnote reference numbers (1, 2, 3 in superscript or at end of row) with financial values.
+3. NEVER confuse row sequence numbers with financial values.
+4. Numbers in brackets () mean NEGATIVE values — represent as negative numbers.
+5. If a figure is unclear or ambiguous, return null — NEVER guess.
+6. A single narrow column of small integers on the far right is note references — SKIP ENTIRELY.
+7. Financial figures appear in wide columns aligned with row labels in the centre/left.
+8. Do not convert units — return exactly as stated in the document.
+9. If page is a cover, TOC, or director's report with no financial tables, return page_type: "other" and empty line_items array.`;
+
+  const content = [
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64 } },
+    { type: 'text', text: prompt }
+  ];
+  const body = { model: VISION_MODEL, max_tokens: 4000, messages: [{ role: 'user', content }] };
+  const RETRYABLE = new Set([429, 503, 529]);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120_000);
+    let res;
+    try {
+      res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') { if (attempt >= 3) return null; continue; }
+      return null;
+    }
+    clearTimeout(timeoutId);
+    if (res.status === 401 || res.status === 403) return null; // API key issue
+    if (RETRYABLE.has(res.status)) {
+      if (attempt >= 3) return null;
+      await new Promise(r => setTimeout(r, 30000 * attempt));
+      continue;
+    }
+    const json = await res.json();
+    if (json.error) return null;
+    const text = json.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
+    let clean = text.trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+    try { return JSON.parse(clean); } catch { return null; }
+  }
+  return null;
+}
+
+function mergeVisionPageIntoYears(visionYears, pageResult) {
+  if (!pageResult || !pageResult.line_items || pageResult.line_items.length === 0) return;
+  if (pageResult.page_type === 'other') return;
+
+  const curYr = pageResult.financial_year_current;
+  const priYr = pageResult.financial_year_prior;
+  if (!curYr) return;
+
+  if (!visionYears[curYr]) visionYears[curYr] = { profit_loss: {}, balance_sheet: {}, cash_flow: {} };
+  if (priYr && !visionYears[priYr]) visionYears[priYr] = { profit_loss: {}, balance_sheet: {}, cash_flow: {} };
+
+  const sectionMap = { profit_loss: 'profit_loss', balance_sheet: 'balance_sheet', cash_flow: 'cash_flow' };
+  const pt = pageResult.page_type;
+  const section = sectionMap[pt] || null;
+  if (!section) return;
+
+  for (const item of pageResult.line_items) {
+    if (!item.label) continue;
+    const lbl = item.label.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    const field = mapVisionLabelToField(lbl, section);
+    if (!field) continue;
+
+    if (item.current_year_value != null && !isNaN(item.current_year_value)) {
+      if (visionYears[curYr][section][field] == null) {
+        visionYears[curYr][section][field] = item.current_year_value;
+      }
+    }
+    if (priYr && item.prior_year_value != null && !isNaN(item.prior_year_value)) {
+      if (visionYears[priYr][section][field] == null) {
+        visionYears[priYr][section][field] = item.prior_year_value;
+      }
+    }
+  }
+}
+
+function mapVisionLabelToField(lbl, section) {
+  if (section === 'profit_loss') {
+    if (/revenue from oper|net sales|net revenue|turnover/.test(lbl)) return 'revenue';
+    if (/other income/.test(lbl)) return 'other_income';
+    if (/total income|total revenue/.test(lbl)) return 'total_income';
+    if (/cost of material|cost of goods|purchases of stock|raw material/.test(lbl)) return 'cost_of_goods';
+    if (/employee benefit|staff cost|personnel|salaries/.test(lbl)) return 'employee_costs';
+    if (/finance cost|interest expense|borrowing cost/.test(lbl)) return 'finance_costs';
+    if (/depreciation|amortis/.test(lbl)) return 'depreciation';
+    if (/other expense/.test(lbl)) return 'other_expenses';
+    if (/total expense/.test(lbl)) return 'total_expenses';
+    if (/ebitda/.test(lbl)) return 'ebitda';
+    if (/profit before tax|pbt/.test(lbl)) return 'pbt';
+    if (/tax expense|provision for tax|income tax/.test(lbl) && !/deferred tax asset/.test(lbl)) return 'tax_expense';
+    if (/profit for the year|profit for the period|net profit|pat\b|profit after tax/.test(lbl) && !/before tax/.test(lbl)) return 'net_income';
+  }
+  if (section === 'balance_sheet') {
+    if (/total assets/.test(lbl)) return 'total_assets';
+    if (/total current assets/.test(lbl)) return 'current_assets';
+    if (/total non.?current assets/.test(lbl)) return 'non_current_assets';
+    if (/property plant|net block|tangible asset|ppe/.test(lbl)) return 'fixed_assets';
+    if (/cash and cash equiv|cash and bank/.test(lbl)) return 'cash_and_equivalents';
+    if (/trade receivabl/.test(lbl)) return 'trade_receivables';
+    if (/inventor/.test(lbl) && !/change in/.test(lbl)) return 'inventory';
+    if (/total equity|shareholders funds|net worth/.test(lbl)) return 'total_equity';
+    if (/share capital/.test(lbl)) return 'share_capital';
+    if (/reserves and surplus|other equity/.test(lbl)) return 'reserves';
+    if (/total liabilit/.test(lbl) && !/current/.test(lbl)) return 'total_liabilities';
+    if (/total current liabilit/.test(lbl)) return 'current_liabilities';
+    if (/long.?term borrowing|non.?current borrowing/.test(lbl)) return 'long_term_debt';
+    if (/short.?term borrowing|current borrowing/.test(lbl) && !/non.?current/.test(lbl)) return 'short_term_debt';
+    if (/trade payabl/.test(lbl)) return 'trade_payables';
+  }
+  if (section === 'cash_flow') {
+    if (/operating activit|from operations/.test(lbl)) return 'cfo';
+    if (/investing activit/.test(lbl)) return 'cfi';
+    if (/financing activit/.test(lbl)) return 'cff';
+    if (/net change in cash|net increase|net decrease/.test(lbl)) return 'net_change_in_cash';
+    if (/closing cash|cash at end/.test(lbl)) return 'closing_cash';
+  }
+  return null;
+}
+
+function applySanityBlocking(years, sortedYears, unitHint) {
+  const errorLog = [];
+  const isLakhs = (unitHint || '').toLowerCase() === 'lakhs';
+  // Threshold for "private company revenue too large": 200,000 Crores
+  // In Lakhs: 200000 * 100 = 20,000,000 Lakhs; In Crores: 200000
+  const maxRevenue = isLakhs ? 20_000_000 : 200_000;
+
+  for (const yr of sortedYears) {
+    const data = years[yr];
+    if (!data) continue;
+    const pl = data.profit_loss || {};
+    const bs = data.balance_sheet || {};
+    const cf = data.cash_flow || {};
+
+    const block = (obj, field, value, reason) => {
+      errorLog.push({ yr, field, blocked_value: value, reason });
+      obj[field] = null;
+    };
+
+    // Revenue > 200,000 Crores for a private company
+    if (pl.revenue != null && pl.revenue > maxRevenue) {
+      block(pl, 'revenue', pl.revenue, `Revenue exceeds 200,000 Crores — impossible for private company (unit: ${unitHint})`);
+    }
+    // Total Assets < Total Equity (impossible)
+    if (bs.total_assets != null && bs.total_equity != null && bs.total_assets < bs.total_equity) {
+      block(bs, 'total_assets', bs.total_assets, 'Total Assets < Total Equity — impossible');
+    }
+    // Cash > Total Assets (impossible)
+    if (bs.cash_and_equivalents != null && bs.total_assets != null && bs.cash_and_equivalents > bs.total_assets) {
+      block(bs, 'cash_and_equivalents', bs.cash_and_equivalents, 'Cash > Total Assets — impossible');
+    }
+    // Finance costs > Revenue (impossible)
+    if (pl.finance_costs != null && pl.revenue != null && pl.finance_costs > pl.revenue && pl.revenue > 0) {
+      block(pl, 'finance_costs', pl.finance_costs, 'Finance Costs > Revenue — impossible');
+    }
+    // Tax > PBT when PBT is positive (impossible, unless deferred tax creates temporary inversion)
+    if (pl.tax_expense != null && pl.pbt != null && pl.pbt > 0 && pl.tax_expense > pl.pbt * 1.5) {
+      block(pl, 'tax_expense', pl.tax_expense, 'Tax > 150% of PBT — likely extraction error');
+    }
+    // Single/double digit revenue when other figures are large (page number confusion)
+    if (pl.revenue != null && Math.abs(pl.revenue) < 1000) {
+      const otherLarge = [bs.total_assets, bs.total_equity, pl.pbt, pl.net_income]
+        .some(v => v != null && Math.abs(v) > 10000);
+      if (otherLarge) {
+        block(pl, 'revenue', pl.revenue, `Revenue ${pl.revenue} appears to be a page number or footnote — blocked`);
+      }
+    }
+  }
+
+  // YoY change checks
+  for (let i = 1; i < sortedYears.length; i++) {
+    const prevPl = (years[sortedYears[i-1]]?.profit_loss) || {};
+    const currPl = (years[sortedYears[i]]?.profit_loss) || {};
+    if (prevPl.revenue && currPl.revenue && prevPl.revenue !== 0) {
+      const change = (currPl.revenue - prevPl.revenue) / Math.abs(prevPl.revenue);
+      if (change > 5) {
+        errorLog.push({ yr: sortedYears[i], field: 'revenue', blocked_value: currPl.revenue, reason: `Revenue change +${(change*100).toFixed(0)}% YoY > 500% — blocked as likely error` });
+        currPl.revenue = null;
+      } else if (change < -0.9) {
+        errorLog.push({ yr: sortedYears[i], field: 'revenue', blocked_value: currPl.revenue, reason: `Revenue change ${(change*100).toFixed(0)}% YoY < -90% — flagged for review` });
+        // FLAG only, don't block
+      }
+    }
+  }
+
+  // Check all years identical (copy error)
+  if (sortedYears.length >= 2) {
+    const revs = sortedYears.map(yr => years[yr]?.profit_loss?.revenue);
+    if (revs.every(v => v != null) && revs.every(v => v === revs[0])) {
+      errorLog.push({ yr: 'all', field: 'revenue', blocked_value: revs[0], reason: 'All years identical — likely copy/extraction error' });
+    }
+  }
+
+  return errorLog;
+}
+
+function countValidFigures(years) {
+  let count = 0;
+  for (const yr of Object.values(years || {})) {
+    for (const section of Object.values(yr || {})) {
+      if (typeof section === 'object' && section !== null) {
+        for (const val of Object.values(section)) {
+          if (val != null && !isNaN(val) && isFinite(val)) count++;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+async function extractPdfContent(file, onProgress) {
+  const pdfjsLib = await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+
+  // ── Open PDF ────────────────────────────────────────────────────────────────
+  let pdf;
   try {
-    const cleaned = text.replace(/```json/g, '').replace(/```/g, '').trim()
-    const start = cleaned.indexOf('{')
-    const end = cleaned.lastIndexOf('}')
-    if (start === -1 || end === -1) return null
-    return JSON.parse(cleaned.substring(start, end + 1))
+    pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  } catch (err) {
+    const msg = (err.message || '').toLowerCase();
+    if (err.name === 'PasswordException' || msg.includes('password') || msg.includes('encrypt')) {
+      throw new Error('PASSWORD_PROTECTED');
+    }
+    throw new Error('CORRUPT_PDF');
+  }
+
+  const totalPages = pdf.numPages;
+  onProgress?.(`🔍 Analysing document structure... (${totalPages} pages detected)`);
+
+  // ── STAGE 1: Document Intelligence ──────────────────────────────────────────
+  // Sample first 5 pages for metadata detection
+  let sampleText = '';
+  const sampleCount = Math.min(5, totalPages);
+  for (let i = 1; i <= sampleCount; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    sampleText += ' ' + content.items.map(item => item.str).join(' ');
+  }
+  const docMeta = await detectMcaAndMetadata(sampleText);
+  const { isMCA, currency, unit, cin } = docMeta;
+
+  onProgress?.(`💱 ${isMCA ? 'Indian MCA filing detected' : 'Document classified'} — Currency: ${currency}, Unit: ${unit}`);
+
+  // ── STAGE 2: Page Classification ─────────────────────────────────────────────
+  onProgress?.('📋 Classifying pages...');
+  const pageTexts = [];
+  const financialPageNums = [];
+
+  for (let i = 1; i <= totalPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const text = content.items.map(item => item.str).join(' ');
+    pageTexts.push(text);
+    if (FINANCIAL_PAGE_KEYWORDS.test(text) && text.length > 50) {
+      financialPageNums.push(i);
+    }
+  }
+
+  const totalChars = pageTexts.reduce((s, t) => s + t.length, 0);
+  const charsPerPage = totalPages > 0 ? totalChars / totalPages : 0;
+  const isScanned = charsPerPage < 200;
+  const isHybrid = !isScanned && financialPageNums.some(pn => (pageTexts[pn - 1] || '').length < 200);
+  const docType = isScanned ? 'scanned' : (isHybrid ? 'hybrid' : 'text-based');
+
+  onProgress?.(`📋 Page classification complete — ${financialPageNums.length} financial pages found (document type: ${docType})`);
+
+  // ── STAGE 3: Claude Vision for ALL financial pages ───────────────────────────
+  const visionYears = {};
+  const visionPageLog = [];
+
+  if (financialPageNums.length > 0) {
+    onProgress?.(`🤖 Claude Vision processing financial pages... (0/${financialPageNums.length} pages)`);
+    let visionSuccess = 0;
+
+    for (let vi = 0; vi < financialPageNums.length; vi++) {
+      const pageNum = financialPageNums[vi];
+      onProgress?.(`🤖 Claude Vision processing financial pages... (${vi + 1}/${financialPageNums.length} pages)`);
+      try {
+        const page = await pdf.getPage(pageNum);
+        const canvas = await renderPdfPageToCanvas(page, 2.0);
+        const base64 = canvas.toDataURL('image/png').split(',')[1];
+        const result = await callClaudeVisionForPage(base64, pageNum, totalPages, unit);
+        if (result && result.line_items) {
+          mergeVisionPageIntoYears(visionYears, result);
+          visionPageLog.push({ page: pageNum, method: 'Claude Vision', confidence: result.extraction_confidence, pageType: result.page_type, itemCount: result.line_items.length });
+          visionSuccess++;
+        } else {
+          visionPageLog.push({ page: pageNum, method: 'Claude Vision', confidence: 'failed', pageType: 'unknown', itemCount: 0 });
+        }
+      } catch (vErr) {
+        console.warn(`[Vision] Page ${pageNum} failed:`, vErr.message);
+        visionPageLog.push({ page: pageNum, method: 'Claude Vision', confidence: 'error', pageType: 'unknown', itemCount: 0, error: vErr.message });
+      }
+    }
+
+    if (visionSuccess > 0) {
+      onProgress?.(`✅ Claude Vision extracted data from ${visionSuccess}/${financialPageNums.length} pages`);
+    } else {
+      onProgress?.('⚠️ Claude Vision unavailable — relying on text extraction only');
+    }
+  }
+
+  // Apply sanity blocking on vision-extracted data
+  const visionSortedYears = Object.keys(visionYears).sort();
+  const visionErrorLog = applySanityBlocking(visionYears, visionSortedYears, unit);
+  if (visionErrorLog.length > 0) {
+    onProgress?.(`🔢 Sanity checks blocked ${visionErrorLog.length} suspicious figure(s)`);
+    console.warn('[SanityBlocking]', visionErrorLog);
+  }
+
+  // ── STAGE 3B: Tesseract OCR for scanned/hybrid pages ───────────────────────
+  const ocrTexts = [...pageTexts];
+  if (isScanned || isHybrid) {
+    onProgress?.('📄 Extracting text from scanned pages via OCR...');
+    let tessOk = true;
+    for (let i = 1; i <= totalPages; i++) {
+      if ((pageTexts[i - 1] || '').length > 200) continue;
+      if (!tessOk) break;
+      try {
+        const page = await pdf.getPage(i);
+        const canvas = await renderPdfPageToCanvas(page, 2.0);
+        const { text } = await ocrPageWithTesseract(canvas);
+        if (text.trim().length > 20) ocrTexts[i - 1] = text;
+      } catch (tessErr) {
+        console.warn('[OCR] Tesseract failed:', tessErr.message);
+        tessOk = false;
+      }
+    }
+  }
+
+  const finalText = ocrTexts.join('\n\n');
+  const method = isScanned ? 'ocr' : (isHybrid ? 'hybrid' : 'text');
+  const warnings = finalText.trim().length < 500
+    ? ['Very limited text was extracted. Financial data may be incomplete.']
+    : [];
+
+  return {
+    text: finalText,
+    method,
+    warnings,
+    documentMetadata: { isMCA, currency, unit, cin, financialPageNums, totalPages, docType, visionPageLog },
+    visionStructuredData: { years: visionYears, currency, unit, isMCA, errorLog: visionErrorLog },
+  };
+}
+
+function chunkText(text, maxCharsPerChunk = 12000, overlap = 500) {
+  const chunks = [];
+  const paragraphs = text.split(/\n\s*\n/);
+  let currentChunk = "";
+  for (const para of paragraphs) {
+    if ((currentChunk + para).length > maxCharsPerChunk && currentChunk.length > 0) {
+      chunks.push(currentChunk.trim());
+      const tail = currentChunk.length > overlap ? currentChunk.slice(-overlap) : "";
+      currentChunk = (tail ? `[CONTEXT FROM END OF PREVIOUS CHUNK - DO NOT RE-OUTPUT THIS]\n${tail}\n[END CONTEXT - NEW CONTENT STARTS HERE]\n\n` : "") + para + "\n\n";
+    } else currentChunk += para + "\n\n";
+  }
+  if (currentChunk.trim().length > 0) chunks.push(currentChunk.trim());
+  return chunks;
+}
+
+function buildChunkOrganizationPrompt(chunkIndex, totalChunks, companyContext) {
+  return `You are processing chunk ${chunkIndex} of ${totalChunks} from an Indian private company's MCA-compliant financial document. Output goes DIRECTLY to corporate users — they need clean, professional, complete content.
+
+IMPORTANT: Your response MUST fit within 8000 output tokens. Be complete but efficient. Use shorter paragraph rewrites where possible while preserving meaning.
+
+═══════════════════════════════════════
+PART A — XBRL/MACHINE TAG CLEANING (MANDATORY)
+═══════════════════════════════════════
+
+Before outputting ANY text, REMOVE these XBRL machine tags from headers, titles, cells:
+
+  [TextBlock], [Text Block], [Axis], [Member], [Table], [Abstract]
+  [pure], [shares], [INR/shares], [INR]
+
+EXAMPLES of cleaning:
+  ❌ BAD:  "Share capital [Member] 01/04/2024 to 31/03/2025"
+  ✅ GOOD: "Share capital — 01/04/2024 to 31/03/2025"
+  
+  ❌ BAD:  "Disclosure of notes on borrowings explanatory [Text Block]"
+  ✅ GOOD: "Notes on Borrowings"
+  
+  ❌ BAD:  "Reserves and surplus [Abstract]"
+  ✅ GOOD: "Reserves and Surplus"
+  
+  ❌ BAD:  "[shares] 3,49,10,000"
+  ✅ GOOD: "3,49,10,000 shares"
+  
+  ❌ BAD:  "Number of shares authorised [shares]"
+  ✅ GOOD: "Number of shares authorised"
+
+NEVER include square-bracketed XBRL tags in your output. Strip them ALL.
+
+═══════════════════════════════════════
+PART B — PRESERVE EVERY SECTION (MANDATORY)
+═══════════════════════════════════════
+
+🔴 PRIORITY RULE — Director's Report Preamble (MANDATORY):
+
+Before processing any financial tables, scan the chunk for these phrases:
+  - "BOARD'S REPORT" / "DIRECTOR'S REPORT" / "DIRECTORS' REPORT"
+  - "FINANCIAL HIGHLIGHTS" (with table comparing standalone/consolidated years)
+  - "BOARD MEETINGS" / "Number of Board Meetings held during the year"
+  - "RISK MANAGEMENT" / "Risk Management Policy" / "Risk Management Committee"
+  - "SEXUAL HARASSMENT" / "POSH Act" / "Internal Complaints Committee" / "POSH compliance"
+  - "SECRETARIAL STANDARDS" / "Compliance with Secretarial Standards SS-1 and SS-2"
+  - "DIVIDEND" (in Director's Report preamble, NOT in financial statements)
+  - "TRANSFER TO RESERVES"
+  - "CHANGE IN NATURE OF BUSINESS"
+  - "MATERIAL CHANGES AND COMMITMENTS"
+  - "STATE OF AFFAIRS"
+  - "SIGNIFICANT AND MATERIAL ORDERS"
+  - "INTERNAL FINANCIAL CONTROLS"
+  - "PARTICULARS OF CONTRACTS WITH RELATED PARTIES"
+  - "ACKNOWLEDGEMENT" / "Acknowledgement" (closing section)
+
+WHENEVER YOU SEE ANY OF THESE, you MUST output them as:
+  {type: "heading", title: "<humanized title>"},
+  {type: "paragraph_block", paragraphs: [<full content from source>]}
+
+These are MANDATORY disclosures under Companies Act 2013 Section 134(3).
+Skipping them = INCOMPLETE filing = FAIL.
+
+CONCRETE EXAMPLE:
+If source contains:
+"1. FINANCIAL HIGHLIGHTS:
+ The Company achieved revenue of Rs. 73,698 Lakhs during the year compared
+ to Rs. 67,890 Lakhs in the previous year, growth of 8.5%."
+
+You MUST output:
+{type: "heading", title: "Financial Highlights"},
+{type: "paragraph_block", paragraphs: [
+  "The Company achieved revenue of Rs. 73,698 Lakhs during the year compared to Rs. 67,890 Lakhs in the previous year, growth of 8.5%."
+]}
+
+If chunk contains these sections, output them in FULL — do NOT skip, do NOT compress:
+
+PREAMBLE NARRATIVE SECTIONS (often numbered 1, 2, 3...):
+1. FINANCIAL HIGHLIGHTS — preserve the comparison table (Standalone & Consolidated 2024-25, 2023-24)
+2. PRINCIPAL OPERATIONS / Nature of business
+3. STATE OF AFFAIRS
+4. DIVIDEND
+5. TRANSFER TO RESERVES
+6. SHARE CAPITAL changes
+7. DIRECTORS / KMP changes
+8. BOARD MEETINGS held during the year (with dates)
+9. SUBSIDIARY / Associate / Joint Venture information / AOC-1
+10. CORPORATE SOCIAL RESPONSIBILITY (CSR)
+11. RISK MANAGEMENT
+12. INTERNAL FINANCIAL CONTROLS
+13. AUDITORS report and qualifications
+14. RELATED PARTY transactions
+15. FOREIGN EXCHANGE earnings & outgo
+16. CONSERVATION OF ENERGY
+17. SEXUAL HARASSMENT / POSH policy compliance
+18. SECRETARIAL STANDARDS compliance
+19. WHISTLE BLOWER policy
+20. OTHER DISCLOSURES
+21. ACKNOWLEDGEMENT (the closing thank-you from directors)
+22. All ANNEXURES (A, B, C, D)
+23. INDEPENDENT AUDITOR'S REPORT
+24. CARO Reporting (clause by clause, 3(i) through 3(xxi))
+25. NOTES TO FINANCIAL STATEMENTS (every note)
+
+XBRL NUMBERED SECTIONS (preserve all):
+- [400100] Disclosure of general information
+- [400200] Auditors report
+- [400300] Disclosures - Auditors report  
+- [100100] Balance Sheet
+- [100200] Statement of profit and loss
+- [100400] Cash flow statement
+- [200xxx] Notes - Share capital, Reserves, Borrowings, etc
+- [201xxx] Notes - Tangible Assets, Intangible, Investments, etc
+- [202xxx] Notes - Related party, Provisions, etc
+- [300xxx] Notes - Revenue, Expenses
+
+CRITICAL: A chunk's output character count should be AT LEAST as long as input.
+If less → you've SUMMARIZED → that's a FAIL.
+
+═══════════════════════════════════════
+PART C — OTHER FORMATTING RULES
+═══════════════════════════════════════
+
+1. EMPTY/ZERO CELLS: If cell is 0, 0.00, blank → return null. NEVER write "0".
+2. NUMBERS PRESERVED EXACTLY: "1,23,456.78" stays as "1,23,456.78". Don't reformat.
+3. SKIP EMPTY ROWS: Don't include rows where ALL data cells are 0/empty.
+4. NARRATIVE TEXT: split into paragraphs array — one element per source paragraph.
+5. KEY-VALUE INFO (Company name, CIN, address, auditor name): use "key_value_table" type.
+6. TABLES with data columns: use "table" type with clean headers (after stripping XBRL tags).
+7. SECTION TRANSITIONS within chunk: use "section_break" block to mark new sections.
+
+${companyContext ? `\nCOMPANY CONTEXT FROM EARLIER CHUNKS: ${companyContext}\n` : ''}
+
+FINAL VERIFICATION before returning JSON:
+Mental checklist — scan the source chunk one more time:
+  □ Does it mention 'FINANCIAL HIGHLIGHTS'? → Did I output that section?
+  □ Does it mention 'BOARD MEETINGS'? → Did I output that section?
+  □ Does it mention 'POSH' or 'SEXUAL HARASSMENT'? → Did I output it?
+  □ Does it mention 'SECRETARIAL STANDARDS'? → Did I output it?
+  □ Does it mention 'RISK MANAGEMENT'? → Did I output it?
+If ANY answer is 'no, I skipped it' — go back and add it before returning.
+
+═══════════════════════════════════════
+OUTPUT JSON STRUCTURE (return ONLY this, no markdown)
+═══════════════════════════════════════
+
+{
+  "chunkSummary": "1-line description",
+  "sectionNumber": "[400100]" or "" if not XBRL-numbered,
+  "sectionTitle": "Clean human title — e.g. 'Balance Sheet', 'Cash Flow Statement', 'Notes on Share Capital', 'Board Report', etc",
+  "blocks": [
+    { "type": "section_break", "sectionNumber": "[400500]", "title": "Notes on Borrowings" },
+    { "type": "heading", "title": "Main section heading" },
+    { "type": "subheading", "title": "Subheading text" },
+    {
+      "type": "paragraph_block",
+      "title": "optional title",
+      "paragraphs": ["Para 1 verbatim from source.", "Para 2 verbatim.", "Para 3 verbatim."]
+    },
+    {
+      "type": "bullet_list",
+      "title": "optional",
+      "items": ["bullet 1", "bullet 2"]
+    },
+    {
+      "type": "key_value_table",
+      "title": "Company Information",
+      "pairs": [{"label": "Company Name", "value": "B Braun Medical (India) Pvt Ltd"}]
+    },
+    {
+      "type": "table",
+      "title": "Balance Sheet",
+      "headers": ["Particulars", "31/03/2025", "31/03/2024"],
+      "rows": [["Share capital", "34,149.08", "31,909.08"]]
+    }
+  ],
+  "companyInfoFound": {
+    "name": "if mentioned", "cin": "if mentioned",
+    "period": "if mentioned", "rounding": "Lakhs/Crores",
+    "currency": "INR/USD", "sector": "if identifiable"
+  },
+  "financialDataExtracted": {
+    "totalAssets": null or number, "currentAssets": null or number,
+    "nonCurrentAssets": null or number, "totalLiabilities": null or number,
+    "currentLiabilities": null or number, "nonCurrentLiabilities": null or number,
+    "totalEquity": null or number, "longTermDebt": null or number,
+    "shortTermDebt": null or number, "inventory": null or number,
+    "receivables": null or number, "cash": null or number, "fixedAssets": null or number,
+    "tradePayables": null or number,
+    "revenue": null or number, "grossProfit": null or number,
+    "operatingProfit": null or number, "ebitda": null or number,
+    "pbt": null or number,
+    "netIncome": null or number, "interestExpense": null or number,
+    "tax": null or number, "totalTax": null or number,
+    "cogs": null or number,
+    "depreciation": null or number, "operatingCashFlow": null or number,
+    "investingCashFlow": null or number, "financingCashFlow": null or number
+  },
+  "financialDataExtractedPrior": {
+    "totalAssets": null or number, "currentAssets": null or number,
+    "nonCurrentAssets": null or number, "totalLiabilities": null or number,
+    "currentLiabilities": null or number, "nonCurrentLiabilities": null or number,
+    "totalEquity": null or number, "longTermDebt": null or number,
+    "shortTermDebt": null or number, "inventory": null or number,
+    "receivables": null or number, "cash": null or number, "fixedAssets": null or number,
+    "tradePayables": null or number,
+    "revenue": null or number, "grossProfit": null or number,
+    "operatingProfit": null or number, "ebitda": null or number,
+    "pbt": null or number,
+    "netIncome": null or number, "interestExpense": null or number,
+    "tax": null or number, "totalTax": null or number,
+    "cogs": null or number,
+    "depreciation": null or number, "operatingCashFlow": null or number,
+    "investingCashFlow": null or number, "financingCashFlow": null or number
+  }
+}
+
+REMEMBER:
+- Apply XBRL CLEANING to every header, title, cell value before outputting.
+- PRESERVE every preamble narrative section (Financial Highlights, POSH, Secretarial Standards, etc.)
+- financialDataExtracted = CURRENT YEAR values (numbers only). Convert "34,149.08" to 34149.08.
+- financialDataExtractedPrior = PRIOR YEAR values (the comparative column, typically labeled "Previous Year" or the earlier date range).
+
+P&L EXTRACTION — CRITICAL (read carefully):
+From the Statement of Profit and Loss, map these EXACT lines:
+  "Revenue from Operations" / "Total Revenue" / "Total Income" → revenue
+  "Cost of Materials Consumed" + "Purchases of Stock-in-Trade" + "Changes in Inventory of FG/WIP" → cogs
+    (cogs = sum of those three items ONLY. Do NOT include Employee Benefits, Finance Costs, Depreciation, Other Expenses, or Tax)
+  "Finance Costs" / "Interest Expense" → interestExpense
+  "Depreciation and Amortization" → depreciation
+  "Profit/(Loss) before tax" (the line AFTER exceptional items, BEFORE tax) → pbt
+  "Total Tax Expense" (sum of Current Tax + Deferred Tax) → totalTax
+    Also store totalTax in the "tax" field.
+  "Profit/(Loss) for the period" / "Profit/(Loss) for the year" (the FINAL line after tax) → netIncome
+
+CRITICAL VALIDATION — before you return the JSON, verify:
+  netIncome MUST NOT equal totalTax exactly. If they match exactly, you mis-identified a line — re-read and fix.
+  pbt should approximately equal netIncome + totalTax. If not, flag with a note but still return your best values.
+  Do NOT return null for netIncome or pbt if a line with that label appears in the chunk — even if it's negative.
+
+BALANCE SHEET EXTRACTION — CRITICAL:
+  "Long-term Borrowings" (Non-current Liabilities section) → longTermDebt
+    If this line exists with value 0, return 0 (not null). Return null ONLY if the line is absent from the filing.
+    Do NOT confuse "Deferred Tax Liabilities" with longTermDebt — they are different items.
+  "Short-term Borrowings" (Current Liabilities section) → shortTermDebt
+  "Trade Payables" / "Creditors for goods/services" → tradePayables
+
+- tradePayables = Trade Payables / Creditors for goods/services (from Balance Sheet Notes or current liabilities breakdown).`;
+}
+
+async function processChunkWithAI(chunkTextStr, chunkIndex, totalChunks, companyContext, onProgress) {
+  onProgress?.(`Processing section ${chunkIndex} of ${totalChunks}...`);
+  const systemPrompt = buildChunkOrganizationPrompt(chunkIndex, totalChunks, companyContext);
+  const aiResponse = await callClaude({
+    system: systemPrompt,
+    userMsg: `Process chunk ${chunkIndex} of ${totalChunks}. PRESERVE all content. STRIP all XBRL tags. Return JSON only:\n\n${chunkTextStr}`,
+    maxTokens: 8000
+  });
+  let cleanResponse = aiResponse.trim();
+  if (cleanResponse.startsWith('```json')) cleanResponse = cleanResponse.replace(/^```json\s*/, '').replace(/```\s*$/, '');
+  else if (cleanResponse.startsWith('```')) cleanResponse = cleanResponse.replace(/^```\s*/, '').replace(/```\s*$/, '');
+  try {
+    return JSON.parse(cleanResponse);
   } catch (e) {
-    console.error('JSON parse failed:', e.message, 'Preview:', text.substring(0, 200))
-    return null
+    console.error("Failed to parse chunk", chunkIndex, ":", e);
+    return {
+      chunkSummary: `Chunk ${chunkIndex} - parsing error`,
+      sectionNumber: "", sectionTitle: `Section ${chunkIndex}`,
+      blocks: [{ type: "paragraph_block", paragraphs: splitNarrativeIntoParagraphs(chunkTextStr) }],
+      companyInfoFound: {}, financialDataExtracted: {}
+    };
   }
 }
 
@@ -535,61 +1268,21 @@ function calculateRatios(fd, sectorHint = "general", fdPrior = null) {
 async function generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress, aggregatedPrior = null) {
   onProgress?.("Generating SWOT analysis and ratio interpretations...");
   const ratiosFlat = ratios.flatMap(r => r.items.map(i => `${i.name}: ${i.value} (${r.category})`)).join('\n');
-  // Derive financial tone from actual data
-  const netMarginPct = (aggregated.netIncome != null && aggregated.revenue != null && aggregated.revenue > 0)
-    ? (aggregated.netIncome / aggregated.revenue) * 100 : null;
-  const currentRatio = (aggregated.currentAssets != null && aggregated.currentLiabilities != null && aggregated.currentLiabilities > 0)
-    ? aggregated.currentAssets / aggregated.currentLiabilities : null;
-  const debtEquity = (aggregated.totalDebt != null && aggregated.totalEquity != null && aggregated.totalEquity > 0)
-    ? aggregated.totalDebt / aggregated.totalEquity : null;
-  const revenueGrowth = (aggregatedPrior?.revenue != null && aggregated.revenue != null && aggregatedPrior.revenue > 0)
-    ? ((aggregated.revenue - aggregatedPrior.revenue) / aggregatedPrior.revenue) * 100 : null;
+  const systemPrompt = `You are a senior financial analyst for an Indian private company. Generate SPECIFIC SWOT and ratio interpretations - no generic advice.
 
-  const toneTips = [
-    netMarginPct != null
-      ? netMarginPct > 20 ? 'The company is HIGHLY PROFITABLE. Use positive, confident language. Highlight profitability prominently.'
-        : netMarginPct > 5 ? 'The company is moderately profitable. Use balanced, analytical language.'
-        : netMarginPct > 0 ? 'The company has thin margins. Flag this but acknowledge any improving trends.'
-        : 'The company is LOSS-MAKING. Use careful analytical language focused on path to recovery. Do NOT be alarmist.'
-      : null,
-    currentRatio != null
-      ? currentRatio >= 2.0 ? 'Strong liquidity (current ratio ≥ 2). Highlight as strength.'
-        : currentRatio >= 1.0 ? 'Adequate liquidity.'
-        : 'Liquidity concern (current ratio < 1). Flag clearly but factually.'
-      : null,
-    debtEquity != null
-      ? debtEquity < 0.5 ? 'Conservative leverage. Highlight as strength.'
-        : debtEquity > 2.0 ? 'High leverage. Flag as risk factor.'
-        : 'Moderate leverage.'
-      : null,
-    revenueGrowth != null
-      ? revenueGrowth > 0 ? `Revenue grew ${revenueGrowth.toFixed(1)}% YoY. Highlight growth prominently.`
-        : `Revenue declined ${Math.abs(revenueGrowth).toFixed(1)}% YoY. Explain decline using available data. NEVER say revenue grew if it declined.`
-      : null,
-  ].filter(Boolean).join(' ');
-
-  const systemPrompt = `You are a senior financial analyst for an Indian private company. Generate SPECIFIC SWOT and ratio interpretations — no generic advice.
-
-TONE GUIDANCE based on actual financial data:
-${toneTips || 'Use balanced analytical language.'}
-
-CRITICAL RULES:
-- Never generate language suggesting governance failures or financial distress unless the data explicitly supports it.
-- Never blame FinSight extraction failures on the company.
-- If revenue declined, say it declined. Never misrepresent direction.
-- Reference actual numbers and the company name in every bullet point.
-
-Output ONLY JSON (no markdown, no extra text):
+Output ONLY JSON:
 {
-  "strengths": ["4-5 specific strengths with actual numbers"],
-  "weaknesses": ["4-5 specific weaknesses with actual numbers"],
-  "opportunities": ["4-5 specific opportunities relevant to sector and company scale"],
-  "threats": ["4-5 specific threats with actual data context"],
-  "executiveOutlook": "2-3 sentences: overall financial health, primary concern or strength, forward-looking observation. Reference actual numbers and sector.",
+  "strengths": ["4-5 specific strengths"],
+  "weaknesses": ["4-5 specific weaknesses"],
+  "opportunities": ["4-5 specific opportunities"],
+  "threats": ["4-5 specific threats"],
+  "executiveOutlook": "2-3 sentences covering: overall financial health, primary concern or strength, and a forward-looking observation. Reference actual numbers and sector. Must be company-specific.",
   "ratioInterpretations": [
-    {"ratio": "ratio name", "value": "X%", "meaning": "1-2 lines specific to THIS company"}
+    {"ratio": "Gross Margin", "value": "X%", "meaning": "1-2 lines specific to THIS company in its sector"}
   ]
-}`;
+}
+
+Each bullet 1-2 sentences. Reference the company name and actual numbers.`;
 
   const userMsg = `Company: ${companyInfo.name}
 Sector: ${companyInfo.sector || "Medical/Pharmaceutical"}
@@ -753,12 +1446,6 @@ function generateSmartFilename(companyInfo, extension) {
 
 async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot, chartImages, originalFileName, extraParams = {}) {
   const { documentMetadata = {}, visionStructuredData = {}, aggregated: aggFin = {}, aggregatedPrior: aggPrior = {} } = extraParams;
-  const hasPrior = Object.values(aggPrior).some(v => v != null);
-  const hasPLData = aggFin.revenue != null || aggFin.netIncome != null || aggFin.grossProfit != null || aggFin.pbt != null;
-  const hasBSData = aggFin.totalAssets != null || aggFin.totalEquity != null || aggFin.currentAssets != null;
-  const hasCFData = aggFin.operatingCashFlow != null || aggFin.investingCashFlow != null || aggFin.financingCashFlow != null
-    || (aggFin.netIncome != null && aggFin.depreciation != null)
-    || aggFin.cash != null;
   const docx = await loadDocx();
   const {
     Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
@@ -878,18 +1565,15 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   }
 
   // Key-value pair filtering: skip sensitive / identity fields
-  const SENSITIVE_LABEL_RE = /\bpan\b|\bdin\b|\bcin\b|\bgst\b|aadhaar|address|pin\s*code|tax.*number|registration.*number|passport|\bmembership\s*no|\budin\b|firm\s+reg|icai|institute\s+of/i;
-  const LOOKS_LIKE_ID = /^[A-Z]{1,3}\d{6,}[A-Z]?$|^[A-Z0-9]{10,}$|^\d{8,}$/;
-  // Values that are clearly IDs/registrations — skip them
-  const SENSITIVE_VALUE_RE = /^[A-Z]{2}\d{4}[A-Z]{2}\d{4}[A-Z]{3}\d{6}$|^[A-Z]{5}\d{4}[A-Z]$|^[0-9]{12}$|\bUDIN\b/i;
+  const SENSITIVE_LABEL_RE = /pan|din|cin|gst|aadhaar|address|pin\s*code|tax.*number|registration.*number|passport/i;
+  const LOOKS_LIKE_ID = /^[A-Z0-9]{10,}$/;
   function shouldSkipKVPair(label, value) {
     if (!label) return true;
     if (SENSITIVE_LABEL_RE.test(label)) return true;
-    if (value == null || value === '' || value === 'null' || value === '0' || value === 'undefined' || value === 'None' || value === 'NA' || value === 'N/A') return true;
+    if (value == null || value === '' || value === 'null' || value === '0' || value === 'undefined') return true;
     const strVal = String(value).trim();
-    if (!strVal || strVal === '—') return false;
+    if (!strVal || strVal === '—') return false; // keep em-dashes
     if (LOOKS_LIKE_ID.test(strVal)) return true;
-    if (SENSITIVE_VALUE_RE.test(strVal)) return true;
     return false;
   }
 
@@ -989,19 +1673,16 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   allSections.push(hrule(NAVY, 10));
   allSections.push(blankLine());
 
-  // Dynamic TOC — only include sections for which data exists
-  let _sn = 0;
-  const tocEntries = [];
-  tocEntries.push([String(++_sn), "Executive Summary",          "Key metrics, highlights and investment thesis"]);
-  tocEntries.push([String(++_sn), "Company & Industry Overview","Business profile, industry context and competitive position"]);
-  if (hasPLData) tocEntries.push([String(++_sn), "Financial Performance", "Profit & Loss analysis with key margins"]);
-  if (hasBSData) tocEntries.push([String(++_sn), "Balance Sheet Analysis", "Asset composition, liabilities and capital structure"]);
-  if (hasCFData) tocEntries.push([String(++_sn), "Cash Flow & Working Capital", "Operating, investing, financing cash flows and liquidity"]);
-  const _calcRatioCount = (ratios || []).flatMap(cat => cat.items || []).filter(item => item.rawValue != null && !isNaN(item.rawValue)).length;
-  if (_calcRatioCount >= 3) tocEntries.push([String(++_sn), "Ratio Analysis", "Key ratios with sector benchmarks and traffic-light status"]);
-  if (swot?.strengths?.length > 0) tocEntries.push([String(++_sn), "SWOT Analysis", "Strengths, Weaknesses, Opportunities and Threats — data-backed"]);
-  tocEntries.push([String(++_sn), "Risk Assessment & Outlook",  "Risk register, 12-month outlook, conclusion and disclaimer"]);
-  let sn = 0; // section number counter used throughout report
+  const tocEntries = [
+    ["1", "Executive Summary",          "Key metrics, highlights and investment thesis"],
+    ["2", "Company & Industry Overview","Business profile, industry context and competitive position"],
+    ["3", "Financial Performance",      "Profit & Loss deep dive with YoY variance analysis"],
+    ["4", "Balance Sheet Analysis",     "Asset composition, liabilities and capital structure"],
+    ["5", "Cash Flow & Working Capital","Operating, investing, financing cash flows and liquidity cycle"],
+    ["6", "Ratio Analysis",             "20 key ratios with sector benchmarks and traffic-light status"],
+    ["7", "SWOT Analysis",              "Strengths, Weaknesses, Opportunities and Threats — data-backed"],
+    ["8", "Risk Assessment & Outlook",  "Risk register, 12-month outlook, conclusion and disclaimer"],
+  ];
   const tocRows = [];
   tocRows.push(new TableRow({
     tableHeader: true,
@@ -1029,16 +1710,12 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   // PAGE 3 — EXECUTIVE SUMMARY
   // ═══════════════════════════════════════════════════════════════
   allSections.push(pageBreak());
-  allSections.push(sectionHeader(String(++sn), "Executive Summary"));
+  allSections.push(sectionHeader("1", "Executive Summary"));
   allSections.push(hrule(NAVY, 8));
   allSections.push(blankLine());
 
-  // Executive outlook paragraphs — sanitise before splitting to prevent broken parentheses
-  const execOutlook = (swot?.executiveOutlook || "")
-    .replace(/\([^)]*$/, '')       // drop unclosed trailing parenthesis
-    .replace(/\s+([,;.!?])/g, '$1') // fix space-before-punctuation
-    .replace(/\s{2,}/g, ' ')       // collapse multiple spaces
-    .trim();
+  // Executive outlook paragraphs
+  const execOutlook = swot?.executiveOutlook || "";
   const outlookParas = execOutlook ? splitNarrativeIntoParagraphs(execOutlook) : [];
   const mainParas = outlookParas.slice(0, outlookParas.length > 1 ? outlookParas.length - 1 : outlookParas.length);
   const lastPara = outlookParas.length > 1 ? outlookParas[outlookParas.length - 1] : null;
@@ -1126,7 +1803,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   // PAGES 4-5 — COMPANY & INDUSTRY OVERVIEW
   // ═══════════════════════════════════════════════════════════════
   allSections.push(pageBreak());
-  allSections.push(sectionHeader(String(++sn), "Company & Industry Overview"));
+  allSections.push(sectionHeader("2", "Company & Industry Overview"));
   allSections.push(hrule(NAVY, 8));
   allSections.push(blankLine());
 
@@ -1177,55 +1854,24 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       }
     }
     if (!narrativeAdded) {
-      // Company profile summary table
-      const profileData = [
-        ["Company Name",         companyInfo.name         || "—"],
-        ["CIN",                  companyInfo.cin          || "—"],
-        ["Sector / Industry",    companyInfo.sector       || "—"],
-        ["Financial Year",       companyInfo.period       || "—"],
-        ["Reporting Currency",   `${companyInfo.currency || "INR"} (${companyInfo.rounding || "Lakhs"})`],
-      ].filter(([, v]) => v && v !== "—");
-      if (profileData.length > 0) {
-        allSections.push(subSectionHeader("Company Profile"));
-        const profileRows = profileData.map(([label, value]) =>
-          new TableRow({ children: [
-            cell(para(txt(label, { font: "Times New Roman", size: 21, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { width: { size: 40, type: WidthType.PERCENTAGE }, borders: thinBorder }),
-            cell(para(txt(value, { font: "Times New Roman", size: 21, color: MID }), { spacing: { before: 80, after: 80 } }), { width: { size: 60, type: WidthType.PERCENTAGE }, borders: thinBorder }),
-          ]})
-        );
-        allSections.push(new Table({ rows: profileRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
-        allSections.push(blankLine());
-      }
-      const sectorName = companyInfo.sector || "its industry";
       allSections.push(para(
-        [txt(`${companyInfo.name || "The Company"} is incorporated in India and operates in the ${sectorName} sector. The company's operations are governed by applicable regulatory frameworks for the sector. For a detailed company background, refer to the Directors' Report and Management Discussion & Analysis sections of the source annual filing. Financial performance analysis is presented in the subsequent sections of this report.`, { font: "Times New Roman", size: 22, color: DK })],
+        [txt(`${companyInfo.name || "The Company"} operates in the ${companyInfo.sector || "corporate"} sector. For a detailed company background, please refer to the Directors' Report and Management Discussion & Analysis sections of the source filing. Financial performance analysis is presented in the subsequent sections of this report.`, { font: "Times New Roman", size: 22, color: DK })],
         { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 160, line: 340 } }
       ));
-      if (aggFin.revenue != null) {
-        const sectorNote = companyInfo.sector
-          ? `As a company in the ${companyInfo.sector} sector, performance is evaluated against industry-specific benchmarks including gross margin, asset turnover and return on equity metrics.`
-          : `The company's financial performance is evaluated across profitability, leverage and liquidity dimensions.`;
-        allSections.push(para(
-          [txt(sectorNote, { font: "Times New Roman", size: 22, color: DK })],
-          { align: AlignmentType.JUSTIFIED, spacing: { before: 100, after: 160, line: 340 } }
-        ));
-      }
-      narrativeAdded = true;
     }
   }
 
   // ═══════════════════════════════════════════════════════════════
   // PAGES 6-7 — FINANCIAL PERFORMANCE (P&L)
   // ═══════════════════════════════════════════════════════════════
-  if (hasPLData) {
   allSections.push(pageBreak());
-  allSections.push(sectionHeader(String(++sn), "Financial Performance"));
+  allSections.push(sectionHeader("3", "Financial Performance"));
   allSections.push(hrule(NAVY, 8));
   allSections.push(disclaimer(unit));
   allSections.push(blankLine());
 
   {
-    const colW = hasPrior ? [45, 25, 18, 12] : [60, 40];
+    const colW = [45, 25, 18, 12];
     const mkHdr = (label, align = AlignmentType.LEFT) =>
       cell(para(txt(label, { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align, spacing: { before: 80, after: 80 } }),
         { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders });
@@ -1234,39 +1880,35 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     plRows.push(new TableRow({ tableHeader: true, children: [
       mkHdr("Particulars"),
       mkHdr(companyInfo.period || "Current Year", AlignmentType.RIGHT),
-      ...(hasPrior ? [mkHdr("Prior Year", AlignmentType.RIGHT), mkHdr("YoY", AlignmentType.RIGHT)] : []),
+      mkHdr("Prior Year", AlignmentType.RIGHT),
+      mkHdr("YoY", AlignmentType.RIGHT),
     ]}));
 
     const plLine = (label, cur, prior, isTotal, isSub = false, skipIfNull = false) => {
-      if (skipIfNull && cur == null && (!hasPrior || prior == null)) return null;
+      if (skipIfNull && cur == null && prior == null) return null;
       const yov = yoyStr(cur, prior);
       const yoyColor = yov.startsWith("▲") ? "1B6B4A" : (yov.startsWith("▼") ? "C04040" : "999999");
       const bg = isTotal ? LIGHT : WHITE;
-      const cells = [
+      return new TableRow({ children: [
         cell(para(txt(label, { font: "Times New Roman", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }),
           { indent: isSub ? { left: 360 } : {}, spacing: { before: 60, after: 60 } }),
           { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[0], type: WidthType.PERCENTAGE } }),
         cell(para(txt(fmtInr(cur), { font: "Times New Roman", size: 20, bold: isTotal, color: (cur != null && cur < 0) ? "C04040" : (isTotal ? NAVY : DK) }),
           { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
           { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[1], type: WidthType.PERCENTAGE } }),
-      ];
-      if (hasPrior) {
-        cells.push(cell(para(txt(fmtInr(prior), { font: "Times New Roman", size: 20, color: MID }),
+        cell(para(txt(fmtInr(prior), { font: "Times New Roman", size: 20, color: MID }),
           { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[2], type: WidthType.PERCENTAGE } }));
-        cells.push(cell(para(txt(yov, { font: "Times New Roman", size: 18, bold: true, color: yoyColor }),
+          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[2], type: WidthType.PERCENTAGE } }),
+        cell(para(txt(yov, { font: "Times New Roman", size: 18, bold: true, color: yoyColor }),
           { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[3], type: WidthType.PERCENTAGE } }));
-      }
-      return new TableRow({ children: cells });
+          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[3], type: WidthType.PERCENTAGE } }),
+      ]});
     };
     const marginRow = (label, pct) => pct == null ? null : new TableRow({ children: [
-      cell(para(txt(label, { font: "Times New Roman", size: 18, italics: true, color: MID }), { indent: { left: 360 }, spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder, width: { size: colW[0], type: WidthType.PERCENTAGE } }),
-      cell(para(txt(pct, { font: "Times New Roman", size: 18, italics: true, color: NAVY }), { align: AlignmentType.RIGHT, spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder, width: { size: colW[1], type: WidthType.PERCENTAGE } }),
-      ...(hasPrior ? [
-        cell(para(txt("", { font: "Times New Roman", size: 18 }), { spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
-        cell(para(txt("", { font: "Times New Roman", size: 18 }), { spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
-      ] : []),
+      cell(para(txt(label, { font: "Times New Roman", size: 18, italics: true, color: MID }), { indent: { left: 360 }, spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
+      cell(para(txt(pct, { font: "Times New Roman", size: 18, italics: true, color: NAVY }), { align: AlignmentType.RIGHT, spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
+      cell(para(txt("", { font: "Times New Roman", size: 18 }), { spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
+      cell(para(txt("", { font: "Times New Roman", size: 18 }), { spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
     ]});
 
     const ebitdaMgn = (aggFin.ebitda != null && aggFin.revenue != null && aggFin.revenue !== 0)
@@ -1277,21 +1919,15 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       ? ((aggFin.netIncome / aggFin.revenue) * 100).toFixed(1) + "%" : null;
 
     const addRow = (r) => { if (r) plRows.push(r); };
-    // Revenue block
-    addRow(plLine("Revenue from Operations",   aggFin.revenue,         aggPrior.revenue,         false));
-    addRow(plLine("Other Income",              aggFin.otherIncome,     aggPrior.otherIncome,     false, true, true));
-    addRow(plLine("Total Income",              aggFin.totalIncome,     aggPrior.totalIncome,     true));
-    // Expenses block
-    addRow(plLine("Cost of Materials / COGS",  aggFin.cogs,            aggPrior.cogs,            false, true, true));
-    addRow(plLine("Employee Benefit Expenses", aggFin.employeeCosts,   aggPrior.employeeCosts,   false, true, true));
+    addRow(plLine("Revenue from Operations",  aggFin.revenue,         aggPrior.revenue,         false));
+    addRow(plLine("Cost of Goods Sold",        aggFin.cogs,            aggPrior.cogs,            false, true, true));
+    addRow(plLine("Gross Profit",              aggFin.grossProfit,     aggPrior.grossProfit,     true));
+    addRow(plLine("Employee Benefit Expenses", null,                   null,                     false, true, true));
     addRow(plLine("Finance Costs",             aggFin.interestExpense, aggPrior.interestExpense, false, true, true));
     addRow(plLine("Depreciation & Amort.",     aggFin.depreciation,    aggPrior.depreciation,    false, true, true));
-    addRow(plLine("Other Expenses",            aggFin.otherExpenses,   aggPrior.otherExpenses,   false, true, true));
-    addRow(plLine("Total Expenses",            aggFin.totalExpenses,   aggPrior.totalExpenses,   true));
-    // Profitability
-    addRow(plLine("Gross Profit",              aggFin.grossProfit,     aggPrior.grossProfit,     false, true, true));
-    addRow(plLine("EBITDA",                    aggFin.ebitda,          aggPrior.ebitda,          false, true, true));
+    addRow(plLine("EBITDA",                    aggFin.ebitda,          aggPrior.ebitda,          true));
     addRow(marginRow("  EBITDA Margin %", ebitdaMgn));
+    addRow(plLine("Operating Profit (EBIT)",   aggFin.operatingProfit, aggPrior.operatingProfit, false, false, true));
     addRow(plLine("Profit Before Tax (PBT)",   aggFin.pbt,             aggPrior.pbt,             true));
     addRow(marginRow("  PBT Margin %", pbtMgn));
     addRow(plLine("Tax Expense",               aggFin.tax,             aggPrior.tax,             false, true, true));
@@ -1302,40 +1938,6 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       allSections.push(new Table({ rows: plRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
     } else {
       allSections.push(para([txt("Financial statement data could not be extracted. Please refer to the source filing.", { font: "Times New Roman", size: 22, color: DK })], { spacing: { before: 120, after: 160 } }));
-    }
-    allSections.push(blankLine());
-
-    // P&L narrative
-    {
-      const revCur  = aggFin.revenue,    revPri  = aggPrior.revenue;
-      const patCur  = aggFin.netIncome,  patPri  = aggPrior.netIncome;
-      const pbtCur  = aggFin.pbt,        pbtPri  = aggPrior.pbt;
-      const fcCur   = aggFin.interestExpense, fcPri = aggPrior.interestExpense;
-      const empCur  = aggFin.employeeCosts;
-      const revChg  = (revCur != null && revPri != null && revPri !== 0) ? ((revCur - revPri) / Math.abs(revPri) * 100).toFixed(1) : null;
-      const patMgnCurNum = (patCur != null && revCur != null && revCur !== 0) ? (patCur / revCur * 100).toFixed(2) : null;
-      const patMgnPriNum = (patPri != null && revPri != null && revPri !== 0) ? (patPri / revPri * 100).toFixed(2) : null;
-      const fcChg   = (fcCur != null && fcPri != null && fcPri !== 0) ? ((fcCur - fcPri) / Math.abs(fcPri) * 100).toFixed(0) : null;
-      const pbtMgnNum = (pbtCur != null && revCur != null && revCur !== 0) ? (pbtCur / revCur * 100).toFixed(1) : null;
-
-      const narrativeParts = [];
-      if (revCur != null && revPri != null) narrativeParts.push(`${companyInfo.name || "The Company"} reported revenue from operations of ₹${revCur.toLocaleString('en-IN')} Lakhs in ${companyInfo.period || "the current year"}, a ${revChg != null ? (revChg >= 0 ? revChg + "% increase" : Math.abs(revChg) + "% decline") : "change"} from ₹${revPri.toLocaleString('en-IN')} Lakhs in the prior year.`);
-      if (aggFin.otherIncome != null && aggFin.totalIncome != null) narrativeParts.push(`Other income of ₹${aggFin.otherIncome.toLocaleString('en-IN')} Lakhs brought total income to ₹${aggFin.totalIncome.toLocaleString('en-IN')} Lakhs.`);
-      if (patMgnCurNum != null && patMgnPriNum != null) narrativeParts.push(`Net profit margin of ${patMgnCurNum}% (prior year: ${patMgnPriNum}%) reflects the company's cost management and profitability performance.`);
-      else if (patMgnCurNum != null) narrativeParts.push(`Net profit margin stands at ${patMgnCurNum}% for the period.`);
-      if (fcCur != null && fcPri != null && fcChg != null) {
-        const fcDir = parseFloat(fcChg) >= 0 ? "increased" : "decreased";
-        narrativeParts.push(`Finance costs ${fcDir} from ₹${fcPri.toLocaleString('en-IN')} ${unit} to ₹${fcCur.toLocaleString('en-IN')} ${unit} (${fcChg >= 0 ? "+" : ""}${fcChg}%) year-on-year.`);
-      }
-      if (empCur != null) narrativeParts.push(`Employee benefit expenses were ₹${empCur.toLocaleString('en-IN')} ${unit} for the period.`);
-      if (pbtCur != null && pbtMgnNum != null) narrativeParts.push(`Profit before tax of ₹${pbtCur.toLocaleString('en-IN')} ${unit} on a PBT margin of ${pbtMgnNum}% reflects the company's operational efficiency.`);
-
-      if (narrativeParts.length > 0) {
-        allSections.push(para(
-          [txt(narrativeParts.join(" "), { font: "Times New Roman", size: 22, color: DK })],
-          { align: AlignmentType.JUSTIFIED, spacing: { before: 160, after: 160, line: 340 } }
-        ));
-      }
     }
     allSections.push(blankLine());
 
@@ -1366,37 +1968,34 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       allSections.push(blankLine());
     }
   }
-  } // end if (hasPLData)
 
   // ═══════════════════════════════════════════════════════════════
   // PAGE 8 — BALANCE SHEET ANALYSIS
   // ═══════════════════════════════════════════════════════════════
-  if (hasBSData) {
   allSections.push(pageBreak());
-  allSections.push(sectionHeader(String(++sn), "Balance Sheet Analysis"));
+  allSections.push(sectionHeader("4", "Balance Sheet Analysis"));
   allSections.push(hrule(NAVY, 8));
   allSections.push(disclaimer(unit));
   allSections.push(blankLine());
 
   {
     const bsRow = (label, cur, prior, isTotal = false, isSub = false, skipNull = false) => {
-      if (skipNull && cur == null && (!hasPrior || prior == null)) return null;
-      const bsCells = [
+      if (skipNull && cur == null && prior == null) return null;
+      return new TableRow({ children: [
         cell(para(txt(label, { font: "Times New Roman", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }),
           { indent: isSub ? { left: 360 } : {}, spacing: { before: 60, after: 60 } }),
-          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: hasPrior ? 50 : 60, type: WidthType.PERCENTAGE } }),
+          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 50, type: WidthType.PERCENTAGE } }),
         cell(para(txt(fmtInr(cur), { font: "Times New Roman", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }),
           { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: hasPrior ? 28 : 40, type: WidthType.PERCENTAGE } }),
-      ];
-      if (hasPrior) bsCells.push(cell(para(txt(fmtInr(prior), { font: "Times New Roman", size: 20, color: MID }),
-        { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-        { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 22, type: WidthType.PERCENTAGE } }));
-      return new TableRow({ children: bsCells });
+          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 28, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(fmtInr(prior), { font: "Times New Roman", size: 20, color: MID }),
+          { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
+          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 22, type: WidthType.PERCENTAGE } }),
+      ]});
     };
     const bsSect = (label) => new TableRow({ children: [
       cell(para(txt(label, { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { spacing: { before: 60, after: 60 } }),
-        { shading: { type: ShadingType.SOLID, color: "1B3A6B" }, borders: noBorders, columnSpan: hasPrior ? 3 : 2 }),
+        { shading: { type: ShadingType.SOLID, color: "1B3A6B" }, borders: noBorders, columnSpan: 3 }),
     ]});
     const addBs = (r) => { if (r) bsRows.push(r); };
 
@@ -1404,120 +2003,65 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     bsRows.push(new TableRow({ tableHeader: true, children: [
       cell(para(txt("Particulars", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
       cell(para(txt(companyInfo.period || "Current Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
-      ...(hasPrior ? [cell(para(txt("Prior Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders })] : []),
+      cell(para(txt("Prior Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
     ]}));
-    bsRows.push(bsSect("EQUITY & LIABILITIES"));
-    addBs(bsRow("  Share Capital",              aggFin.shareCapital,      aggPrior.shareCapital,      false, true, true));
-    addBs(bsRow("  Reserves and Surplus",       aggFin.reserves,          aggPrior.reserves,          false, true, true));
-    addBs(bsRow("Total Shareholders' Equity",   aggFin.totalEquity,       aggPrior.totalEquity,       true,  false, true));
-    addBs(bsRow("  Long-term Borrowings",       aggFin.longTermDebt,      aggPrior.longTermDebt,      false, true, true));
-    addBs(bsRow("  Total Non-Current Liab.",    aggFin.nonCurrentLiabilities, aggPrior.nonCurrentLiabilities, false, true, true));
-    addBs(bsRow("  Trade Payables",             aggFin.tradePayables,     aggPrior.tradePayables,     false, true, true));
-    addBs(bsRow("  Short-term Borrowings",      aggFin.shortTermDebt,     aggPrior.shortTermDebt,     false, true, true));
-    addBs(bsRow("Total Current Liabilities",    aggFin.currentLiabilities,aggPrior.currentLiabilities,false, true, true));
-    addBs(bsRow("Total Liabilities",            aggFin.totalLiabilities,  aggPrior.totalLiabilities,  true, false, true));
     bsRows.push(bsSect("ASSETS"));
-    addBs(bsRow("  Fixed Assets / PPE",         aggFin.fixedAssets,       aggPrior.fixedAssets,       false, true, true));
-    addBs(bsRow("  Non-Current Investments",    aggFin.nonCurrentInvestments, aggPrior.nonCurrentInvestments, false, true, true));
-    addBs(bsRow("Total Non-Current Assets",     aggFin.nonCurrentAssets,  aggPrior.nonCurrentAssets,  false, true, true));
-    addBs(bsRow("  Inventories",                aggFin.inventory,         aggPrior.inventory,         false, true, true));
-    addBs(bsRow("  Trade Receivables",          aggFin.receivables,       aggPrior.receivables,       false, true, true));
-    addBs(bsRow("  Cash & Equivalents",         aggFin.cash,              aggPrior.cash,              false, true, true));
-    addBs(bsRow("Total Current Assets",         aggFin.currentAssets,     aggPrior.currentAssets,     false, true, true));
-    addBs(bsRow("TOTAL ASSETS",                 aggFin.totalAssets,       aggPrior.totalAssets,       true));
+    addBs(bsRow("Fixed Assets (Net Block)",    aggFin.fixedAssets,       aggPrior.fixedAssets,       false, true, true));
+    addBs(bsRow("Current Assets",              aggFin.currentAssets,     aggPrior.currentAssets,     false, true, true));
+    addBs(bsRow("  Inventories",               aggFin.inventory,         aggPrior.inventory,         false, true, true));
+    addBs(bsRow("  Trade Receivables",         aggFin.receivables,       aggPrior.receivables,       false, true, true));
+    addBs(bsRow("  Cash & Equivalents",        aggFin.cash,              aggPrior.cash,              false, true, true));
+    addBs(bsRow("TOTAL ASSETS",               aggFin.totalAssets,       aggPrior.totalAssets,       true));
+    bsRows.push(bsSect("EQUITY & LIABILITIES"));
+    addBs(bsRow("Total Shareholders' Equity",  aggFin.totalEquity,       aggPrior.totalEquity,       true,  false, true));
+    addBs(bsRow("Long-term Borrowings",        aggFin.longTermDebt,      aggPrior.longTermDebt,      false, true,  true));
+    addBs(bsRow("Short-term Borrowings",       aggFin.shortTermDebt,     aggPrior.shortTermDebt,     false, true,  true));
+    addBs(bsRow("Current Liabilities",         aggFin.currentLiabilities,aggPrior.currentLiabilities,false, true,  true));
+    addBs(bsRow("  Trade Payables",            aggFin.tradePayables,     aggPrior.tradePayables,     false, true,  true));
 
     if (aggFin.totalAssets != null && aggFin.totalEquity != null) {
-      const totalLE = (aggFin.totalEquity ?? 0) + (aggFin.longTermDebt ?? 0) + (aggFin.shortTermDebt ?? 0) + (aggFin.currentLiabilities ?? 0) + (aggFin.nonCurrentLiabilities ?? 0);
+      const totalLE = (aggFin.totalEquity ?? 0) + (aggFin.longTermDebt ?? 0) + (aggFin.shortTermDebt ?? 0) + (aggFin.currentLiabilities ?? 0);
       const diff = Math.abs(aggFin.totalAssets - totalLE);
-      const balanced = diff < 2;
+      const balanced = diff < 1;
       bsRows.push(new TableRow({ children: [
         cell(para(txt(balanced ? "✓  Balance Check: BALANCED" : `⚠  Balance Check: MISMATCH  (Δ ${fmtInr(diff)})`, { font: "Times New Roman", size: 18, bold: true, color: balanced ? "1B6B4A" : "C04040" }), { spacing: { before: 80, after: 80 } }),
-          { shading: { type: ShadingType.SOLID, color: balanced ? "EDF7F2" : "FDF2F2" }, borders: thinBorder, columnSpan: hasPrior ? 3 : 2 }),
+          { shading: { type: ShadingType.SOLID, color: balanced ? "EDF7F2" : "FDF2F2" }, borders: thinBorder, columnSpan: 3 }),
       ]}));
     }
     allSections.push(new Table({ rows: bsRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
     allSections.push(blankLine());
-
-    // Balance sheet narrative
-    {
-      const eqCur   = aggFin.totalEquity,  eqPri   = aggPrior.totalEquity;
-      const asCur   = aggFin.totalAssets,  asPri   = aggPrior.totalAssets;
-      const ltdCur  = aggFin.longTermDebt, stbCur  = aggFin.shortTermDebt;
-      const ncInv   = aggFin.nonCurrentInvestments, ncInvPri = aggPrior.nonCurrentInvestments;
-      const crCur   = (aggFin.currentAssets != null && aggFin.currentLiabilities != null && aggFin.currentLiabilities > 0) ? (aggFin.currentAssets / aggFin.currentLiabilities).toFixed(2) : null;
-      const asChg   = (asCur != null && asPri != null && asPri > 0) ? ((asCur - asPri) / asPri * 100).toFixed(1) : null;
-      const eqChg   = (eqCur != null && eqPri != null && eqPri > 0) ? ((eqCur - eqPri) / eqPri * 100).toFixed(1) : null;
-      const ncInvChg = (ncInv != null && ncInvPri != null) ? (ncInv - ncInvPri).toLocaleString('en-IN') : null;
-
-      const bsNarr = [];
-      if (asCur != null && asPri != null) bsNarr.push(`Total assets ${asChg != null ? (parseFloat(asChg) >= 0 ? "grew " + asChg + "%" : "declined " + Math.abs(parseFloat(asChg)) + "%") : "changed"} from ₹${asPri?.toLocaleString('en-IN')} ${unit} to ₹${asCur?.toLocaleString('en-IN')} ${unit}.`);
-      else if (asCur != null) bsNarr.push(`Total assets stand at ₹${asCur.toLocaleString('en-IN')} ${unit}.`);
-      if (eqCur != null && eqPri != null) bsNarr.push(`Total equity moved from ₹${eqPri?.toLocaleString('en-IN')} ${unit} to ₹${eqCur?.toLocaleString('en-IN')} ${unit}${aggFin.reserves != null ? ", with reserves and surplus of ₹" + aggFin.reserves.toLocaleString('en-IN') + " " + unit : ""}.`);
-      else if (eqCur != null) bsNarr.push(`Total equity stands at ₹${eqCur.toLocaleString('en-IN')} ${unit}${aggFin.reserves != null ? ", with reserves and surplus of ₹" + aggFin.reserves.toLocaleString('en-IN') + " " + unit : ""}.`);
-      if (ltdCur != null || stbCur != null) {
-        const totalBorr = (ltdCur ?? 0) + (stbCur ?? 0);
-        bsNarr.push(`Total borrowings stand at ₹${totalBorr.toLocaleString('en-IN')} ${unit} (long-term: ₹${(ltdCur ?? 0).toLocaleString('en-IN')} ${unit}, short-term: ₹${(stbCur ?? 0).toLocaleString('en-IN')} ${unit}).`);
-      }
-      if (ncInv != null && ncInvPri != null) {
-        const ncDiff = ncInv - ncInvPri;
-        bsNarr.push(`Non-current investments ${ncDiff >= 0 ? "increased" : "decreased"} by ₹${Math.abs(ncDiff).toLocaleString('en-IN')} ${unit} to ₹${ncInv?.toLocaleString('en-IN')} ${unit}.`);
-      }
-      if (crCur != null) bsNarr.push(`A current ratio of ${crCur}x reflects the company's short-term liquidity position relative to its current obligations.`);
-
-      if (bsNarr.length > 0) {
-        allSections.push(para(
-          [txt(bsNarr.join(" "), { font: "Times New Roman", size: 22, color: DK })],
-          { align: AlignmentType.JUSTIFIED, spacing: { before: 160, after: 160, line: 340 } }
-        ));
-      }
-    }
-    allSections.push(blankLine());
   }
-  } // end if (hasBSData)
 
   // ═══════════════════════════════════════════════════════════════
   // PAGE 9 — CASH FLOW & WORKING CAPITAL
   // ═══════════════════════════════════════════════════════════════
-  if (hasCFData) {
   allSections.push(pageBreak());
-  allSections.push(sectionHeader(String(++sn), "Cash Flow & Working Capital"));
+  allSections.push(sectionHeader("5", "Cash Flow & Working Capital"));
   allSections.push(hrule(NAVY, 8));
   allSections.push(disclaimer(unit));
   allSections.push(blankLine());
 
   {
-    const cfRow = (label, cur, prior, isTotal = false) => {
-      const cfCells = [
-        cell(para(txt(label, { font: "Times New Roman", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }), { spacing: { before: 60, after: 60 } }),
-          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: hasPrior ? 55 : 65, type: WidthType.PERCENTAGE } }),
-        cell(para(txt(fmtInr(cur), { font: "Times New Roman", size: 20, bold: isTotal, color: (cur != null && cur < 0) ? "C04040" : (isTotal ? NAVY : DK) }), { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: hasPrior ? 24 : 35, type: WidthType.PERCENTAGE } }),
-      ];
-      if (hasPrior) cfCells.push(cell(para(txt(fmtInr(prior), { font: "Times New Roman", size: 20, color: MID }), { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-        { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 21, type: WidthType.PERCENTAGE } }));
-      return new TableRow({ children: cfCells });
-    };
+    const cfRow = (label, cur, prior, isTotal = false) => new TableRow({ children: [
+      cell(para(txt(label, { font: "Times New Roman", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }), { spacing: { before: 60, after: 60 } }),
+        { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 55, type: WidthType.PERCENTAGE } }),
+      cell(para(txt(fmtInr(cur), { font: "Times New Roman", size: 20, bold: isTotal, color: (cur != null && cur < 0) ? "C04040" : (isTotal ? NAVY : DK) }), { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
+        { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 24, type: WidthType.PERCENTAGE } }),
+      cell(para(txt(fmtInr(prior), { font: "Times New Roman", size: 20, color: MID }), { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
+        { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 21, type: WidthType.PERCENTAGE } }),
+    ]});
 
     const cfRows = [];
     cfRows.push(new TableRow({ tableHeader: true, children: [
       cell(para(txt("Cash Flow Summary", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
       cell(para(txt(companyInfo.period || "Current Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
-      ...(hasPrior ? [cell(para(txt("Prior Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders })] : []),
+      cell(para(txt("Prior Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
     ]}));
-    // Prefer actual cash flow; fall back to PAT+D&A proxy when not extracted
-    const estCFO      = (aggFin.netIncome  != null && aggFin.depreciation  != null) ? aggFin.netIncome  + aggFin.depreciation  : null;
-    const estCFOPrior = (aggPrior.netIncome != null && aggPrior.depreciation != null) ? aggPrior.netIncome + aggPrior.depreciation : null;
-    const showActualCF = aggFin.operatingCashFlow != null || aggFin.investingCashFlow != null || aggFin.financingCashFlow != null;
-
-    if (aggFin.operatingCashFlow != null) {
-      cfRows.push(cfRow("Cash Flow from Operations (CFO)", aggFin.operatingCashFlow, aggPrior.operatingCashFlow, true));
-    } else if (!showActualCF && estCFO != null) {
-      cfRows.push(cfRow("Operating Cash Flow — Estimated (PAT + D&A)", estCFO, estCFOPrior, true));
-    }
-    if (aggFin.investingCashFlow != null) cfRows.push(cfRow("Cash Flow from Investing (CFI)", aggFin.investingCashFlow, aggPrior.investingCashFlow));
-    if (aggFin.financingCashFlow != null) cfRows.push(cfRow("Cash Flow from Financing (CFF)", aggFin.financingCashFlow, aggPrior.financingCashFlow));
-    if (aggFin.operatingCashFlow != null && aggFin.investingCashFlow != null) {
-      const fcf      = aggFin.operatingCashFlow + aggFin.investingCashFlow;
+    if (aggFin.operatingCashFlow  != null) cfRows.push(cfRow("Cash Flow from Operations (CFO)", aggFin.operatingCashFlow,  aggPrior.operatingCashFlow,  true));
+    if (aggFin.investingCashFlow  != null) cfRows.push(cfRow("Cash Flow from Investing (CFI)",  aggFin.investingCashFlow,  aggPrior.investingCashFlow));
+    if (aggFin.financingCashFlow  != null) cfRows.push(cfRow("Cash Flow from Financing (CFF)",  aggFin.financingCashFlow,  aggPrior.financingCashFlow));
+    if (aggFin.operatingCashFlow  != null && aggFin.investingCashFlow != null) {
+      const fcf      = aggFin.operatingCashFlow  + aggFin.investingCashFlow;
       const fcfPrior = (aggPrior.operatingCashFlow != null && aggPrior.investingCashFlow != null)
         ? aggPrior.operatingCashFlow + aggPrior.investingCashFlow : null;
       cfRows.push(cfRow("Free Cash Flow  (CFO + CFI)", fcf, fcfPrior, true));
@@ -1561,43 +2105,14 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       allSections.push(new Table({ rows: wcRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
       allSections.push(blankLine());
     }
-
-    // Cash flow narrative
-    {
-      const cashCur  = aggFin.cash,  cashPri = aggPrior.cash;
-      const estCFOV  = (aggFin.netIncome != null && aggFin.depreciation != null) ? aggFin.netIncome + aggFin.depreciation : null;
-      const cashChg  = (cashCur != null && cashPri != null && cashPri !== 0) ? ((cashCur - cashPri) / Math.abs(cashPri) * 100).toFixed(1) : null;
-      const crVal2   = (aggFin.currentAssets != null && aggFin.currentLiabilities != null && aggFin.currentLiabilities > 0) ? (aggFin.currentAssets / aggFin.currentLiabilities).toFixed(2) : null;
-      const cfNarr   = [];
-      if (cashCur != null && cashPri != null) {
-        const dir = parseFloat(cashChg ?? "0") >= 0 ? "increased" : "declined";
-        cfNarr.push(`Cash and equivalents ${dir} from ₹${cashPri.toLocaleString('en-IN')} ${unit} to ₹${cashCur.toLocaleString('en-IN')} ${unit} — a ${Math.abs(parseFloat(cashChg ?? 0)).toFixed(1)}% movement year-on-year.`);
-      } else if (cashCur != null) {
-        cfNarr.push(`Closing cash and equivalents stood at ₹${cashCur.toLocaleString('en-IN')} ${unit}.`);
-      }
-      if (estCFOV != null) cfNarr.push(`The estimated operating cash flow (PAT + Depreciation) of ₹${estCFOV.toFixed(2)} ${unit} in ${companyInfo.period || "the current year"} reflects the company's underlying cash generation capacity from core operations.`);
-      if (aggFin.nonCurrentInvestments != null && aggPrior.nonCurrentInvestments != null) {
-        const ncInvChg = aggFin.nonCurrentInvestments - aggPrior.nonCurrentInvestments;
-        if (Math.abs(ncInvChg) > 0) cfNarr.push(`Non-current investments ${ncInvChg > 0 ? "increased" : "decreased"} by ₹${Math.abs(ncInvChg).toLocaleString('en-IN')} ${unit} year-on-year, reflecting capital allocation activity.`);
-      }
-      if (crVal2 != null) cfNarr.push(`A current ratio of ${crVal2}x indicates the company's short-term liquidity relative to its current obligations.`);
-      if (cfNarr.length > 0) {
-        allSections.push(para(
-          [txt(cfNarr.join(" "), { font: "Times New Roman", size: 22, color: DK })],
-          { align: AlignmentType.JUSTIFIED, spacing: { before: 160, after: 160, line: 340 } }
-        ));
-      }
-    }
-    allSections.push(blankLine());
   }
-  } // end if (hasCFData)
 
   // ═══════════════════════════════════════════════════════════════
   // PAGE 10 — RATIO ANALYSIS
   // ═══════════════════════════════════════════════════════════════
-  if (_calcRatioCount >= 3) {
+  if (ratios && ratios.length > 0) {
     allSections.push(pageBreak());
-    allSections.push(sectionHeader(String(++sn), "Ratio Analysis"));
+    allSections.push(sectionHeader("6", "Ratio Analysis"));
     allSections.push(hrule(NAVY, 8));
     allSections.push(disclaimer(unit));
     allSections.push(para(
@@ -1630,46 +2145,14 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       allSections.push(new Table({ rows: ratioRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
       allSections.push(blankLine());
     }
-
-    // Ratio analysis narrative
-    {
-      const allItems = (ratios || []).flatMap(c => c.items || []);
-      const getVal  = (kw) => allItems.find(it => (it.name || "").toLowerCase().includes(kw.toLowerCase()))?.value ?? "—";
-      const gmVal   = getVal("Gross Margin");
-      const nmVal   = getVal("Net Margin");
-      const roeVal  = getVal("Return on Equity");
-      const crVal   = getVal("Current Ratio");
-      const icVal   = getVal("Interest Coverage");
-      const dsoVal  = getVal("Receivables Days");
-      const dioVal  = getVal("Inventory Days");
-      const roeChg  = (aggFin.netIncome != null && aggPrior.netIncome != null && aggPrior.totalEquity != null && aggPrior.totalEquity > 0)
-        ? (aggPrior.netIncome / aggPrior.totalEquity * 100).toFixed(2) + "%" : null;
-
-      const sectorName2 = companyInfo.sector || "the industry";
-      const rNarr = [];
-      rNarr.push(`${companyInfo.name || "The Company"} demonstrates key financial ratios across profitability, liquidity, leverage and efficiency dimensions.`);
-      if (gmVal !== "—" && nmVal !== "—") rNarr.push(`Gross margin of ${gmVal} and net margin of ${nmVal} reflect the company's pricing power and cost structure relative to ${sectorName2} sector benchmarks.`);
-      if (roeVal !== "—") rNarr.push(`Return on equity of ${roeVal}${roeChg ? " (prior year: " + roeChg + ")" : ""} reflects the company's capital efficiency from shareholders' perspective.`);
-      if (crVal !== "—") rNarr.push(`Current ratio of ${crVal} indicates the company's short-term liquidity position relative to current obligations.`);
-      if (icVal !== "—") rNarr.push(`Interest coverage of ${icVal} reflects the company's ability to service debt from operating earnings.`);
-      if (dsoVal !== "—" || dioVal !== "—") rNarr.push(`Working capital efficiency: DSO of ${dsoVal} and DIO of ${dioVal} reflect receivables collection and inventory management relative to ${sectorName2} norms.`);
-
-      if (rNarr.length > 0) {
-        allSections.push(para(
-          [txt(rNarr.join(" "), { font: "Times New Roman", size: 22, color: DK })],
-          { align: AlignmentType.JUSTIFIED, spacing: { before: 160, after: 160, line: 340 } }
-        ));
-      }
-    }
-    allSections.push(blankLine());
   }
 
   // ═══════════════════════════════════════════════════════════════
   // PAGE 11 — SWOT ANALYSIS  (2×2 grid, 5 points per quadrant)
   // ═══════════════════════════════════════════════════════════════
-  if (swot?.strengths?.length > 0) {
+  if (swot) {
     allSections.push(pageBreak());
-    allSections.push(sectionHeader(String(++sn), "SWOT Analysis"));
+    allSections.push(sectionHeader("7", "SWOT Analysis"));
     allSections.push(hrule(NAVY, 8));
     allSections.push(para(
       [txt(`Data-backed SWOT for ${companyInfo.name || "the Company"} derived from extracted financials.`, { font: "Times New Roman", size: 22, italics: true, color: MID })],
@@ -1727,7 +2210,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   // PAGE 12 — RISK REGISTER, 12-MONTH OUTLOOK & CONCLUSION
   // ═══════════════════════════════════════════════════════════════
   allSections.push(pageBreak());
-  allSections.push(sectionHeader(String(++sn), "Risk Assessment & Outlook"));
+  allSections.push(sectionHeader("8", "Risk Assessment & Outlook"));
   allSections.push(hrule(NAVY, 8));
   allSections.push(blankLine());
 
@@ -1788,88 +2271,6 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
     }));
     allSections.push(blankLine());
-
-    // ── Verification section ──────────────────────────────────────────────────
-    allSections.push(pageBreak());
-    allSections.push(sectionHeader("", "Data Verification & Accuracy"));
-    allSections.push(hrule(NAVY, 8));
-    allSections.push(blankLine());
-    allSections.push(para(
-      [txt(`All financial figures in this report have been extracted from the source annual report filing and cross-verified for mathematical accuracy. The following table confirms the verification status of key figures reported for ${companyInfo.name || "the Company"}.`, { font: "Times New Roman", size: 22, color: DK })],
-      { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 200, line: 340 } }
-    ));
-
-    {
-      const av = aggFin, pv = aggPrior;
-      const fmtW = (v) => v != null ? `₹${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—';
-      const period = companyInfo.period || 'Current Year';
-
-      const verItems = [];
-      const vrow = (label, val) => { if (val != null) verItems.push([label, fmtW(val), '✓ Exact', 'HIGH']); };
-      vrow(`Revenue from Operations  (${period})`,  av.revenue);
-      vrow(`Revenue from Operations  (Prior Year)`, pv.revenue);
-      vrow(`Total Income  (${period})`,              av.totalIncome);
-      vrow(`Finance Costs  (${period})`,             av.interestExpense);
-      vrow(`Depreciation  (${period})`,              av.depreciation);
-      vrow(`Profit Before Tax  (${period})`,         av.pbt);
-      vrow(`Tax Expense  (${period})`,               av.tax);
-      vrow(`Net Profit PAT  (${period})`,            av.netIncome);
-      vrow(`Net Profit PAT  (Prior Year)`,           pv.netIncome);
-      vrow(`Total Equity  (${period})`,              av.totalEquity);
-      vrow(`Total Assets  (${period})`,              av.totalAssets);
-      vrow(`Total Assets  (Prior Year)`,             pv.totalAssets);
-      vrow(`Trade Receivables  (${period})`,         av.receivables);
-      vrow(`Inventories  (${period})`,               av.inventory);
-      vrow(`Cash & Equivalents  (${period})`,        av.cash);
-
-      if (verItems.length > 0) {
-        const colW = [46, 22, 16, 16];
-        const vHdrRow = new TableRow({ tableHeader: true, children: [
-          cell(para(txt("Line Item",                { font: "Times New Roman", size: 18, bold: true, color: WHITE }), { spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: colW[0], type: WidthType.PERCENTAGE } }),
-          cell(para(txt("Source / FinSight Output", { font: "Times New Roman", size: 18, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: colW[1], type: WidthType.PERCENTAGE } }),
-          cell(para(txt("Match",                   { font: "Times New Roman", size: 18, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: colW[2], type: WidthType.PERCENTAGE } }),
-          cell(para(txt("Confidence",              { font: "Times New Roman", size: 18, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: colW[3], type: WidthType.PERCENTAGE } }),
-        ]});
-        const vDataRows = verItems.map(([label, val, match, conf], ri) => {
-          const bg = ri % 2 === 0 ? LIGHT : WHITE;
-          return new TableRow({ children: [
-            cell(para(txt(label, { font: "Times New Roman", size: 19, color: DK }),                 { spacing: { before: 50, after: 50 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[0], type: WidthType.PERCENTAGE } }),
-            cell(para(txt(val,   { font: "Times New Roman", size: 19, bold: true, color: NAVY }),   { align: AlignmentType.RIGHT, spacing: { before: 50, after: 50 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[1], type: WidthType.PERCENTAGE } }),
-            cell(para(txt(match, { font: "Times New Roman", size: 19, bold: true, color: "1B6B4A" }), { align: AlignmentType.CENTER, spacing: { before: 50, after: 50 } }), { shading: { type: ShadingType.SOLID, color: "EDF7F2" }, borders: thinBorder, width: { size: colW[2], type: WidthType.PERCENTAGE } }),
-            cell(para(txt(conf,  { font: "Times New Roman", size: 18, color: "1B6B4A" }),           { align: AlignmentType.CENTER, spacing: { before: 50, after: 50 } }), { shading: { type: ShadingType.SOLID, color: "EDF7F2" }, borders: thinBorder, width: { size: colW[3], type: WidthType.PERCENTAGE } }),
-          ]});
-        });
-        allSections.push(new Table({ rows: [vHdrRow, ...vDataRows], width: { size: 100, type: WidthType.PERCENTAGE } }));
-        allSections.push(blankLine());
-      }
-
-      // Balance sheet check
-      if (av.totalAssets != null && av.totalEquity != null && av.totalLiabilities != null) {
-        const calc    = av.totalEquity + av.totalLiabilities;
-        const balanced = Math.abs(av.totalAssets - calc) < 2;
-        const bsText  = `Balance Sheet Verification: Total Assets (₹${Number(av.totalAssets).toLocaleString('en-IN')} Lakhs) equals Total Equity (₹${Number(av.totalEquity).toLocaleString('en-IN')} Lakhs) plus Total Liabilities (₹${Number(av.totalLiabilities).toLocaleString('en-IN')} Lakhs). ${balanced ? '✓ BALANCED' : '⚠ CHECK'}`;
-        allSections.push(para(
-          [txt(bsText, { font: "Times New Roman", size: 21, bold: true, color: balanced ? "1B6B4A" : "C04040" })],
-          { spacing: { before: 100, after: 100 } }
-        ));
-      }
-
-      // Overall accuracy box
-      allSections.push(new Table({
-        rows: [new TableRow({ children: [new TableCell({
-          children: [para(
-            [txt(`✓ Overall Accuracy: 100% — All ${verItems.length} figures verified against source document`, { font: "Times New Roman", size: 22, bold: true, color: "065F46" })],
-            { align: AlignmentType.CENTER, spacing: { before: 120, after: 120 } }
-          )],
-          shading: { type: ShadingType.SOLID, color: "D1FAE5" },
-          borders: { top: { style: BorderStyle.SINGLE, size: 8, color: "1B6B4A" }, bottom: { style: BorderStyle.SINGLE, size: 8, color: "1B6B4A" }, left: noBorder, right: noBorder },
-          margins: { top: 140, bottom: 140, left: 200, right: 200 },
-        })] })],
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
-      }));
-      allSections.push(blankLine());
-    }
 
     // Conclusion
     allSections.push(subSectionHeader("Conclusion"));
@@ -2856,7 +3257,7 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
   const fyTag = ym?.length >= 2 ? `_FY${ym[ym.length - 2].slice(-2)}-${ym[ym.length - 1].slice(-2)}` : '';
   const fileName = `FinSight_${slug}${fyTag}_CompanyBrief.docx`;
 
-  return { blob, fileName, sectionCount: sn };
+  return { blob, fileName, pageCount: 12 };
 }
 
 function validateExtractedData(agg) {
@@ -2873,496 +3274,1194 @@ function validateExtractedData(agg) {
 
 function hasAnyFinancialData(agg) {
   if (!agg) return false;
-  // Revenue null must never block — require at least one of the core fields
-  const coreFields = ['netIncome', 'totalAssets', 'totalLiabilities', 'totalEquity'];
-  return coreFields.some(field => agg[field] != null && agg[field] !== 0)
-    || (agg.revenue != null && agg.revenue !== 0);
+  const criticalFields = ['revenue', 'totalAssets', 'totalLiabilities', 'totalEquity', 'netIncome'];
+  return criticalFields.some(field => agg[field] != null && agg[field] !== 0);
 }
 
-// ── 6-Layer PDF extraction helpers ───────────────────────────────────────────
+// ─── Scanned PDF → Excel Pipeline ────────────────────────────────────────────
 
-async function callClaudeVision(contentArray, maxTokens = 4096) {
-  const body = { model: VISION_MODEL, max_tokens: maxTokens, messages: [{ role: 'user', content: contentArray }] };
-  let lastErr;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt));
-    try {
-      const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 90000);
-      const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal });
-      clearTimeout(tid);
-      const data = await res.json();
-      if (data?.error) throw new Error(data.message || 'Vision API error');
-      if ([429, 503, 529].includes(res.status)) { lastErr = new Error(`HTTP ${res.status}`); continue; }
-      return data?.content?.[0]?.text ?? '';
-    } catch (e) { lastErr = e; }
-  }
-  throw lastErr;
-}
-
-async function pageToBase64(pdfPage, scale = 2) {
-  const viewport = pdfPage.getViewport({ scale });
-  const canvas = document.createElement('canvas');
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-  return canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-}
-
-async function documentIntelligenceScan(pdf) {
-  const totalPages = pdf.numPages;
-  const sampleParts = [];
-  for (let i = 1; i <= Math.min(3, totalPages); i++) {
-    try { const pg = await pdf.getPage(i); const ct = await pg.getTextContent(); sampleParts.push(ct.items.map(it => it.str).join(' ')); } catch (e) {}
-  }
-  const language = sampleParts.join(' ').length > 20 ? 'en' : 'unknown';
-  const landmarks = { coverPage: null, directorsReport: null, auditorReport: null, financialStatements: null, notesToAccounts: null, annexures: null };
-  let auditorReportEnded = null;
-  for (let i = 1; i <= totalPages; i++) {
-    let text = '';
-    try { const pg = await pdf.getPage(i); const ct = await pg.getTextContent(); text = ct.items.map(it => it.str).join(' ').toLowerCase(); } catch (e) { continue; }
-    if (landmarks.coverPage == null && i <= 5) landmarks.coverPage = i;
-    if (landmarks.directorsReport == null && text.includes('director') && text.includes('report')) landmarks.directorsReport = i;
-    if (landmarks.auditorReport == null && (text.includes('auditor') || text.includes('independent auditor'))) landmarks.auditorReport = i;
-    if (landmarks.auditorReport != null && auditorReportEnded == null &&
-        (text.includes('udin') || text.includes('firm registration') || text.includes('membership number')) &&
-        /\d{1,2}[\s,]+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.test(text)) {
-      auditorReportEnded = i;
-    }
-    if (landmarks.financialStatements == null && i > (landmarks.auditorReport || 0) &&
-        (text.includes('balance sheet') || text.includes('statement of profit') || text.includes('profit and loss'))) {
-      landmarks.financialStatements = i;
-    }
-    if (landmarks.notesToAccounts == null && i > (landmarks.financialStatements || 0) &&
-        (text.includes('notes to') || text.includes('notes forming part'))) {
-      landmarks.notesToAccounts = i;
-    }
-    if (landmarks.annexures == null && i > (landmarks.notesToAccounts || 0) && text.includes('annexure')) {
-      landmarks.annexures = i;
-    }
-  }
-  const fsStart = landmarks.financialStatements || (auditorReportEnded ? auditorReportEnded + 1 : Math.floor(totalPages * 0.4));
-  const fsEnd = landmarks.notesToAccounts ? landmarks.notesToAccounts - 1 : totalPages;
-  const financialPageRange = { start: Math.max(1, fsStart), end: Math.min(fsEnd, fsStart + 30) };
-  return { totalPages, language, landmarks, financialPageRange };
-}
-
-async function extractAllPageData(pdf, pageRange) {
-  const pages = [];
-  const start = pageRange?.start ?? 1;
-  const end = pageRange?.end ?? pdf.numPages;
-  for (let i = start; i <= end; i++) {
-    let text = '';
-    try {
-      const pg = await pdf.getPage(i);
-      const ct = await pg.getTextContent();
-      const lineMap = {};
-      for (const item of ct.items) {
-        if (!item.str?.trim()) continue;
-        const y = Math.round(item.transform[5]);
-        if (!lineMap[y]) lineMap[y] = [];
-        lineMap[y].push({ x: item.transform[4], str: item.str });
-      }
-      text = Object.keys(lineMap).map(Number).sort((a, b) => b - a)
-        .map(y => lineMap[y].sort((a, b) => a.x - b.x).map(it => it.str).join('  ')).join('\n');
-    } catch (e) {}
-    const numTokens = (text.match(/\d+\.?\d*/g) || []).length;
-    const lc = text.toLowerCase();
-    const hasKeyword = ['particulars', 'total', 'revenue', 'assets'].some(k => lc.includes(k));
-    const isHighPriority = numTokens > 20 && hasKeyword;
-    const isImageBased = isHighPriority && text.length < 100;
-    pages.push({ pageNum: i, text, charCount: text.length, numTokens, isHighPriority, isImageBased });
-  }
-  return pages;
-}
-
-function mergeVisionResults(visionResults) {
-  const pl = {}, bs = {}, cf = {};
-  let unit = null, yearCurrent = null, yearPrior = null;
-  const plKeys = { 'revenue from operations': 'revenue_from_operations', 'revenue': 'revenue_from_operations', 'other income': 'other_income', 'total income': 'total_income', 'cost of materials': 'cogs', 'cogs': 'cogs', 'purchases': 'cogs', 'gross profit': 'gross_profit', 'changes in inventories': 'changes_in_inventories', 'employee': 'employee_costs', 'staff': 'employee_costs', 'finance costs': 'interest_expense', 'interest': 'interest_expense', 'depreciation': 'depreciation', 'amortisation': 'depreciation', 'other expenses': 'other_expenses', 'total expenses': 'total_expenses', 'ebitda': 'ebitda', 'operating profit': 'operating_profit', 'profit before tax': 'pbt', 'pbt': 'pbt', 'tax expense': 'tax', 'income tax': 'tax', 'profit for the year': 'net_income', 'net profit': 'net_income', 'net income': 'net_income', 'eps basic': 'eps_basic', 'eps diluted': 'eps_diluted' };
-  const bsKeys = { 'share capital': 'share_capital', 'reserves': 'reserves_and_surplus', 'total equity': 'total_equity', "shareholders' funds": 'total_equity', 'long term debt': 'long_term_debt', 'long-term borrowings': 'long_term_debt', 'deferred tax': 'deferred_tax_liabilities', 'long term provisions': 'long_term_provisions', 'non current liabilities': 'non_current_liabilities', 'noncurrent liabilities': 'non_current_liabilities', 'short term borrowings': 'short_term_debt', 'trade payables': 'trade_payables', 'other current liabilities': 'other_current_liabilities', 'short term provisions': 'short_term_provisions', 'current liabilities': 'current_liabilities', 'total liabilities': 'total_liabilities', 'property plant': 'fixed_assets', 'fixed assets': 'fixed_assets', 'tangible assets': 'fixed_assets', 'non current investments': 'non_current_investments', 'long term loans': 'long_term_loans_advances', 'non current assets': 'non_current_assets', 'noncurrent assets': 'non_current_assets', 'inventories': 'inventory', 'inventory': 'inventory', 'trade receivables': 'receivables', 'receivables': 'receivables', 'cash and cash equivalents': 'cash', 'cash': 'cash', 'short term loans': 'short_term_loans_advances', 'other current assets': 'other_current_assets', 'current assets': 'current_assets', 'total assets': 'total_assets' };
-  const cfKeys = { 'operating activities': 'cfo', 'net cash from operations': 'cfo', 'investing activities': 'investing', 'net cash from investing': 'investing', 'financing activities': 'financing', 'net cash from financing': 'financing', 'net change in cash': 'net_change_in_cash', 'opening cash': 'opening_cash', 'closing cash': 'closing_cash', 'capital expenditure': 'capex', 'capex': 'capex' };
-  for (const r of visionResults) {
-    if (!r) continue;
-    if (r.unit) unit = r.unit;
-    if (r.year_current) yearCurrent = r.year_current;
-    if (r.year_prior) yearPrior = r.year_prior;
-    const type = (r.page_type || '').toLowerCase();
-    for (const item of (r.line_items || [])) {
-      const lbl = (item.label || '').toLowerCase().trim();
-      const keyMap = type === 'profit_loss' ? plKeys : type === 'balance_sheet' ? bsKeys : type === 'cash_flow' ? cfKeys : null;
-      if (!keyMap) continue;
-      const target = type === 'profit_loss' ? pl : type === 'balance_sheet' ? bs : cf;
-      for (const [k, field] of Object.entries(keyMap)) {
-        if (lbl.includes(k) && !target[field]) target[field] = { current: item.current ?? null, prior: item.prior ?? null };
-      }
-    }
-  }
-  return { profit_loss: pl, balance_sheet: bs, cash_flow: cf, unit, yearCurrent, yearPrior };
-}
-
-function crossValidateExtraction(aggregated) {
-  const issues = [];
-  const a = aggregated || {};
-  if (a.totalAssets != null && a.totalEquity != null && a.totalLiabilities != null) {
-    const pct = Math.abs(a.totalAssets - (a.totalEquity + a.totalLiabilities)) / Math.abs(a.totalAssets);
-    if (pct > 0.02) issues.push({ type: 'BS_MISMATCH', detail: `Assets ${a.totalAssets} ≠ Equity ${a.totalEquity} + Liabilities ${a.totalLiabilities} (${(pct*100).toFixed(1)}% diff)` });
-  }
-  if (a.netIncome != null && a.pbt != null && a.tax != null) {
-    const pct = Math.abs(a.netIncome - (a.pbt - a.tax)) / Math.max(Math.abs(a.netIncome), 1);
-    if (pct > 0.02) issues.push({ type: 'PL_MISMATCH', detail: `NetIncome ${a.netIncome} ≠ PBT ${a.pbt} - Tax ${a.tax}` });
-  }
-  if (a.revenue != null && a.revenue < 0) issues.push({ type: 'IMPOSSIBLE', detail: 'Revenue is negative' });
-  if (a.totalAssets != null && a.totalEquity != null && a.totalAssets < a.totalEquity) issues.push({ type: 'IMPOSSIBLE', detail: `totalAssets ${a.totalAssets} < totalEquity ${a.totalEquity}` });
-  const largeVals = [a.revenue, a.totalAssets, a.netIncome].filter(v => v != null && v > 1000);
-  if (largeVals.length >= 2) {
-    for (const [key, val] of Object.entries(a)) {
-      if (val != null && val >= 1 && val <= 500 && Number.isInteger(val)) issues.push({ type: 'PAGE_NUM_MISREAD', detail: `${key}=${val} may be a page number` });
-    }
-  }
-  return issues;
-}
-
-function countValidFigures(aggregated) {
-  if (!aggregated) return 0;
-  return Object.values(aggregated).filter(v => v != null && !isNaN(v)).length;
-}
-
-function validateYearOrdering(claudeResult, rawText) {
-  if (!claudeResult) return { result: claudeResult, logStr: 'Year detection: no data extracted', swapped: false };
-  const rawStr = rawText || '';
-
-  // Detect XBRL format by structured tags
-  const isXBRL = /\[1\d{5}\]|\[2\d{5}\]/.test(rawStr);
-
-  // Gather all 4-digit years mentioned in document
-  const allYears = [...new Set((rawStr.match(/20\d{2}/g) || []).map(Number))].sort((a, b) => b - a);
-  const mostRecent = allYears[0] || null;
-  const older = allYears[1] || null;
-
-  // What year did Claude claim is current?
-  const fyStr = claudeResult.financial_year || '';
-  const claimedCurYear = (() => {
-    const m = fyStr.match(/20\d{2}/g);
-    return m ? Math.max(...m.map(Number)) : null;
-  })();
-
-  const bs  = claudeResult.balance_sheet || {};
-  const pl  = claudeResult.profit_loss   || {};
-  const cf  = claudeResult.cash_flow     || {};
-
-  let needsSwap = false;
-  let swapReason = '';
-
-  // Check 1 — Sanity: current total_assets should be within 33%-300% of prior
-  const curA = bs.total_assets?.current;
-  const priA = bs.total_assets?.prior;
-  if (curA != null && priA != null && curA > 0 && priA > 0) {
-    const ratio = curA / priA;
-    if (ratio < 0.33 || ratio > 3.0) {
-      needsSwap = true;
-      swapReason = `Asset ratio ${ratio.toFixed(2)} outside 0.33-3.0 (suspect swap)`;
-    }
-  }
-
-  // Check 2 — XBRL: if Claude claimed an older year as current, swap
-  if (!needsSwap && isXBRL && claimedCurYear && mostRecent && claimedCurYear < mostRecent) {
-    needsSwap = true;
-    swapReason = `XBRL: Claude claimed current=FY${claimedCurYear} but most recent year in doc=FY${mostRecent}`;
-  }
-
-  // Check 3 — Standard PDF: if claimed current year is older than another year in doc, swap
-  if (!needsSwap && !isXBRL && claimedCurYear && mostRecent && claimedCurYear < mostRecent) {
-    needsSwap = true;
-    swapReason = `Year mismatch: claimed current=FY${claimedCurYear}, most recent found=FY${mostRecent}`;
-  }
-
-  if (needsSwap) {
-    const swapSec = (sec) => {
-      if (!sec) return sec;
-      const out = {};
-      for (const [k, v] of Object.entries(sec)) {
-        out[k] = (v && typeof v === 'object' && 'current' in v && 'prior' in v)
-          ? { current: v.prior, prior: v.current }
-          : v;
-      }
-      return out;
-    };
-    claudeResult = { ...claudeResult, profit_loss: swapSec(pl), balance_sheet: swapSec(bs), cash_flow: swapSec(cf) };
-  }
-
-  const curLabel = mostRecent ? `FY${mostRecent}` : (claimedCurYear ? `FY${claimedCurYear}` : '?');
-  const priLabel = older      ? `FY${older}`       : '?';
-  const logStr = `Year detection: current=${curLabel} prior=${priLabel} | Format: ${isXBRL ? 'XBRL' : 'Standard PDF'} | Method: ${swapReason || 'Date comparison — order verified'}${needsSwap ? ' | ⚠ Columns SWAPPED' : ''}`;
-
-  return { result: claudeResult, logStr, swapped: needsSwap, isXBRL, curLabel, priLabel };
-}
-
-async function processPrivateCompanyDoc(file, options, onProgress, onDebug) {
-  try {
-    onProgress('reading')
-    onDebug('FILE RECEIVED: ' + file.name)
-
-    const arrayBuffer = await file.arrayBuffer()
-    let fullText = ''
-
-    try {
-      const pdfjsLib = await loadPdfJs()
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-      onDebug('PDF: ' + pdf.numPages + ' pages')
-      for (let i = 1; i <= pdf.numPages; i++) {
-        try {
-          const page = await pdf.getPage(i)
-          const content = await page.getTextContent()
-          fullText += content.items.map(item => item.str).join(' ') + '\n'
-        } catch(e) {}
-      }
-    } catch(e) {
-      onDebug('PDF read error: ' + e.message)
-    }
-
-    onDebug('TEXT: ' + fullText.length + ' chars')
-
-    if (fullText.length < 500) {
-      throw new Error('This PDF appears to be image-based. Please download the XBRL version from mca.gov.in and upload that instead.')
-    }
-
-    onProgress('extracting')
-    onDebug('CALLING CLAUDE API...')
-
-    const apiResponse = await fetch('/api/claude', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-5-20250514',
-        max_tokens: 8192,
-        system: 'You are a chartered accountant with 20 years experience reading Indian company annual reports. Extract financial data with perfect accuracy. Return only valid JSON with no text before or after.',
-        messages: [{
-          role: 'user',
-          content: `Extract all financial data from this Indian company annual report text. Return ONLY this JSON structure with no other text:
-
+const VISION_FINANCIAL_PROMPT = `Extract ALL financial data visible in these financial statement pages.
+Return ONLY valid JSON — no markdown, no explanation, no code fences:
 {
-  "company_name": "string",
-  "cin": "string or null",
-  "financial_year": "string",
+  "company_name": null,
   "currency": "INR",
-  "unit": "Lakhs or Crores",
-  "sector": "string or null",
-  "auditor": "string or null",
-  "directors": [{"name": "string", "designation": "string"}],
-  "profit_loss": {
-    "revenue_from_operations": {"current": number, "prior": number},
-    "other_income": {"current": number, "prior": number},
-    "total_income": {"current": number, "prior": number},
-    "cogs": {"current": number, "prior": number},
-    "gross_profit": {"current": number, "prior": number},
-    "changes_in_inventories": {"current": number, "prior": number},
-    "employee_costs": {"current": number, "prior": number},
-    "interest_expense": {"current": number, "prior": number},
-    "depreciation": {"current": number, "prior": number},
-    "other_expenses": {"current": number, "prior": number},
-    "total_expenses": {"current": number, "prior": number},
-    "ebitda": {"current": number, "prior": number},
-    "operating_profit": {"current": number, "prior": number},
-    "pbt": {"current": number, "prior": number},
-    "tax": {"current": number, "prior": number},
-    "net_income": {"current": number, "prior": number},
-    "eps_basic": {"current": number, "prior": number},
-    "eps_diluted": {"current": number, "prior": number}
-  },
-  "balance_sheet": {
-    "share_capital": {"current": number, "prior": number},
-    "reserves_and_surplus": {"current": number, "prior": number},
-    "total_equity": {"current": number, "prior": number},
-    "long_term_debt": {"current": number, "prior": number},
-    "non_current_liabilities": {"current": number, "prior": number},
-    "short_term_debt": {"current": number, "prior": number},
-    "trade_payables": {"current": number, "prior": number},
-    "current_liabilities": {"current": number, "prior": number},
-    "total_liabilities": {"current": number, "prior": number},
-    "fixed_assets": {"current": number, "prior": number},
-    "non_current_assets": {"current": number, "prior": number},
-    "inventory": {"current": number, "prior": number},
-    "receivables": {"current": number, "prior": number},
-    "cash": {"current": number, "prior": number},
-    "current_assets": {"current": number, "prior": number},
-    "total_assets": {"current": number, "prior": number}
-  },
-  "cash_flow": {
-    "cfo": {"current": number, "prior": number},
-    "investing": {"current": number, "prior": number},
-    "financing": {"current": number, "prior": number},
-    "net_change_in_cash": {"current": number, "prior": number},
-    "closing_cash": {"current": number, "prior": number}
+  "unit": "Lakhs",
+  "years": {
+    "FY2024": {
+      "profit_loss": {
+        "revenue": null, "other_income": null, "total_income": null,
+        "cost_of_goods": null, "employee_costs": null, "finance_costs": null,
+        "depreciation": null, "other_expenses": null, "total_expenses": null,
+        "pbt": null, "tax": null, "net_income": null, "ebitda": null
+      },
+      "balance_sheet": {
+        "share_capital": null, "reserves": null, "total_equity": null,
+        "long_term_debt": null, "short_term_debt": null, "total_debt": null,
+        "trade_payables": null, "other_current_liabilities": null, "total_liabilities": null,
+        "fixed_assets": null, "intangibles": null, "investments": null,
+        "trade_receivables": null, "inventory": null, "cash": null,
+        "current_assets": null, "total_assets": null
+      },
+      "cash_flow": {
+        "cfo": null, "cfi": null, "cff": null, "net_change_in_cash": null, "closing_cash": null
+      },
+      "ratios": {
+        "eps": null, "book_value_per_share": null, "dividend_per_share": null
+      }
+    }
+  }
+}
+Rules:
+- Detect fiscal year from column headers (e.g. "March 2024" or "2023-24" → "FY2024", "2022-23" → "FY2023")
+- If multiple years appear in same table, create a key for each year
+- All values as plain numbers matching the document's stated unit (Lakhs/Crores/Millions/Thousands)
+- Negative values as negative numbers (e.g. losses)
+- Missing or illegible data → null (never use 0 unless the document explicitly states zero)
+- Detect currency from document header (INR/USD/EUR/GBP)
+- Detect unit from document (Lakhs/Crores/Millions/Thousands) — default Lakhs if unclear`;
+
+async function callClaudeVisionForFinancials(pageImages) {
+  const content = [
+    ...pageImages.map(img => ({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: img.base64 }
+    })),
+    { type: 'text', text: VISION_FINANCIAL_PROMPT }
+  ];
+  const body = { model: MODEL, max_tokens: 4000, messages: [{ role: 'user', content }] };
+  const RETRYABLE = new Set([429, 503, 529]);
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120_000);
+    let res;
+    try {
+      res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') { if (attempt > 3) throw new Error('Vision financial extraction timed out'); continue; }
+      throw err;
+    }
+    clearTimeout(timeoutId);
+    if (RETRYABLE.has(res.status)) {
+      if (attempt > 3) throw new Error('Rate limit on vision financial extraction');
+      await new Promise(r => setTimeout(r, 60000 * attempt));
+      continue;
+    }
+    const json = await res.json();
+    if (json.error) throw new Error(json.error.message || 'Vision financial API failed');
+    return json.content.filter(b => b.type === 'text').map(b => b.text).join('');
   }
 }
 
-RULES - never break these:
-1. revenue_from_operations is the top line. It may be labeled: Revenue from Operations, Total Revenue from Operations, Net Revenue, Turnover, Net Sales, Revenue from Contracts with Customers, Total revenue from operations other than finance company. Extract whichever you find.
-2. current year is always the MORE RECENT date. For example if document shows 01/04/2024 to 31/03/2025 and 01/04/2023 to 31/03/2024, the first period is current year FY2025.
-3. Strip all commas from numbers. 73,698.16 becomes 73698.16
-4. Brackets mean negative. (1,680.94) becomes -1680.94
-5. Return null for any field not found. Never guess.
-6. Page numbers like 1, 2, 3 at page edges are NOT financial figures.
-7. Note reference numbers like 3, 4, 5 in narrow columns are NOT financial figures.
+function mergeFinancialYearData(base, incoming) {
+  if (!incoming) return base;
+  const merged = { ...base };
+  for (const [section, data] of Object.entries(incoming)) {
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      merged[section] = merged[section] ? { ...merged[section] } : {};
+      for (const [key, val] of Object.entries(data)) {
+        if (merged[section][key] == null && val != null) {
+          merged[section][key] = val;
+        }
+      }
+    } else if (merged[section] == null && data != null) {
+      merged[section] = data;
+    }
+  }
+  return merged;
+}
 
-DOCUMENT TEXT:
-${fullText}`
-        }]
-      })
-    })
+// ─── Tesseract-only financial extraction pipeline (no Claude API) ─────────
 
-    const apiData = await apiResponse.json()
-    if (!apiData?.content?.[0]?.text) throw new Error('Claude API returned no content')
+function parseIndianNum(s) {
+  if (!s) return null;
+  s = String(s).trim();
+  const neg = (s.startsWith('(') && s.endsWith(')')) || /^[-−]/.test(s);
+  s = s.replace(/[()₹Rs.,\s−]/g, '').replace(/^-/, '');
+  const n = parseFloat(s);
+  return isNaN(n) ? null : neg ? -n : n;
+}
 
-    const rawText = apiData.content[0].text
-    const start = rawText.indexOf('{')
-    const end = rawText.lastIndexOf('}')
-    if (start === -1 || end === -1) throw new Error('No JSON found in Claude response')
+function numsAfterPos(line, pos) {
+  const slice = pos > 0 ? line.slice(pos) : line;
+  const out = [];
+  for (const m of slice.matchAll(/\([\d,]+(?:\.\d+)?\)|[-−]?\s*[\d,]+(?:\.\d+)?/g)) {
+    const n = parseIndianNum(m[0]);
+    if (n === null) continue;
+    const a = Math.abs(n);
+    if (Number.isInteger(a) && a >= 1985 && a <= 2040) continue; // year-shaped integer
+    if (Number.isInteger(a) && a < 10) continue;                 // page-number-sized integer
+    out.push(n);
+  }
+  return out;
+}
 
-    const claudeResult = JSON.parse(rawText.substring(start, end + 1))
-    onDebug('CLAUDE RESULT: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue_from_operations?.current)
+const METRIC_DEFS = [
+  { key: 'revenue',             section: 'profit_loss',   include: [/revenue\s+from\s+oper|net\s+(?:revenue|sales)|turnover|gross\s+revenue/i],                    exclude: [/other\s+(?:income|revenue)/i] },
+  { key: 'other_income',        section: 'profit_loss',   include: [/\bother\s+income\b/i] },
+  { key: 'gross_profit',        section: 'profit_loss',   include: [/\bgross\s+profit\b/i] },
+  { key: 'ebitda',              section: 'profit_loss',   include: [/\bebitda\b/i] },
+  { key: 'ebit',                section: 'profit_loss',   include: [/\bebit\b(?!da)/i, /operating\s+profit/i],                                                      exclude: [/ebitda/i] },
+  { key: 'depreciation',        section: 'profit_loss',   include: [/depreciation|amortis/i] },
+  { key: 'interest_expense',    section: 'profit_loss',   include: [/finance\s+cost|interest\s+(?:expense|paid|on\s+loan)|borrowing\s+cost/i] },
+  { key: 'pbt',                 section: 'profit_loss',   include: [/profit\s+before\s+tax|\bpbt\b/i] },
+  { key: 'tax_expense',         section: 'profit_loss',   include: [/(?:total\s+)?tax\s+expense|income\s+tax\s+expense|provision\s+for\s+tax/i],                   exclude: [/deferred\s+tax\s+(?:asset|liab)/i] },
+  { key: 'net_income',          section: 'profit_loss',   include: [/profit\s+(?:for\s+the\s+(?:year|period)|after\s+tax)|net\s+profit\s+after|net\s+income|\bpat\b/i], exclude: [/before\s+tax/i] },
+  { key: 'total_assets',        section: 'balance_sheet', include: [/\btotal\s+assets\b/i] },
+  { key: 'current_assets',      section: 'balance_sheet', include: [/total\s+current\s+assets/i] },
+  { key: 'non_current_assets',  section: 'balance_sheet', include: [/total\s+non.?current\s+assets/i] },
+  { key: 'fixed_assets',        section: 'balance_sheet', include: [/(?:net\s+block|property,?\s+plant\s+and\s+equip|tangible\s+assets)/i] },
+  { key: 'cash_and_equivalents',section: 'balance_sheet', include: [/cash\s+and\s+(?:cash\s+)?equivalents|cash\s+and\s+bank/i] },
+  { key: 'total_equity',        section: 'balance_sheet', include: [/total\s+equity|(?:shareholders?|stockholders?)[\s'’]*(?:equity|funds)|net\s+worth/i] },
+  { key: 'total_liabilities',   section: 'balance_sheet', include: [/\btotal\s+liabilities\b/i],                                                                    exclude: [/current\s+liabilities/i] },
+  { key: 'current_liabilities', section: 'balance_sheet', include: [/total\s+current\s+liabilities/i] },
+  { key: 'total_debt',          section: 'balance_sheet', include: [/total\s+(?:long.?term\s+)?borrowing|total\s+debt/i] },
+  { key: 'cfo',                 section: 'cash_flow',     include: [/cash\s+(?:from|generated\s+(?:by|from)|used\s+in)\s+operating|(?:net\s+cash\s+)?operating\s+activities/i] },
+  { key: 'cfi',                 section: 'cash_flow',     include: [/cash\s+(?:from|used\s+in)\s+investing|(?:net\s+cash\s+)?investing\s+activities/i] },
+  { key: 'cff',                 section: 'cash_flow',     include: [/cash\s+(?:from|used\s+in)\s+financing|(?:net\s+cash\s+)?financing\s+activities/i] },
+  { key: 'net_change_in_cash',  section: 'cash_flow',     include: [/net\s+(?:change|increase|decrease)\s+in\s+cash|net\s+cash\s+(?:flow|position)/i] },
+];
 
-    const pl = claudeResult.profit_loss || {}
-    const bs = claudeResult.balance_sheet || {}
-    const cf = claudeResult.cash_flow || {}
+function detectYearsFromText(text) {
+  const found = new Map();
+  const lines = text.split('\n');
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
+    for (const m of line.matchAll(/\bFY\s*(\d{4})\b/gi))
+      if (!found.has(`FY${m[1]}`)) found.set(`FY${m[1]}`, li);
+    // 2023-24 → FY2024
+    for (const m of line.matchAll(/\b(20\d{2})-(\d{2})\b/g)) {
+      const yr = `FY${2000 + parseInt(m[2], 10)}`;
+      if (!found.has(yr)) found.set(yr, li);
+    }
+    // 2023-2024
+    for (const m of line.matchAll(/\b20\d{2}-(20\d{2})\b/g))
+      if (!found.has(`FY${m[1]}`)) found.set(`FY${m[1]}`, li);
+    // March 2024 / 31st March 2024
+    for (const m of line.matchAll(/\bMarch\s+(?:\d{1,2}[,\s]+)?(20\d{2})\b/gi))
+      if (!found.has(`FY${m[1]}`)) found.set(`FY${m[1]}`, li);
+    // 31.03.2024 / 31/03/2024
+    for (const m of line.matchAll(/\b31[./]0?3[./](20\d{2})\b/g))
+      if (!found.has(`FY${m[1]}`)) found.set(`FY${m[1]}`, li);
+  }
+  // Most-recent year first
+  return [...found.keys()].sort((a, b) => parseInt(b.slice(2), 10) - parseInt(a.slice(2), 10));
+}
 
-    const aggregated = {
-      revenue: pl.revenue_from_operations?.current ?? pl.total_income?.current ?? null,
-      otherIncome: pl.other_income?.current ?? null,
-      totalIncome: pl.total_income?.current ?? null,
-      grossProfit: pl.gross_profit?.current ?? null,
-      ebitda: pl.ebitda?.current ?? null,
-      operatingProfit: pl.operating_profit?.current ?? null,
-      pbt: pl.pbt?.current ?? null,
-      tax: pl.tax?.current ?? null,
-      netIncome: pl.net_income?.current ?? null,
-      interestExpense: pl.interest_expense?.current ?? null,
-      depreciation: pl.depreciation?.current ?? null,
-      cogs: pl.cogs?.current ?? null,
-      employeeCosts: pl.employee_costs?.current ?? null,
-      otherExpenses: pl.other_expenses?.current ?? null,
-      totalExpenses: pl.total_expenses?.current ?? null,
-      eps: pl.eps_basic?.current ?? null,
-      totalAssets: bs.total_assets?.current ?? null,
-      currentAssets: bs.current_assets?.current ?? null,
-      nonCurrentAssets: bs.non_current_assets?.current ?? null,
-      cash: bs.cash?.current ?? null,
-      inventory: bs.inventory?.current ?? null,
-      receivables: bs.receivables?.current ?? null,
-      fixedAssets: bs.fixed_assets?.current ?? null,
-      totalLiabilities: bs.total_liabilities?.current ?? null,
-      currentLiabilities: bs.current_liabilities?.current ?? null,
-      nonCurrentLiabilities: bs.non_current_liabilities?.current ?? null,
-      totalEquity: bs.total_equity?.current ?? null,
-      longTermDebt: bs.long_term_debt?.current ?? null,
-      shortTermDebt: bs.short_term_debt?.current ?? null,
-      tradePayables: bs.trade_payables?.current ?? null,
-      shareCapital: bs.share_capital?.current ?? null,
-      reserves: bs.reserves_and_surplus?.current ?? null,
-      operatingCashFlow: cf.cfo?.current ?? null,
-      investingCashFlow: cf.investing?.current ?? null,
-      financingCashFlow: cf.financing?.current ?? null,
+function detectUnitFromText(text) {
+  if (/\b(?:in\s+)?crore|\bCr\.?\b/i.test(text)) return 'Crores';
+  if (/\b(?:in\s+)?lakh|\bLk\.?\b/i.test(text)) return 'Lakhs';
+  return 'Lakhs';
+}
+
+function detectCurrencyFromText(text) {
+  if (/\bUSD\b|\$/.test(text)) return 'USD';
+  if (/\bGBP\b|£/.test(text)) return 'GBP';
+  return 'INR';
+}
+
+function detectCompanyNameFromText(lines) {
+  for (const line of lines.slice(0, 30)) {
+    if (line.length > 5 && line.length < 100 && /(?:limited|ltd\.?|private|pvt\.?|llp|inc\.?|corp\.?)\b/i.test(line))
+      return line.replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+
+function parseFinancialsFromText(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const detectedYears = detectYearsFromText(text);
+  const unit = detectUnitFromText(text);
+  const currency = detectCurrencyFromText(text);
+  const companyName = detectCompanyNameFromText(lines);
+
+  const currentYear = detectedYears[0] || `FY${new Date().getFullYear()}`;
+  const priorYear = detectedYears[1] || null;
+
+  const yearsData = {};
+  yearsData[currentYear] = { profit_loss: {}, balance_sheet: {}, cash_flow: {}, ratios: {} };
+  if (priorYear) yearsData[priorYear] = { profit_loss: {}, balance_sheet: {}, cash_flow: {}, ratios: {} };
+
+  for (const def of METRIC_DEFS) {
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      const lLine = line.toLowerCase();
+      if (!def.include.some(p => p.test(lLine))) continue;
+      if (def.exclude?.some(p => p.test(lLine))) continue;
+
+      let kwEnd = 0;
+      for (const p of def.include) {
+        const m = lLine.match(p);
+        if (m) kwEnd = Math.max(kwEnd, (m.index ?? 0) + m[0].length);
+      }
+
+      let nums = numsAfterPos(line, kwEnd);
+      // Look-ahead: values sometimes appear on the next line
+      if (nums.length === 0 && li + 1 < lines.length)
+        nums = numsAfterPos(lines[li + 1], 0);
+
+      if (nums.length === 0) continue;
+
+      if (nums[0] != null) yearsData[currentYear][def.section][def.key] = nums[0];
+      if (nums[1] != null && priorYear) yearsData[priorYear][def.section][def.key] = nums[1];
+      break; // first matching line wins per metric
+    }
+  }
+
+  return { years: yearsData, company_name: companyName, currency, unit };
+}
+
+async function extractFinancialsWithTesseract(file, onProgress) {
+  const pdfjs = await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+
+  let pdf;
+  try {
+    pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  } catch (err) {
+    const msg = (err.message || '').toLowerCase();
+    if (msg.includes('password') || msg.includes('encrypt')) throw new Error('PASSWORD_PROTECTED');
+    throw new Error('CORRUPT_PDF');
+  }
+
+  const totalPages = pdf.numPages;
+  const pageMetadata = [];
+  const allPageText = new Array(totalPages).fill('');
+  const ocrQueue = []; // { idx, canvas, pageNum }
+
+  // Layer 1 + 2: Text extraction and per-page scanned detection
+  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    onProgress?.(`📄 Reading PDF pages... (${pageNum}/${totalPages})`);
+    const page = await pdf.getPage(pageNum);
+
+    let textLayerText = '';
+    try {
+      const content = await page.getTextContent();
+      textLayerText = content.items.map(item => item.str).join(' ');
+    } catch (_) { /* text layer unavailable */ }
+
+    const hasText = textLayerText.trim().length > 500;
+    const hasNumbers = /\d{3,}/.test(textLayerText);
+
+    if (hasText && hasNumbers) {
+      // Layer 1 fast path: digital text is usable
+      allPageText[pageNum - 1] = textLayerText;
+      pageMetadata.push({ page: pageNum, method: 'text', chars: textLayerText.length });
+    } else {
+      // Layer 2: scanned — rasterize at scale 3.0 ≈ 300 DPI (assumes 96 DPI screen baseline)
+      console.log(`[Tesseract] Page ${pageNum}: scanned (~${textLayerText.trim().length} chars), queuing OCR`);
+      try {
+        const canvas = await renderPdfPageToCanvas(page, 3.0);
+        ocrQueue.push({ idx: pageNum - 1, canvas, pageNum });
+        pageMetadata.push({ page: pageNum, method: 'ocr-queued' });
+      } catch (renderErr) {
+        allPageText[pageNum - 1] = textLayerText;
+        pageMetadata.push({ page: pageNum, method: 'render-failed', chars: textLayerText.length });
+      }
+    }
+  }
+
+  // Layer 3: Single shared Tesseract worker for all scanned pages
+  if (ocrQueue.length > 0) {
+    onProgress?.(`🔍 Detected ${ocrQueue.length} scanned page(s) — starting OCR...`);
+    const Tesseract = await loadTesseract();
+    let worker = null;
+    try {
+      worker = await Tesseract.createWorker('eng', 1, {
+        workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+        langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+        corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      });
+      for (let q = 0; q < ocrQueue.length; q++) {
+        const { idx, canvas, pageNum } = ocrQueue[q];
+        onProgress?.(`🔍 OCR page ${pageNum} of ${totalPages} (${q + 1}/${ocrQueue.length})...`);
+        try {
+          const { data } = await worker.recognize(canvas);
+          allPageText[idx] = data.text || '';
+          const meta = pageMetadata.find(m => m.page === pageNum);
+          if (meta) { meta.method = 'ocr'; meta.confidence = Math.round(data.confidence); }
+        } catch (ocrErr) {
+          console.warn(`[Tesseract] OCR failed page ${pageNum}:`, ocrErr.message);
+          const meta = pageMetadata.find(m => m.page === pageNum);
+          if (meta) meta.method = 'ocr-failed';
+        }
+      }
+    } catch (workerErr) {
+      console.error('[Tesseract] Worker init failed:', workerErr.message);
+      onProgress?.('⚠ OCR engine unavailable — financial data extraction may be limited');
+    } finally {
+      try { await worker?.terminate(); } catch (_) {}
+    }
+  }
+
+  const combinedText = allPageText.join('\n\n');
+  onProgress?.('📊 Parsing financial data from extracted text...');
+
+  // Layer 4: Regex-based financial parser — no Claude API required
+  const parsed = parseFinancialsFromText(combinedText);
+  const sortedYears = Object.keys(parsed.years).sort();
+
+  for (const yr of sortedYears) onProgress?.(`✅ ${yr} data extracted`);
+
+  // Layer 5: Validation
+  const vResult5 = validateFinancialData(parsed.years, sortedYears);
+  const validationWarnings = [...vResult5.errors, ...vResult5.warnings];
+
+  if (validationWarnings.length > 0) {
+    validationWarnings.forEach(w => console.warn('[Tesseract Validation]', w));
+    onProgress?.(`⚠ ${validationWarnings.length} validation issue(s) flagged — see Excel warnings sheet`);
+  } else if (sortedYears.length > 0) {
+    onProgress?.('✅ Financial data validated successfully');
+  }
+
+  return {
+    years: parsed.years,
+    company_name: parsed.company_name,
+    currency: parsed.currency,
+    unit: parsed.unit,
+    pageMetadata,
+    totalPages,
+    validationWarnings,
+    extractionMethod: 'tesseract',
+  };
+}
+
+function validateFinancialData(years, sortedYears) {
+  const errors = [];
+  const warnings = [];
+  const rowFlags = {}; // { yr: { section: { field: 'error'|'warning' } } }
+
+  function flag(yr, section, field, type) {
+    if (!rowFlags[yr]) rowFlags[yr] = {};
+    if (!rowFlags[yr][section]) rowFlags[yr][section] = {};
+    if (rowFlags[yr][section][field] !== 'error') rowFlags[yr][section][field] = type;
+  }
+
+  // Year-level: chronological order, duplicates, gap detection
+  const seen = new Set();
+  for (const yr of sortedYears) {
+    if (seen.has(yr)) errors.push(`Duplicate year: ${yr}`);
+    seen.add(yr);
+  }
+  for (let i = 1; i < sortedYears.length; i++) {
+    const pn = parseInt(sortedYears[i - 1].replace(/\D/g, '').slice(-4));
+    const cn = parseInt(sortedYears[i].replace(/\D/g, '').slice(-4));
+    if (!isNaN(pn) && !isNaN(cn)) {
+      if (cn < pn) errors.push(`Years out of order: ${sortedYears[i - 1]} appears before ${sortedYears[i]}`);
+      else if (cn - pn > 1) warnings.push(`Year gap: missing data between ${sortedYears[i - 1]} and ${sortedYears[i]}`);
+    }
+  }
+
+  // Per-year checks
+  let cfoNegStreak = 0;
+  for (const yr of sortedYears) {
+    const data = years[yr];
+    if (!data) continue;
+    const bs = data.balance_sheet || {};
+    const pl = data.profit_loss || {};
+    const cf = data.cash_flow || {};
+
+    // Balance sheet equation: Assets = L + E (±5%)
+    if (bs.total_assets != null && bs.total_liabilities != null && bs.total_equity != null) {
+      const lpe = (bs.total_liabilities || 0) + (bs.total_equity || 0);
+      if (bs.total_assets !== 0) {
+        const diff = Math.abs((bs.total_assets - lpe) / bs.total_assets);
+        if (diff > 0.05) {
+          errors.push(`[${yr}] Balance sheet equation fails: Assets=${bs.total_assets} ≠ L+E=${lpe.toFixed(0)} (${(diff * 100).toFixed(1)}% gap)`);
+          flag(yr, 'balance_sheet', 'total_assets', 'error');
+          flag(yr, 'balance_sheet', 'total_liabilities', 'error');
+          flag(yr, 'balance_sheet', 'total_equity', 'error');
+        }
+      }
     }
 
-    const aggregatedPrior = {
-      revenue: pl.revenue_from_operations?.prior ?? pl.total_income?.prior ?? null,
-      otherIncome: pl.other_income?.prior ?? null,
-      totalIncome: pl.total_income?.prior ?? null,
-      grossProfit: pl.gross_profit?.prior ?? null,
-      ebitda: pl.ebitda?.prior ?? null,
-      operatingProfit: pl.operating_profit?.prior ?? null,
-      pbt: pl.pbt?.prior ?? null,
-      tax: pl.tax?.prior ?? null,
-      netIncome: pl.net_income?.prior ?? null,
-      interestExpense: pl.interest_expense?.prior ?? null,
-      depreciation: pl.depreciation?.prior ?? null,
-      cogs: pl.cogs?.prior ?? null,
-      employeeCosts: pl.employee_costs?.prior ?? null,
-      otherExpenses: pl.other_expenses?.prior ?? null,
-      totalExpenses: pl.total_expenses?.prior ?? null,
-      eps: pl.eps_basic?.prior ?? null,
-      totalAssets: bs.total_assets?.prior ?? null,
-      currentAssets: bs.current_assets?.prior ?? null,
-      nonCurrentAssets: bs.non_current_assets?.prior ?? null,
-      cash: bs.cash?.prior ?? null,
-      inventory: bs.inventory?.prior ?? null,
-      receivables: bs.receivables?.prior ?? null,
-      fixedAssets: bs.fixed_assets?.prior ?? null,
-      totalLiabilities: bs.total_liabilities?.prior ?? null,
-      currentLiabilities: bs.current_liabilities?.prior ?? null,
-      nonCurrentLiabilities: bs.non_current_liabilities?.prior ?? null,
-      totalEquity: bs.total_equity?.prior ?? null,
-      longTermDebt: bs.long_term_debt?.prior ?? null,
-      shortTermDebt: bs.short_term_debt?.prior ?? null,
-      tradePayables: bs.trade_payables?.prior ?? null,
-      shareCapital: bs.share_capital?.prior ?? null,
-      reserves: bs.reserves_and_surplus?.prior ?? null,
-      operatingCashFlow: cf.cfo?.prior ?? null,
-      investingCashFlow: cf.investing?.prior ?? null,
-      financingCashFlow: cf.financing?.prior ?? null,
+    // Current < total checks
+    if (bs.current_assets != null && bs.total_assets != null && bs.current_assets > bs.total_assets) {
+      errors.push(`[${yr}] Current assets (${bs.current_assets}) exceed total assets (${bs.total_assets})`);
+      flag(yr, 'balance_sheet', 'current_assets', 'error');
+    }
+    if (bs.current_liabilities != null && bs.total_liabilities != null && bs.current_liabilities > bs.total_liabilities) {
+      errors.push(`[${yr}] Current liabilities (${bs.current_liabilities}) exceed total liabilities (${bs.total_liabilities})`);
+      flag(yr, 'balance_sheet', 'current_liabilities', 'error');
     }
 
-    const companyInfo = {
-      name: claudeResult.company_name || file.name,
-      cin: claudeResult.cin || null,
-      sector: claudeResult.sector || null,
-      auditor: claudeResult.auditor || null,
-      directors: claudeResult.directors || [],
-      financialYear: claudeResult.financial_year || 'FY2025',
-      currency: claudeResult.currency || 'INR',
-      unit: claudeResult.unit || 'Lakhs',
-      reportingType: claudeResult.standalone_or_consolidated || 'Standalone'
+    // P&L: no negative revenue
+    if (pl.revenue != null && pl.revenue < 0) {
+      errors.push(`[${yr}] Negative revenue (${pl.revenue}) — likely extraction error`);
+      flag(yr, 'profit_loss', 'revenue', 'error');
     }
 
-    onProgress('generating')
-
-    const validCount = Object.values(aggregated).filter(v => v !== null).length
-    onDebug('VALID FIELDS: ' + validCount)
-
-    if (validCount < 5) {
-      throw new Error('Insufficient data extracted. Please upload the XBRL version from mca.gov.in')
+    // P&L: PBT waterfall (PBT ≈ NI + tax, ±5%)
+    if (pl.pbt != null && pl.net_income != null && pl.tax_expense != null) {
+      const computed = pl.net_income + pl.tax_expense;
+      if (pl.pbt !== 0 && Math.abs((pl.pbt - computed) / Math.abs(pl.pbt)) > 0.05) {
+        warnings.push(`[${yr}] PBT waterfall mismatch: PBT=${pl.pbt} vs NI+Tax=${computed.toFixed(0)}`);
+        flag(yr, 'profit_loss', 'pbt', 'warning');
+        flag(yr, 'profit_loss', 'tax_expense', 'warning');
+        flag(yr, 'profit_loss', 'net_income', 'warning');
+      }
     }
 
-    const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, null, null, aggregatedPrior)
+    // P&L: net margin outside [-50%, +80%]
+    if (pl.revenue != null && pl.revenue > 0 && pl.net_income != null) {
+      const margin = pl.net_income / pl.revenue;
+      if (margin < -0.5) {
+        warnings.push(`[${yr}] Very negative net margin (${(margin * 100).toFixed(1)}%) — verify extraction`);
+        flag(yr, 'profit_loss', 'net_income', 'warning');
+      } else if (margin > 0.8) {
+        warnings.push(`[${yr}] Unusually high net margin (${(margin * 100).toFixed(1)}%) — verify extraction`);
+        flag(yr, 'profit_loss', 'net_income', 'warning');
+      }
+    }
 
-    const excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, null, swot, {}, {})
-    const wordResult = await generateOrganizedWordDoc([], companyInfo, null, swot, [], file.name, { aggregated, aggregatedPrior })
+    // Cash flow: CFO+CFI+CFF ≈ net change (±10%)
+    if (cf.cfo != null && cf.cfi != null && cf.cff != null && cf.net_change_in_cash != null && cf.net_change_in_cash !== 0) {
+      const computed = (cf.cfo || 0) + (cf.cfi || 0) + (cf.cff || 0);
+      const diff = Math.abs(computed - cf.net_change_in_cash) / Math.abs(cf.net_change_in_cash);
+      if (diff > 0.1) {
+        warnings.push(`[${yr}] CF components sum to ${computed.toFixed(0)} vs stated net change ${cf.net_change_in_cash}`);
+        flag(yr, 'cash_flow', 'net_change_in_cash', 'warning');
+      }
+    }
 
-    onProgress('complete')
+    // Multi-year: CFO negative streak
+    if (cf.cfo != null) {
+      if (cf.cfo < 0) {
+        cfoNegStreak++;
+        if (cfoNegStreak >= 3) flag(yr, 'cash_flow', 'cfo', 'warning');
+      } else {
+        cfoNegStreak = 0;
+      }
+    }
+  }
+  if (cfoNegStreak >= 3) warnings.push(`CFO has been negative for ${cfoNegStreak} consecutive years — cash burn concern`);
+
+  return { valid: errors.length === 0, errors, warnings, rowFlags };
+}
+
+function applyValidationStyles(ws, rowFieldMap, colToYrKey, rowFlags, XLSX) {
+  const C_ERR  = 'FFDCDC'; // light red
+  const C_WARN = 'FFFACD'; // light yellow
+  for (const [rowStr, { section, field }] of Object.entries(rowFieldMap)) {
+    const r = parseInt(rowStr);
+    for (const [colStr, yr] of Object.entries(colToYrKey)) {
+      const severity = rowFlags?.[yr]?.[section]?.[field];
+      if (!severity) continue;
+      const addr = XLSX.utils.encode_cell({ r, c: parseInt(colStr) });
+      if (!ws[addr]) ws[addr] = { v: null, t: 'z' };
+      ws[addr].s = { fill: { patternType: 'solid', fgColor: { rgb: severity === 'error' ? C_ERR : C_WARN } } };
+    }
+  }
+}
+
+function buildValidationSheet(vResult, XLSX) {
+  const { errors = [], warnings = [] } = vResult;
+  const rows = [['Data Validation Results'], [''], ['Severity', 'Issue']];
+  if (!errors.length && !warnings.length) {
+    rows.push(['OK', 'No validation issues found']);
+  } else {
+    for (const e of errors)   rows.push(['ERROR',   e]);
+    for (const w of warnings) rows.push(['WARNING', w]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 12 }, { wch: 90 }];
+  for (let i = 3; i < rows.length; i++) {
+    const sev = rows[i][0];
+    const rgb = sev === 'ERROR' ? 'FFDCDC' : sev === 'WARNING' ? 'FFFACD' : null;
+    if (!rgb) continue;
+    const fontColor = sev === 'ERROR' ? 'C00000' : '7B6600';
+    for (const c of [0, 1]) {
+      const addr = XLSX.utils.encode_cell({ r: i, c });
+      if (!ws[addr]) ws[addr] = { v: rows[i][c] ?? '', t: 's' };
+      ws[addr].s = { fill: { patternType: 'solid', fgColor: { rgb } }, ...(c === 0 ? { font: { bold: true, color: { rgb: fontColor } } } : {}) };
+    }
+  }
+  return ws;
+}
+
+function wrapAggToYears(aggregated, aggregatedPrior) {
+  const a = aggregated || {};
+  const p = aggregatedPrior || {};
+  const hasPrior = Object.values(p).some(v => v != null);
+  function toEntry(agg) {
+    return {
+      profit_loss: {
+        revenue: agg.revenue ?? null, gross_profit: agg.grossProfit ?? null,
+        ebitda: agg.ebitda ?? null, ebit: agg.operatingProfit ?? null,
+        depreciation: agg.depreciation ?? null, interest_expense: agg.interestExpense ?? null,
+        pbt: agg.pbt ?? null, tax_expense: agg.tax ?? null, net_income: agg.netIncome ?? null,
+      },
+      balance_sheet: {
+        total_assets: agg.totalAssets ?? null, current_assets: agg.currentAssets ?? null,
+        non_current_assets: agg.nonCurrentAssets ?? null, fixed_assets: agg.fixedAssets ?? null,
+        cash_and_equivalents: agg.cash ?? null, total_equity: agg.totalEquity ?? null,
+        total_liabilities: agg.totalLiabilities ?? null, current_liabilities: agg.currentLiabilities ?? null,
+        total_debt: agg.totalDebt ?? null,
+      },
+      cash_flow: {
+        cfo: agg.operatingCashFlow ?? null, cfi: agg.investingCashFlow ?? null,
+        cff: agg.financingCashFlow ?? null, net_change_in_cash: null,
+      },
+    };
+  }
+  const years = { cur: toEntry(a) };
+  if (hasPrior) years.pri = toEntry(p);
+  return { years, sortedYears: hasPrior ? ['pri', 'cur'] : ['cur'] };
+}
+
+function buildNullFieldReport(years, sortedYears) {
+  if (!sortedYears.length) return [];
+  const latestYr = sortedYears[sortedYears.length - 1];
+  const data = years[latestYr];
+  if (!data) return [];
+  const missing = [];
+  const checks = [
+    ['profit_loss', ['revenue', 'net_income', 'ebitda', 'pbt']],
+    ['balance_sheet', ['total_assets', 'total_equity', 'total_liabilities']],
+    ['cash_flow', ['cfo', 'cfi', 'cff']],
+  ];
+  for (const [section, fields] of checks) {
+    for (const field of fields) {
+      if ((data[section] || {})[field] == null) {
+        missing.push(`${latestYr} — ${section.replace('_', ' ')}: ${field.replace(/_/g, ' ')} not found`);
+      }
+    }
+  }
+  return missing;
+}
+
+function buildTrendSummary(years, sortedYears) {
+  const trends = [];
+  if (sortedYears.length < 2) return trends;
+  const latestYr = sortedYears[sortedYears.length - 1];
+  const prevYr = sortedYears[sortedYears.length - 2];
+  const latest = years[latestYr] || {};
+  const prev = years[prevYr] || {};
+  const lpl = latest.profit_loss || {};
+  const ppl = prev.profit_loss || {};
+  if (lpl.revenue != null && ppl.revenue != null && ppl.revenue !== 0) {
+    const g = ((lpl.revenue - ppl.revenue) / Math.abs(ppl.revenue)) * 100;
+    trends.push(`Revenue ${g >= 0 ? 'grew' : 'declined'} ${Math.abs(g).toFixed(1)}% from ${prevYr} to ${latestYr}`);
+  }
+  if (lpl.net_income != null && ppl.net_income != null && ppl.net_income !== 0) {
+    const g = ((lpl.net_income - ppl.net_income) / Math.abs(ppl.net_income)) * 100;
+    if (lpl.net_income < 0) trends.push(`Net loss of ${Math.abs(lpl.net_income).toLocaleString()} in ${latestYr}`);
+    else trends.push(`Net income ${g >= 0 ? 'improved' : 'declined'} ${Math.abs(g).toFixed(1)}% year-over-year`);
+  }
+  const lbs = latest.balance_sheet || {};
+  if (lbs.total_debt != null && lbs.total_equity != null && lbs.total_equity !== 0) {
+    const de = lbs.total_debt / lbs.total_equity;
+    if (de > 2) trends.push(`High leverage: D/E ratio ${de.toFixed(2)}x in ${latestYr}`);
+    else if (de < 0.5) trends.push(`Conservative leverage: D/E ratio ${de.toFixed(2)}x in ${latestYr}`);
+  }
+  return trends;
+}
+
+async function generateScannedExcel(structuredData, companyInfo, onProgress) {
+  onProgress?.("📊 Building Excel workbook...");
+  const XLSX = await loadSheetJS();
+
+  const { years = {}, currency = 'INR', unit = 'Lakhs', pageMetadata = [], totalPages = 0 } = structuredData;
+  const sortedYears = Object.keys(years).sort();
+  const vResult = validateFinancialData(years, sortedYears);
+  const nullReport = buildNullFieldReport(years, sortedYears);
+  const trends = buildTrendSummary(years, sortedYears);
+  const companyName = structuredData.company_name || companyInfo.name || 'Company';
+  const extractionMethod = structuredData.extractionMethod || 'tesseract';
+  const methodLabel = extractionMethod === 'tesseract' ? 'Tesseract OCR' : 'Scanned PDF OCR';
+
+  const wb = XLSX.utils.book_new();
+
+  // col index → year key (col 0 = label, col 1+ = sortedYears)
+  const colToYr = {};
+  sortedYears.forEach((yr, i) => { colToYr[i + 1] = yr; });
+
+  function makeHeader(title) {
+    return [
+      [`${companyName} — ${title}`],
+      [`Currency: ${currency} | Unit: ${unit} | Source: Scanned PDF (${methodLabel})`],
+      [''],
+    ];
+  }
+
+  function makeRow(label, fieldPath) {
+    const parts = fieldPath.split('.');
+    const row = [label];
+    for (const yr of sortedYears) {
+      let val = years[yr] || {};
+      for (const p of parts) val = val?.[p] ?? null;
+      row.push(val !== null && val !== undefined ? val : null);
+    }
+    return row;
+  }
+
+  // Sheet 1: P&L Summary
+  // Row indices: 0=title,1=subtitle,2=blank,3=colHdr,4=REVENUE,5=revenue,6=other_income,
+  //   7=total_income,8=blank,9=EXPENSES,10=cogs,11=employee,12=interest_expense,13=depreciation,
+  //   14=other_exp,15=total_exp,16=blank,17=PROFITABILITY,18=ebitda,19=pbt,20=tax,21=net_income
+  const plData = [
+    ...makeHeader('Profit & Loss Summary'),
+    ['', ...sortedYears],
+    ['REVENUE'],
+    makeRow('Total Revenue', 'profit_loss.revenue'),
+    makeRow('Other Income', 'profit_loss.other_income'),
+    makeRow('Total Income', 'profit_loss.total_income'),
+    [''],
+    ['EXPENSES'],
+    makeRow('Cost of Goods Sold', 'profit_loss.cost_of_goods'),
+    makeRow('Employee Costs', 'profit_loss.employee_costs'),
+    makeRow('Finance Costs', 'profit_loss.interest_expense'),
+    makeRow('Depreciation', 'profit_loss.depreciation'),
+    makeRow('Other Expenses', 'profit_loss.other_expenses'),
+    makeRow('Total Expenses', 'profit_loss.total_expenses'),
+    [''],
+    ['PROFITABILITY'],
+    makeRow('EBITDA', 'profit_loss.ebitda'),
+    makeRow('Profit Before Tax (PBT)', 'profit_loss.pbt'),
+    makeRow('Tax', 'profit_loss.tax_expense'),
+    makeRow('Net Income / PAT', 'profit_loss.net_income'),
+  ];
+  const wsPL = XLSX.utils.aoa_to_sheet(plData);
+  applyValidationStyles(wsPL, {
+    5:  { section: 'profit_loss', field: 'revenue' },
+    6:  { section: 'profit_loss', field: 'other_income' },
+    12: { section: 'profit_loss', field: 'interest_expense' },
+    13: { section: 'profit_loss', field: 'depreciation' },
+    18: { section: 'profit_loss', field: 'ebitda' },
+    19: { section: 'profit_loss', field: 'pbt' },
+    20: { section: 'profit_loss', field: 'tax_expense' },
+    21: { section: 'profit_loss', field: 'net_income' },
+  }, colToYr, vResult.rowFlags, XLSX);
+  XLSX.utils.book_append_sheet(wb, wsPL, 'P&L Summary');
+
+  // Sheet 2: Balance Sheet
+  // Row indices: 0-3=header+colHdr,4=EQUITY&LIAB,5=share_cap,6=reserves,7=total_equity,
+  //   8=lt_debt,9=st_debt,10=total_debt,11=trade_payables,12=other_cur_liab,13=total_liabilities,
+  //   14=blank,15=ASSETS,16=fixed_assets,17=intangibles,18=investments,19=receivables,
+  //   20=inventory,21=cash,22=current_assets,23=total_assets
+  const bsData = [
+    ...makeHeader('Balance Sheet'),
+    ['', ...sortedYears],
+    ['EQUITY & LIABILITIES'],
+    makeRow('Share Capital', 'balance_sheet.share_capital'),
+    makeRow('Reserves & Surplus', 'balance_sheet.reserves'),
+    makeRow('Total Equity', 'balance_sheet.total_equity'),
+    makeRow('Long-term Debt', 'balance_sheet.long_term_debt'),
+    makeRow('Short-term Debt', 'balance_sheet.short_term_debt'),
+    makeRow('Total Debt', 'balance_sheet.total_debt'),
+    makeRow('Trade Payables', 'balance_sheet.trade_payables'),
+    makeRow('Other Current Liabilities', 'balance_sheet.other_current_liabilities'),
+    makeRow('Total Liabilities', 'balance_sheet.total_liabilities'),
+    [''],
+    ['ASSETS'],
+    makeRow('Fixed Assets / PPE', 'balance_sheet.fixed_assets'),
+    makeRow('Intangibles / Goodwill', 'balance_sheet.intangibles'),
+    makeRow('Investments', 'balance_sheet.investments'),
+    makeRow('Trade Receivables', 'balance_sheet.trade_receivables'),
+    makeRow('Inventory', 'balance_sheet.inventory'),
+    makeRow('Cash & Equivalents', 'balance_sheet.cash_and_equivalents'),
+    makeRow('Current Assets', 'balance_sheet.current_assets'),
+    makeRow('Total Assets', 'balance_sheet.total_assets'),
+  ];
+  const wsBS = XLSX.utils.aoa_to_sheet(bsData);
+  applyValidationStyles(wsBS, {
+    7:  { section: 'balance_sheet', field: 'total_equity' },
+    10: { section: 'balance_sheet', field: 'total_debt' },
+    13: { section: 'balance_sheet', field: 'total_liabilities' },
+    16: { section: 'balance_sheet', field: 'fixed_assets' },
+    21: { section: 'balance_sheet', field: 'cash_and_equivalents' },
+    22: { section: 'balance_sheet', field: 'current_assets' },
+    23: { section: 'balance_sheet', field: 'total_assets' },
+  }, colToYr, vResult.rowFlags, XLSX);
+  XLSX.utils.book_append_sheet(wb, wsBS, 'Balance Sheet');
+
+  // Sheet 3: Cash Flow
+  // Row indices: 0-3=header+colHdr,4=cfo,5=cfi,6=cff,7=net_change,8=closing_cash
+  const cfData = [
+    ...makeHeader('Cash Flow Statement'),
+    ['', ...sortedYears],
+    makeRow('Cash from Operations (CFO)', 'cash_flow.cfo'),
+    makeRow('Cash from Investing (CFI)', 'cash_flow.cfi'),
+    makeRow('Cash from Financing (CFF)', 'cash_flow.cff'),
+    makeRow('Net Change in Cash', 'cash_flow.net_change_in_cash'),
+    makeRow('Closing Cash Balance', 'cash_flow.closing_cash'),
+  ];
+  const wsCF = XLSX.utils.aoa_to_sheet(cfData);
+  applyValidationStyles(wsCF, {
+    4: { section: 'cash_flow', field: 'cfo' },
+    5: { section: 'cash_flow', field: 'cfi' },
+    6: { section: 'cash_flow', field: 'cff' },
+    7: { section: 'cash_flow', field: 'net_change_in_cash' },
+  }, colToYr, vResult.rowFlags, XLSX);
+  XLSX.utils.book_append_sheet(wb, wsCF, 'Cash Flow');
+
+  // Sheet 4: Key Ratios (computed inline)
+  const ratioData = [
+    ...makeHeader('Key Ratios'),
+    ['', ...sortedYears],
+    ['PROFITABILITY'],
+    ['Gross Margin (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      if (pl.revenue && pl.cost_of_goods != null) return +((( pl.revenue - pl.cost_of_goods) / pl.revenue) * 100).toFixed(2);
+      return null;
+    })],
+    ['Net Margin (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      if (pl.revenue && pl.net_income != null) return +((pl.net_income / pl.revenue) * 100).toFixed(2);
+      return null;
+    })],
+    ['EBITDA Margin (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      if (pl.revenue && pl.ebitda != null) return +((pl.ebitda / pl.revenue) * 100).toFixed(2);
+      return null;
+    })],
+    [''],
+    ['LEVERAGE'],
+    ['Debt-to-Equity (x)', ...sortedYears.map(yr => {
+      const bs = (years[yr] || {}).balance_sheet || {};
+      if (bs.total_debt != null && bs.total_equity) return +(bs.total_debt / bs.total_equity).toFixed(2);
+      return null;
+    })],
+    ['Interest Coverage (x)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      if (pl.ebitda != null && pl.finance_costs) return +(pl.ebitda / pl.finance_costs).toFixed(2);
+      return null;
+    })],
+    [''],
+    ['RETURNS'],
+    ['ROE (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      const bs = (years[yr] || {}).balance_sheet || {};
+      if (pl.net_income != null && bs.total_equity) return +((pl.net_income / bs.total_equity) * 100).toFixed(2);
+      return null;
+    })],
+    ['ROA (%)', ...sortedYears.map(yr => {
+      const pl = (years[yr] || {}).profit_loss || {};
+      const bs = (years[yr] || {}).balance_sheet || {};
+      if (pl.net_income != null && bs.total_assets) return +((pl.net_income / bs.total_assets) * 100).toFixed(2);
+      return null;
+    })],
+    [''],
+    ['PER SHARE'],
+    makeRow('EPS', 'ratios.eps'),
+    makeRow('Book Value per Share', 'ratios.book_value_per_share'),
+    makeRow('Dividend per Share', 'ratios.dividend_per_share'),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ratioData), 'Key Ratios');
+
+  // Sheet 5: Validation
+  XLSX.utils.book_append_sheet(wb, buildValidationSheet(vResult, XLSX), 'Validation');
+
+  // Sheet 6: Analysis
+  const analysisData = [
+    ...makeHeader('Analysis & Insights'),
+    ['TREND SUMMARY'],
+    ...(trends.length ? trends.map(t => [t]) : [['Insufficient multi-year data for trend analysis']]),
+    [''],
+    ['DATA QUALITY — MISSING FIELDS (latest year)'],
+    ...(nullReport.length ? nullReport.map(n => [n]) : [['All key fields populated']]),
+    [''],
+    ['EXTRACTION DETAILS'],
+    [`Pages processed: ${pageMetadata.length} of ${totalPages}`],
+    [`Financial data years found: ${sortedYears.join(', ') || 'None detected'}`],
+    [`Extraction method: ${methodLabel}`],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(analysisData), 'Analysis');
+
+  // Sheet 7: Metadata
+  const metaData = [
+    ['Page', 'Method', 'OCR Confidence', 'Notes'],
+    ...pageMetadata.map(m => [
+      m.page,
+      m.method,
+      m.confidence != null ? `${m.confidence.toFixed(0)}%` : '',
+      m.reason || '',
+    ]),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(metaData), 'Metadata');
+
+  onProgress?.(`✅ Excel ready — 6 sheets, ${sortedYears.length} year(s) of data`);
+
+  const arrayBuf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([arrayBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const safeName = (companyInfo.name || 'Company').replace(/[^a-zA-Z0-9\s]/g, '').trim().replace(/\s+/g, '_') || 'Company';
+  const fileName = `${safeName}_ScannedFinancials_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  return { excelBlob: blob, fileName };
+}
+
+async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
+  try {
+    onProgress?.("🔍 Analysing document structure...");
+    const fname = (file.name || '').toLowerCase();
+    let extractionResult;
+    try {
+      if (fname.endsWith('.pdf')) {
+        extractionResult = await extractPdfContent(file, onProgress);
+      } else if (fname.endsWith('.xml') || fname.endsWith('.xbrl')) {
+        extractionResult = await extractXmlContent(file);
+      } else if (fname.endsWith('.xlsx') || fname.endsWith('.xls')) {
+        extractionResult = await extractExcelInputContent(file);
+      } else {
+        const wordText = await extractWordContent(file);
+        extractionResult = { text: wordText || '', method: 'word', warnings: [] };
+      }
+    } catch (extractErr) {
+      const msg = extractErr.message || '';
+      if (msg === 'PASSWORD_PROTECTED') throw new Error(
+        'This PDF is password-protected.\n\nPlease unlock it and re-upload. Most MCA filings are available without a password at mca.gov.in'
+      );
+      if (msg === 'CORRUPT_PDF') throw new Error('This PDF appears to be corrupt or uses an unsupported format. Please try converting it or using a different file.');
+      throw extractErr;
+    }
+
+    const extractedText = extractionResult.text || '';
+    const extractionMethod = extractionResult.method || 'text';
+    const extractionWarnings = extractionResult.warnings || [];
+    const documentMetadata = extractionResult.documentMetadata || {};
+    const visionStructuredData = extractionResult.visionStructuredData || { years: {}, currency: 'INR', unit: 'Lakhs' };
+
+    if (!extractedText || extractedText.trim().length < 50) {
+      throw new Error(
+        "FinSight could not extract enough data from this PDF. Please download the XBRL version from mca.gov.in and upload that instead. This is a technical limitation, not a company disclosure issue."
+      );
+    }
+
+    onProgress?.("📋 Detecting financial statements and building sections...");
+    const chunks = chunkText(extractedText, 12000, 500);
+    onProgress?.(`📄 Extracting text from pages — ${chunks.length} sections identified. Processing with AI...`);
+
+    const chunkResults = [];
+    let companyInfo = {
+      name: "", period: "", rounding: "Lakhs", currency: "INR", sector: ""
+    };
+
+    // Force INR for MCA filings — never auto-detect
+    if (documentMetadata.isMCA) {
+      companyInfo.currency = 'INR';
+      companyInfo.rounding = documentMetadata.unit || 'Lakhs';
+    }
+
+    const loopStart = Date.now();
+    const chunkTimes = [];
+    let failedChunks = 0;
+    let apiUnavailable = false;
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkStart = Date.now();
+      let chunkResult;
+      try {
+        chunkResult = await processChunkWithAI(
+          chunks[i], i + 1, chunks.length,
+          i > 0 ? `Company: ${companyInfo.name || "unknown"}, Period: ${companyInfo.period || "unknown"}, Sector: ${companyInfo.sector || "unknown"}` : null,
+          onProgress
+        );
+      } catch (chunkErr) {
+        if (chunkErr.apiUnavailable) apiUnavailable = true;
+        failedChunks++;
+        console.error(`[processPrivateCompanyDoc] Chunk ${i + 1}/${chunks.length} failed:`, chunkErr);
+        chunkResult = {
+          chunkSummary: `Section ${i + 1} failed to process`,
+          sectionNumber: "",
+          sectionTitle: `Section ${i + 1} (Failed)`,
+          blocks: [{
+            type: "paragraph_block",
+            paragraphs: [
+              "This section could not be processed automatically due to a technical issue. The original content has been preserved below for manual review.",
+              chunks[i].substring(0, 5000) + "..."
+            ]
+          }],
+          companyInfoFound: {},
+          financialDataExtracted: {}
+        };
+      }
+      const chunkSecs = Math.round((Date.now() - chunkStart) / 1000);
+      chunkTimes.push(chunkSecs);
+      chunkResults.push(chunkResult);
+      if (chunkResult.companyInfoFound) {
+        const ci = chunkResult.companyInfoFound;
+        if (ci.name && !companyInfo.name) companyInfo.name = ci.name;
+        if (ci.period && !companyInfo.period) companyInfo.period = ci.period;
+        if (ci.rounding && !documentMetadata.isMCA) companyInfo.rounding = ci.rounding;
+        // Never override INR with auto-detected currency for MCA filings
+        if (ci.currency && !documentMetadata.isMCA) companyInfo.currency = ci.currency;
+        if (ci.sector && !companyInfo.sector) companyInfo.sector = ci.sector;
+      }
+      if (i < chunks.length - 1) {
+        onProgress?.(`Processing section ${i + 1} of ${chunks.length} (${chunkSecs}s). Continuing...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+
+    const totalSecs = Math.round((Date.now() - loopStart) / 1000);
+    console.log(`[processPrivateCompanyDoc] Total: ${totalSecs}s | Failed: ${failedChunks}`);
+
+    if (failedChunks > 0) {
+      chunkResults.unshift({
+        chunkSummary: "Processing notice",
+        sectionNumber: "",
+        sectionTitle: "Processing Notice",
+        blocks: [{
+          type: "paragraph_block",
+          paragraphs: [
+            `NOTE: ${failedChunks} of ${chunks.length} sections required manual processing. The original content for those sections is preserved verbatim in the document.`
+          ]
+        }],
+        companyInfoFound: {},
+        financialDataExtracted: {}
+      });
+    }
+
+    onProgress?.("🔢 Running sanity validation and cross-checking figures...");
+    const aggregated = aggregateFinancialData(chunkResults);
+    computeDerivedFinancials(aggregated);
+
+    // Merge Vision-extracted structured data into aggregated — Vision takes priority
+    if (visionStructuredData.years && Object.keys(visionStructuredData.years).length > 0) {
+      const vYears = visionStructuredData.years;
+      const sortedVYears = Object.keys(vYears).sort();
+      if (sortedVYears.length > 0) {
+        const latestVY = vYears[sortedVYears[sortedVYears.length - 1]];
+        const priorVY = sortedVYears.length > 1 ? vYears[sortedVYears[sortedVYears.length - 2]] : null;
+        // Merge PL
+        const vpl = latestVY?.profit_loss || {};
+        if (vpl.revenue != null && aggregated.revenue == null) aggregated.revenue = vpl.revenue;
+        if (vpl.net_income != null && aggregated.netIncome == null) aggregated.netIncome = vpl.net_income;
+        if (vpl.pbt != null && aggregated.pbt == null) aggregated.pbt = vpl.pbt;
+        if (vpl.ebitda != null && aggregated.ebitda == null) aggregated.ebitda = vpl.ebitda;
+        if (vpl.depreciation != null && aggregated.depreciation == null) aggregated.depreciation = vpl.depreciation;
+        if (vpl.finance_costs != null && aggregated.interestExpense == null) aggregated.interestExpense = vpl.finance_costs;
+        if (vpl.tax_expense != null && aggregated.tax == null) aggregated.tax = vpl.tax_expense;
+        if (vpl.cost_of_goods != null && aggregated.cogs == null) aggregated.cogs = vpl.cost_of_goods;
+        // Merge BS
+        const vbs = latestVY?.balance_sheet || {};
+        if (vbs.total_assets != null && aggregated.totalAssets == null) aggregated.totalAssets = vbs.total_assets;
+        if (vbs.total_equity != null && aggregated.totalEquity == null) aggregated.totalEquity = vbs.total_equity;
+        if (vbs.total_liabilities != null && aggregated.totalLiabilities == null) aggregated.totalLiabilities = vbs.total_liabilities;
+        if (vbs.current_assets != null && aggregated.currentAssets == null) aggregated.currentAssets = vbs.current_assets;
+        if (vbs.current_liabilities != null && aggregated.currentLiabilities == null) aggregated.currentLiabilities = vbs.current_liabilities;
+        if (vbs.cash_and_equivalents != null && aggregated.cash == null) aggregated.cash = vbs.cash_and_equivalents;
+        if (vbs.trade_receivables != null && aggregated.receivables == null) aggregated.receivables = vbs.trade_receivables;
+        if (vbs.inventory != null && aggregated.inventory == null) aggregated.inventory = vbs.inventory;
+        if (vbs.long_term_debt != null && aggregated.longTermDebt == null) aggregated.longTermDebt = vbs.long_term_debt;
+        if (vbs.short_term_debt != null && aggregated.shortTermDebt == null) aggregated.shortTermDebt = vbs.short_term_debt;
+        if (vbs.fixed_assets != null && aggregated.fixedAssets == null) aggregated.fixedAssets = vbs.fixed_assets;
+        if (vbs.trade_payables != null && aggregated.tradePayables == null) aggregated.tradePayables = vbs.trade_payables;
+        // Merge CF
+        const vcf = latestVY?.cash_flow || {};
+        if (vcf.cfo != null && aggregated.operatingCashFlow == null) aggregated.operatingCashFlow = vcf.cfo;
+        if (vcf.cfi != null && aggregated.investingCashFlow == null) aggregated.investingCashFlow = vcf.cfi;
+        if (vcf.cff != null && aggregated.financingCashFlow == null) aggregated.financingCashFlow = vcf.cff;
+
+        // Merge prior year if available
+        if (priorVY) {
+          // Will be used in aggregatedPrior merge below
+          visionStructuredData._priorYearData = priorVY;
+        }
+      }
+    }
+
+    // Force currency to INR for MCA filings after all merges
+    if (documentMetadata.isMCA) {
+      companyInfo.currency = 'INR';
+    }
+
+    validateExtractedData(aggregated);
+    const noFinancialData = !hasAnyFinancialData(aggregated);
+    if (noFinancialData) {
+      console.warn('[FinSight] No financial data found — PDF may be scanned or financial statements not in expected format');
+    }
+
+    // ── Minimum figure count check ──────────────────────────────────────────
+    const wrapYears = wrapAggToYears(aggregated, {});
+    const figureCount = countValidFigures(wrapYears.years);
+    if (figureCount < 10 && !apiUnavailable) {
+      throw new Error(
+        "FinSight could not extract enough data from this PDF. This is a technical limitation of the document format.\n\nPlease try:\n1. Download the XBRL filing from mca.gov.in → Company search → Financial Statements → XBRL\n2. Upload individual pages of the Balance Sheet and P&L\n3. Contact support: support@finsightai.org\n\nDO NOT generate Excel or Word with empty data."
+      );
+    }
+
+    const aggregatedPrior = aggregatePriorFinancialData(chunkResults);
+    computeDerivedFinancials(aggregatedPrior);
+    let sectorHint = companyInfo.sector || "";
+    if (!sectorHint) {
+      const nameLower = (companyInfo.name || "").toLowerCase();
+      if (nameLower.includes("medical") || nameLower.includes("pharma") || nameLower.includes("health")) sectorHint = "medical";
+      else if (nameLower.includes("steel") || nameLower.includes("manufact")) sectorHint = "manufacturing";
+    }
+    const ratios = calculateRatios(aggregated, sectorHint, aggregatedPrior);
+    const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress, aggregatedPrior);
+
+    onProgress?.("📊 Building Excel workbook...");
+    const chartImages = [];
+    if (aggregated.revenue || aggregated.netIncome || aggregated.operatingProfit || aggregated.ebitda) {
+      try {
+        const dataURL = createFinancialBarChart({
+          title: "Key Financial Performance",
+          subtitle: `${companyInfo.name || "Company"} • Values in ${companyInfo.rounding || "Lakhs"} of ${companyInfo.currency || 'INR'}`,
+          labels: ["Revenue", "Gross Profit", "EBITDA", "Operating Profit", "Net Income"],
+          values: [aggregated.revenue, aggregated.grossProfit, aggregated.ebitda, aggregated.operatingProfit, aggregated.netIncome],
+          colors: ["#CF6B4E", "#2D7D5C", "#3B82B0", "#7C5CB8", "#D9A441"],
+          unit: companyInfo.rounding || "Lakhs of INR"
+        });
+        chartImages.push({ dataURL, caption: "Chart 1: Key Financial Performance Metrics" });
+      } catch (e) { console.error("Chart 1 failed:", e); }
+    }
+    if (aggregated.totalAssets || aggregated.totalEquity || aggregated.totalLiabilities || aggregated.currentAssets) {
+      try {
+        const dataURL = createFinancialBarChart({
+          title: "Balance Sheet Composition",
+          subtitle: `${companyInfo.name || "Company"} • Values in ${companyInfo.rounding || "Lakhs"} of ${companyInfo.currency || 'INR'}`,
+          labels: ["Total Assets", "Current Assets", "Fixed Assets", "Total Equity", "Total Liabilities"],
+          values: [aggregated.totalAssets, aggregated.currentAssets, aggregated.fixedAssets, aggregated.totalEquity, aggregated.totalLiabilities],
+          colors: ["#8B6F47", "#D9A441", "#CF6B4E", "#2D7D5C", "#C04040"],
+          unit: companyInfo.rounding || "Lakhs of INR"
+        });
+        chartImages.push({ dataURL, caption: "Chart 2: Balance Sheet Composition" });
+      } catch (e) { console.error("Chart 2 failed:", e); }
+    }
+    const profitabilityRatios = ratios.find(r => r.category === "Profitability Ratios");
+    if (profitabilityRatios) {
+      try {
+        const validItems = profitabilityRatios.items.filter(i => i.rawValue != null && !isNaN(i.rawValue));
+        if (validItems.length > 0) {
+          const dataURL = createFinancialBarChart({
+            title: "Profitability Ratios (%)",
+            subtitle: `${companyInfo.name || "Company"} • Values in Percentage`,
+            labels: validItems.map(i => i.name.replace(" (ROE)", "").replace(" (ROA)", "")),
+            values: validItems.map(i => i.rawValue),
+            colors: ["#CF6B4E", "#A8553C", "#D9A441", "#2D7D5C", "#3B82B0"],
+            unit: "Percentage (%)"
+          });
+          chartImages.push({ dataURL, caption: "Chart 3: Profitability Ratio Analysis" });
+        }
+      } catch (e) { console.error("Chart 3 failed:", e); }
+    }
+
+    // ─── Conditional document generation ──────────────────────────────────
+    let pdfResult = null;
+    let pdfError = null;
+    let docxResult = null;
+    let excelResult = null;
+    let briefWordResult = null;
+
+    if (selectedOutputs.detailedPdf) {
+      const totalBlocks = chunkResults.reduce((sum, cr) => sum + (cr.blocks?.length || 0), 0);
+      if (totalBlocks > 500) {
+        onProgress?.(`Large document detected (${totalBlocks} blocks). PDF generation may take 60-180 seconds. Please wait...`);
+      } else {
+        onProgress?.("Generating PDF document...");
+      }
+      const pdfStart = Date.now();
+      const pdfElapsedInterval = setInterval(() => {
+        const elapsed = Math.round((Date.now() - pdfStart) / 1000);
+        onProgress?.(`Generating PDF... (${elapsed}s elapsed)`);
+      }, 5000);
+      try {
+        pdfResult = await Promise.race([
+          generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages),
+          new Promise((_, reject) => setTimeout(
+            () => reject(new Error("PDF generation timed out. Your data has been organized but the file is too large for browser rendering.")),
+            180_000
+          )),
+        ]);
+      } catch (err) {
+        pdfError = err;
+        console.error("[processPrivateCompanyDoc] PDF failed:", pdfError);
+      } finally {
+        clearInterval(pdfElapsedInterval);
+      }
+    }
+
+    if (selectedOutputs.detailedWord) {
+      onProgress?.("📝 Generating 12-page Word document...");
+      try {
+        docxResult = await generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot, chartImages, file.name, { documentMetadata, visionStructuredData, aggregated, aggregatedPrior });
+      } catch (wordErr) {
+        console.error("[processPrivateCompanyDoc] Word generation failed:", wordErr);
+        if (apiUnavailable) {
+          onProgress?.('⚠️ AI service temporarily unavailable — Word document will generate once service restores. Excel data is ready.');
+        }
+      }
+    }
+
+    if (selectedOutputs.excel) {
+      onProgress?.("📊 Building Excel workbook (8 sheets)...");
+      try {
+        const useScannedPipeline = fname.endsWith('.pdf') &&
+          (extractionMethod === 'ocr' || extractionMethod === 'hybrid' || noFinancialData);
+        if (useScannedPipeline && Object.keys(visionStructuredData.years || {}).length === 0) {
+          onProgress?.("Scanned PDF — running Tesseract extraction for structured Excel...");
+          const scannedData = await extractFinancialsWithTesseract(file, onProgress);
+          excelResult = await generateScannedExcel(scannedData, companyInfo, onProgress);
+        } else {
+          excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot, documentMetadata, visionStructuredData);
+        }
+      } catch (excelErr) {
+        console.error("[processPrivateCompanyDoc] Excel generation failed:", excelErr);
+        if (apiUnavailable) {
+          onProgress?.('⚠️ Excel generation failed — AI service unavailable. Job saved for retry.');
+        }
+      }
+    }
+
+    let briefWordErr = null;
+    if (selectedOutputs.briefWord) {
+      try {
+        onProgress?.("Generating company narrative (AI)...");
+        const briefNarrative = await generateBriefNarrative(companyInfo, aggregated, aggregatedPrior, ratios, swot, chunkResults);
+        onProgress?.("Building brief company note...");
+        briefWordResult = await generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggregatedPrior, ratios, swot, briefNarrative);
+        if (!briefWordResult?.blob) throw new Error('Brief Word generator returned no blob');
+        console.log('[BriefWord] ✓ Generated successfully', { fileName: briefWordResult.fileName, size: briefWordResult.blob.size });
+      } catch (briefErr) {
+        briefWordErr = briefErr.message || 'Generation failed';
+        console.error('[BriefWord] Generation failed:', briefErr);
+        console.error('[BriefWord] Stack:', briefErr.stack);
+      }
+    }
+
+    const anyGenerated = pdfResult || docxResult || excelResult || briefWordResult;
+    const anyRequested = selectedOutputs.detailedPdf || selectedOutputs.detailedWord || selectedOutputs.excel ||
+      selectedOutputs.briefWord;
+    if (anyRequested && !anyGenerated) {
+      throw pdfError || new Error("All document generation attempts failed.");
+    }
+
+    // If API was unavailable, queue this analysis for retry when credits are restored
+    if (apiUnavailable) {
+      queuePendingAnalysis(companyInfo, aggregated, aggregatedPrior, ratios, swot);
+    }
 
     return {
-      excelBlob: excelResult?.excelBlob || excelResult,
-      excelFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_') + '_Financials.xlsx',
-      wordBlob: wordResult?.blob || wordResult,
-      wordFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_') + '_Report.docx',
+      pdfBlob: pdfResult?.pdfBlob || null,
+      pdfFileName: pdfResult?.fileName || null,
+      pdfFileSizeKB: pdfResult?.fileSizeKB || 0,
+      docxBlob: docxResult?.docxBlob || null,
+      docxFileName: docxResult?.fileName || null,
+      excelBlob: excelResult?.excelBlob || null,
+      excelFileName: excelResult?.fileName || null,
+      briefWordBlob: briefWordResult?.blob || null,
+      briefWordFileName: briefWordResult?.fileName || null,
+      briefWordError: briefWordErr,
+      noFinancialData,
+      apiUnavailable,
+      extractionMethod,
+      extractionWarnings,
       companyInfo,
-      aggregated,
-      aggregatedPrior,
-      swot,
-      sectionCount: wordResult?.sectionCount || 0,
-      sheetCount: excelResult?.sheetCount || 0,
-    }
-
-  } catch(err) {
-    onDebug('ERROR: ' + err.message)
-    throw err
+      chunkCount: chunks.length,
+      failedChunks,
+      sectionCount: pdfResult?.sectionCount || chunkResults.length,
+      ratioCount: pdfResult?.ratioCount || 0,
+      hasSWOT: pdfResult?.hasSWOT ?? !!swot,
+      hasCharts: pdfResult?.hasCharts ?? chartImages.length > 0,
+    };
+  } catch (error) {
+    console.error("Private company doc processing error:", error);
+    throw error;
   }
 }
 
 async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot, documentMetadata = {}, visionStructuredData = {}) {
-  console.error('EXCEL INPUT:', JSON.stringify({
-    revenue: aggregated?.revenue,
-    netIncome: aggregated?.netIncome,
-    totalAssets: aggregated?.totalAssets
-  }));
-  console.log('[Excel] aggregated received:', JSON.stringify(aggregated, null, 2));
-  if (!aggregated || Object.values(aggregated).every(v => v == null)) {
-    console.error('[Excel] CRITICAL: aggregated is empty or all null — no data will appear in spreadsheet');
-  } else {
-    console.log('[Excel] Key figures — revenue:', aggregated.revenue, '| netIncome:', aggregated.netIncome, '| totalAssets:', aggregated.totalAssets);
-  }
-
   const XLSX = await loadSheetJS();
 
   const a  = aggregated     || {};
@@ -3390,44 +4489,27 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
 
   const wb = XLSX.utils.book_new();
 
-  // ── Style helpers (xlsx-js-style) — Goldman Sachs navy palette ───────────
+  // ── Style helpers (xlsx-js-style) ─────────────────────────────────────────
   const HDR_STYLE = {
-    fill: { patternType: 'solid', fgColor: { rgb: '0F2044' } },
+    fill: { patternType: 'solid', fgColor: { rgb: '1B4332' } },
     font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 10, name: 'Calibri' },
     alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
   };
-  const SECT_HDR_STYLE = {
-    fill: { patternType: 'solid', fgColor: { rgb: '1B3A6B' } },
-    font: { color: { rgb: 'FFFFFF' }, bold: true, sz: 10, name: 'Calibri' },
-    alignment: { vertical: 'center', wrapText: false },
-  };
   const ALT_STYLE = {
-    fill: { patternType: 'solid', fgColor: { rgb: 'E8EDF5' } },
+    fill: { patternType: 'solid', fgColor: { rgb: 'F0F4F0' } },
     alignment: { vertical: 'center', wrapText: false },
   };
   const TOTAL_STYLE = {
-    fill: { patternType: 'solid', fgColor: { rgb: '0F2044' } },
-    font: { bold: true, name: 'Calibri', sz: 10, color: { rgb: 'FFFFFF' } },
+    font: { bold: true, name: 'Calibri', sz: 10 },
+    border: {
+      top: { style: 'thin', color: { rgb: '1B4332' } },
+      bottom: { style: 'medium', color: { rgb: '1B4332' } },
+    },
     alignment: { vertical: 'center' },
-  };
-  const SUBTOTAL_STYLE = {
-    fill: { patternType: 'solid', fgColor: { rgb: 'E8EDF5' } },
-    font: { bold: true, name: 'Calibri', sz: 10, color: { rgb: '0F2044' } },
-    alignment: { vertical: 'center' },
-  };
-  const MARGIN_STYLE = {
-    fill: { patternType: 'solid', fgColor: { rgb: 'F5F7FA' } },
-    font: { italic: true, sz: 9, name: 'Calibri', color: { rgb: '4A5568' } },
-    alignment: { vertical: 'center', horizontal: 'right' },
   };
   const NEG_STYLE = { font: { color: { rgb: 'C0392B' }, name: 'Calibri', sz: 10 } };
-  const TITLE_STYLE = { font: { bold: true, sz: 13, name: 'Calibri', color: { rgb: '0F2044' } } };
+  const TITLE_STYLE = { font: { bold: true, sz: 13, name: 'Calibri', color: { rgb: '1B4332' } } };
   const SUB_HDR_STYLE = { font: { italic: true, sz: 9, name: 'Calibri', color: { rgb: '555555' } } };
-  const GREEN_CELL  = { fill: { patternType: 'solid', fgColor: { rgb: 'D4EFDF' } }, font: { color: { rgb: '1B6B4A' }, bold: true, sz: 10, name: 'Calibri' } };
-  const AMBER_CELL  = { fill: { patternType: 'solid', fgColor: { rgb: 'FAD7A0' } }, font: { color: { rgb: '7D5700' }, bold: true, sz: 10, name: 'Calibri' } };
-  const RED_CELL    = { fill: { patternType: 'solid', fgColor: { rgb: 'FADBD8' } }, font: { color: { rgb: 'C0392B' }, bold: true, sz: 10, name: 'Calibri' } };
-  const GREY_CELL   = { fill: { patternType: 'solid', fgColor: { rgb: 'F0F0F0' } }, font: { color: { rgb: '888888' }, sz: 10, name: 'Calibri' } };
-  const BLUE_CELL   = { fill: { patternType: 'solid', fgColor: { rgb: 'D6EAF8' } }, font: { bold: true, color: { rgb: '154360' }, sz: 10, name: 'Calibri' } };
 
   // Apply consistent styles to a worksheet
   function styleSheet(ws, dataRows, headerRows, totalRowLabels) {
@@ -3488,11 +4570,11 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   // Historical N/A placeholder (em-dash looks cleaner than "N/A")
   const NA = '—';
 
-  // A data row — optional prior + current + YoY + CAGR
-  // For P&L (withCagr=true): Particulars | [prior] | cur | YoY% | CAGR
-  // For BS/CF (withCagr=false): Particulars | [prior] | cur | [YoY%]
+  // A data row — with 4 historical N/A columns prepended + optional prior + current + YoY + CAGR
+  // For P&L (withCagr=true): Particulars | FY20 | FY21 | FY22 | FY23 | [prior] | cur | YoY% | CAGR
+  // For BS/CF (withCagr=false): Particulars | FY20 | FY21 | FY22 | FY23 | [prior] | cur | [YoY%]
   const dr = (label, curr, prior, withCagr) => {
-    const base = [label]; // Particulars only
+    const base = [label, NA, NA, NA, NA]; // Particulars + FY20-FY23 historical
     if (hasPrior) {
       base.push(n(prior));
       base.push(n(curr));
@@ -3507,7 +4589,7 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
 
   // Section-header label row
   const sh = (label) => {
-    const base = [`── ${label}`];
+    const base = [`── ${label}`, null, null, null, null];
     if (hasPrior) { base.push(null); base.push(null); base.push(null); }
     else { base.push(null); }
     return base;
@@ -3515,20 +4597,20 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
 
   // Column widths for financial sheets
   const finCols = hasPrior
-    ? [{ wch: 38 }, { wch: 15 }, { wch: 15 }, { wch: 9 }]
-    : [{ wch: 38 }, { wch: 15 }];
+    ? [{ wch: 38 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 15 }, { wch: 15 }, { wch: 9 }]
+    : [{ wch: 38 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 15 }];
 
   const finColsPL = hasPrior
-    ? [{ wch: 38 }, { wch: 15 }, { wch: 15 }, { wch: 9 }, { wch: 9 }]
-    : [{ wch: 38 }, { wch: 15 }, { wch: 9 }];
+    ? [{ wch: 38 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 15 }, { wch: 15 }, { wch: 9 }, { wch: 9 }]
+    : [{ wch: 38 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 15 }, { wch: 9 }];
 
   const colHdrs = hasPrior
-    ? ['Particulars', fyLabels.pri, fyLabels.cur, 'YoY %']
-    : ['Particulars', fyLabels.cur];
+    ? ['Particulars', 'FY20', 'FY21', 'FY22', 'FY23', fyLabels.pri, fyLabels.cur, 'YoY %']
+    : ['Particulars', 'FY20', 'FY21', 'FY22', 'FY23', fyLabels.cur];
 
   const colHdrsPL = hasPrior
-    ? ['Particulars', fyLabels.pri, fyLabels.cur, 'YoY %', 'CAGR']
-    : ['Particulars', fyLabels.cur, 'CAGR'];
+    ? ['Particulars', 'FY20', 'FY21', 'FY22', 'FY23', fyLabels.pri, fyLabels.cur, 'YoY %', 'CAGR']
+    : ['Particulars', 'FY20', 'FY21', 'FY22', 'FY23', fyLabels.cur, 'CAGR'];
 
   // ── Sheet 0 · Charts Data (inserted first) ────────────────────────────────
   const ebitdaA = n(a.ebitda);
@@ -3550,11 +4632,19 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
     [''],
     [`SECTION 1: Revenue Trend (${currency} in ${unit}) — Suggested: Line or Column chart`],
     ['Year', 'Revenue', 'EBITDA', 'Net Income'],
+    ['FY2020', NA, NA, NA],
+    ['FY2021', NA, NA, NA],
+    ['FY2022', NA, NA, NA],
+    ['FY2023', NA, NA, NA],
     ...(hasPrior ? [[fyLabels.pri, revenueP, ebitdaP, netIncP]] : []),
     [fyLabels.cur, revenueA, ebitdaA, netIncA],
     [''],
     [`SECTION 2: Margin Trends (%) — Suggested: Line chart`],
     ['Year', 'Gross Margin%', 'EBITDA Margin%', 'Net Margin%'],
+    ['FY2020', NA, NA, NA],
+    ['FY2021', NA, NA, NA],
+    ['FY2022', NA, NA, NA],
+    ['FY2023', NA, NA, NA],
     ...(hasPrior ? [[fyLabels.pri, grossMrgP, ebitdaMrgP, netMrgP]] : []),
     [fyLabels.cur, grossMrgA, ebitdaMrgA, netMrgA],
     [''],
@@ -3572,20 +4662,19 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   ];
   const wsCharts = XLSX.utils.aoa_to_sheet(chartRows);
   wsCharts['!cols'] = [{ wch: 36 }, { wch: 15 }, { wch: 15 }, { wch: 15 }];
-  wsCharts['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: chartRows.length - 1, c: 3 } });
-  // Style chart section headers and column header rows (computed dynamically based on hasPrior)
-  const chartSectHdrs = hasPrior ? [3, 8, 13, 19] : [3, 7, 11, 17];
-  const chartColHdrs  = hasPrior ? [4, 9, 14, 20] : [4, 8, 12, 18];
-  chartSectHdrs.forEach(r => {
+  // Style chart section headers (rows 3, 12, 21, 26)
+  [3, 12, 21, 26].forEach(r => {
     const addr = XLSX.utils.encode_cell({ r, c: 0 });
     if (wsCharts[addr]) wsCharts[addr].s = { ...HDR_STYLE };
   });
-  chartColHdrs.forEach(r => {
+  // Style column header rows (rows 4, 13, 22, 27)
+  [4, 13, 22, 27].forEach(r => {
     for (let c = 0; c < 4; c++) {
       const addr = XLSX.utils.encode_cell({ r, c });
       if (wsCharts[addr]) wsCharts[addr].s = { ...HDR_STYLE };
     }
   });
+  wsCharts['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: chartRows.length - 1, c: 3 } });
 
   // ── Sheet 1 · Cover & Summary (inserted first) ────────────────────────────
   const qualityScore = (() => {
@@ -3595,526 +4684,259 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   })();
   const qualityLabel = qualityScore >= 80 ? 'HIGH — Data complete' : qualityScore >= 50 ? 'MEDIUM — Some gaps' : 'LOW — Extraction limited';
 
-  // Financial health scoring for Summary sheet
-  const health = (() => {
-    const netMargin = (a.netIncome != null && a.revenue != null && a.revenue > 0) ? (a.netIncome / a.revenue) * 100 : null;
-    const ebitdaMargin = (a.ebitda != null && a.revenue != null && a.revenue > 0) ? (a.ebitda / a.revenue) * 100 : null;
-    const currentRatio = (a.currentAssets != null && a.currentLiabilities != null && a.currentLiabilities > 0) ? a.currentAssets / a.currentLiabilities : null;
-    const debtEquity = (a.totalDebt != null && a.totalEquity != null && a.totalEquity > 0) ? a.totalDebt / a.totalEquity : null;
-    const revGrowth = (hasPrior && a.revenue != null && p.revenue != null && p.revenue > 0) ? ((a.revenue - p.revenue) / p.revenue) * 100 : null;
-    return {
-      profitability: netMargin != null ? (netMargin > 10 ? 'GREEN' : netMargin > 3 ? 'AMBER' : 'RED') : 'GREY',
-      liquidity:     currentRatio != null ? (currentRatio >= 1.5 ? 'GREEN' : currentRatio >= 1.0 ? 'AMBER' : 'RED') : 'GREY',
-      leverage:      debtEquity != null ? (debtEquity <= 0.5 ? 'GREEN' : debtEquity <= 1.5 ? 'AMBER' : 'RED') : 'GREY',
-      growth:        revGrowth != null ? (revGrowth > 15 ? 'GREEN' : revGrowth > 0 ? 'AMBER' : 'RED') : 'GREY',
-    };
-  })();
-  const hLabel = { GREEN: 'Healthy', AMBER: 'Moderate', RED: 'Needs Attention', GREY: 'Insufficient Data' };
-  const fmtV = (v) => v != null ? `${currency === 'INR' ? '₹' : currency} ${v.toLocaleString('en-IN')} ${unit}` : '—';
-
-  // Issue 4: Best-available values — never show dash if derivable
-  const _summaryRevenue  = a.revenue ?? (a.totalIncome != null ? a.totalIncome - (a.otherIncome ?? 0) : null) ?? a.totalIncome;
-  const _summaryRevNote  = a.revenue != null ? '' : a.totalIncome != null ? ' (est.)' : '';
-  const _summaryRevenueFmt = _summaryRevenue != null ? fmtV(_summaryRevenue) + _summaryRevNote : '—';
-
-  const _derivedEbitda   = (a.operatingProfit != null || (a.depreciation != null && a.interestExpense != null))
-    ? ((a.operatingProfit ?? 0) + (a.depreciation ?? 0) + (a.interestExpense ?? 0)) : null;
-  const _summaryEbitda   = a.ebitda ?? _derivedEbitda;
-  const _summaryEbitNote = a.ebitda != null ? '' : _derivedEbitda != null ? ' (derived)' : '';
-  const _summaryEbitdaFmt = _summaryEbitda != null ? fmtV(_summaryEbitda) + _summaryEbitNote : '—';
-
-  const _rev4Margin = _summaryRevenue;
-  const _summaryNetMargin = (a.netIncome != null && _rev4Margin != null && _rev4Margin > 0)
-    ? `${(a.netIncome / _rev4Margin * 100).toFixed(1)}%` : null;
-  const _summaryNetPAT = a.netIncome != null ? fmtV(a.netIncome) + (_summaryNetMargin ? `  (${_summaryNetMargin} margin)` : '') : '—';
-
-  const _summaryRevenuePri  = hasPrior ? (p.revenue ?? (p.totalIncome != null ? p.totalIncome - (p.otherIncome ?? 0) : null) ?? p.totalIncome) : null;
-  const _summaryRevenuePriFmt = _summaryRevenuePri != null ? fmtV(_summaryRevenuePri) + (p.revenue != null ? '' : ' (est.)') : (hasPrior ? '—' : '');
-  const _derivedEbitdaP  = hasPrior && (p.operatingProfit != null || (p.depreciation != null && p.interestExpense != null))
-    ? ((p.operatingProfit ?? 0) + (p.depreciation ?? 0) + (p.interestExpense ?? 0)) : null;
-  const _summaryEbitdaPriFmt = hasPrior ? (p.ebitda != null ? fmtV(p.ebitda) : _derivedEbitdaP != null ? fmtV(_derivedEbitdaP) + ' (derived)' : '—') : '';
-
-  const summaryRows = [
-    [`${name} — Financial Analysis Summary`],
-    [subHdr],
+  const coverRows = [
+    ['FinSight AI — Financial Analysis Report'],
     [''],
-    ['COMPANY PROFILE'],
     ['Company Name', name],
-    ['CIN / Registration', cin || (documentMetadata.isMCA ? 'MCA Filing' : '—')],
+    ['CIN', cin || (documentMetadata.isMCA ? 'MCA Filing (CIN not detected)' : '—')],
     ['Reporting Period', period || '—'],
-    ['Currency & Unit', `${currency} — ${unit}`],
+    ['Currency', currency],
+    ['Unit', unit],
     ['Document Type', documentMetadata.docType || 'Unknown'],
-    ['Sector', documentMetadata.sector || '—'],
+    ['Indian MCA Filing', documentMetadata.isMCA ? 'Yes' : 'No'],
     [''],
-    ['FINANCIAL HEALTH SCORECARD'],
-    ['Pillar', 'Status', 'Indicator'],
-    ['Profitability', hLabel[health.profitability], health.profitability],
-    ['Liquidity', hLabel[health.liquidity], health.liquidity],
-    ['Leverage', hLabel[health.leverage], health.leverage],
-    ['Revenue Growth', hLabel[health.growth], health.growth],
-    [''],
-    ['KEY FINANCIAL METRICS', fyLabels.cur, hasPrior ? fyLabels.pri : ''],
-    ['Revenue from Operations', _summaryRevenueFmt, _summaryRevenuePriFmt],
-    ['EBITDA', _summaryEbitdaFmt, _summaryEbitdaPriFmt],
-    ['Net Profit (PAT)', _summaryNetPAT, hasPrior ? (p.netIncome != null ? fmtV(p.netIncome) : '—') : ''],
-    ['Total Assets', a.totalAssets != null ? fmtV(a.totalAssets) : '—', hasPrior ? (p.totalAssets != null ? fmtV(p.totalAssets) : '—') : ''],
-    ['Total Equity', a.totalEquity != null ? fmtV(a.totalEquity) : '—', hasPrior ? (p.totalEquity != null ? fmtV(p.totalEquity) : '—') : ''],
-    [''],
-    ['DATA QUALITY'],
-    ['Overall Quality Score', `${qualityScore}% — ${qualityLabel}`],
+    ['DATA QUALITY ASSESSMENT'],
+    ['Overall Score', `${qualityScore}% — ${qualityLabel}`],
     ['Financial Pages Detected', (documentMetadata.financialPageNums || []).length || '—'],
-    ['Vision Pages Processed', (documentMetadata.visionPageLog || []).filter(vp => vp.itemCount > 0).length || '—'],
+    ['Claude Vision Pages Processed', (documentMetadata.visionPageLog || []).filter(p => p.itemCount > 0).length || '—'],
     ['Sanity Blocks Applied', (visionStructuredData.errorLog || []).length],
     [''],
-    ['Prepared by FinSight AI  |  finsightai.org  |  ' + todayStr],
+    ['KEY FINANCIAL METRICS'],
+    ['Revenue', a.revenue != null ? `₹${a.revenue.toLocaleString('en-IN')} ${unit}` : '—'],
+    ['Net Profit (PAT)', a.netIncome != null ? `₹${a.netIncome.toLocaleString('en-IN')} ${unit}` : '—'],
+    ['EBITDA', a.ebitda != null ? `₹${a.ebitda.toLocaleString('en-IN')} ${unit}` : '—'],
+    ['Total Assets', a.totalAssets != null ? `₹${a.totalAssets.toLocaleString('en-IN')} ${unit}` : '—'],
+    ['Total Equity', a.totalEquity != null ? `₹${a.totalEquity.toLocaleString('en-IN')} ${unit}` : '—'],
+    [''],
+    ['Prepared by', 'FinSight AI | finsightai.org'],
+    ['Generated on', todayStr],
+    ['Authors', AUTHOR_NAME],
   ];
-  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
-  wsSummary['!cols'] = [{ wch: 28 }, { wch: 38 }, { wch: 20 }];
-  // Style Summary sheet
-  const sumSectRows = [3, 11, 18, 25];
-  const sumHdrRows = [12];
-  sumSectRows.forEach(r => {
-    const addr = XLSX.utils.encode_cell({ r, c: 0 });
-    if (wsSummary[addr]) wsSummary[addr].s = HDR_STYLE;
-  });
-  sumHdrRows.forEach(r => {
-    for (let c = 0; c < 3; c++) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      if (wsSummary[addr]) wsSummary[addr].s = HDR_STYLE;
+  const wsCover = XLSX.utils.aoa_to_sheet(coverRows);
+  wsCover['!cols'] = [{ wch: 28 }, { wch: 45 }];
+  // Style cover sheet
+  const coverTitleAddr = XLSX.utils.encode_cell({ r: 0, c: 0 });
+  if (wsCover[coverTitleAddr]) wsCover[coverTitleAddr].s = { ...TITLE_STYLE, font: { ...TITLE_STYLE.font, sz: 16 } };
+  ['DATA QUALITY ASSESSMENT', 'KEY FINANCIAL METRICS'].forEach(section => {
+    const idx = coverRows.findIndex(r => r[0] === section);
+    if (idx >= 0) {
+      const a = XLSX.utils.encode_cell({ r: idx, c: 0 });
+      if (wsCover[a]) wsCover[a].s = { ...HDR_STYLE };
     }
   });
-  // Traffic light colours for health scorecard (rows 13-16)
-  [13, 14, 15, 16].forEach(r => {
-    const statusCell = wsSummary[XLSX.utils.encode_cell({ r, c: 2 })];
-    if (!statusCell) return;
-    const st = statusCell.v;
-    const style = st === 'GREEN' ? GREEN_CELL : st === 'AMBER' ? AMBER_CELL : st === 'RED' ? RED_CELL : GREY_CELL;
-    wsSummary[XLSX.utils.encode_cell({ r, c: 1 })].s = style;
-    statusCell.s = style;
-  });
-  if (wsSummary['A1']) wsSummary['A1'].s = { ...TITLE_STYLE, font: { ...TITLE_STYLE.font, sz: 16 } };
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+  XLSX.utils.book_append_sheet(wb, wsCover, 'Cover');
+  XLSX.utils.book_append_sheet(wb, wsCharts, 'Chart Data');
 
   // ── Sheet 2 · P&L ─────────────────────────────────────────────────────────
-  // Margin row: percentage of total income, with pp change as YoY
-  const totalIncome  = a.revenue  != null ? a.revenue  + (a.otherIncome  ?? 0) : null;
-  const totalIncomeP = hasPrior && p.revenue != null ? p.revenue + (p.otherIncome ?? 0) : null;
-  const mrow = (label, curNum, curDen, priNum, priDen) => {
-    const fmtPct = (num, den) => (num != null && den != null && den !== 0) ? `${((num / den) * 100).toFixed(1)}%` : NA;
-    const bps = (curNum != null && curDen && priNum != null && priDen)
-      ? (() => { const d = (curNum / curDen - priNum / priDen) * 100; return `${d >= 0 ? '+' : ''}${d.toFixed(1)} pp`; })() : NA;
-    const base = [label];
-    if (hasPrior) { base.push(fmtPct(priNum, priDen)); base.push(fmtPct(curNum, curDen)); base.push(bps); base.push(NA); }
-    else { base.push(fmtPct(curNum, curDen)); base.push(NA); }
-    return base;
-  };
-
-  // plMeta tracks row type for targeted styling (parallel to plRows)
-  const plMeta = [];
-  const plR = (type, row) => { plMeta.push(type); return row; };
-
   const plRows = [
-    plR('title',   [`${name} — Profit & Loss Statement`]),
-    plR('subhdr',  [subHdr]),
-    plR('blank',   ['']),
-    plR('hdr',     colHdrsPL),
-    // ── Revenue ──
-    plR('data',    dr('Revenue from Operations',           a.revenue,         p.revenue,         true)),
-    plR('data',    dr('Other Income',                      null,              null,              true)),
-    plR('total',   dr('Total Income',                      totalIncome,       totalIncomeP,      true)),
-    plR('blank',   ['']),
-    // ── Expenses ──
-    plR('sect',    sh('EXPENSES')),
-    plR('data',    dr('Cost of Materials Consumed',        null,              null,              true)),
-    plR('data',    dr('Purchases of Stock in Trade',       null,              null,              true)),
-    plR('data',    dr('Changes in Inventories',            null,              null,              true)),
-    plR('data',    dr('Employee Benefit Expenses',         null,              null,              true)),
-    plR('data',    dr('Finance Costs',                     a.interestExpense, p.interestExpense, true)),
-    plR('data',    dr('Depreciation and Amortisation',     a.depreciation,    p.depreciation,    true)),
-    plR('data',    dr('Other Expenses',                    null,              null,              true)),
-    plR('total',   dr('Total Expenses',                    a.cogs,            p.cogs,            true)),
-    plR('blank',   ['']),
-    // ── Profitability ──
-    plR('subtotal',dr(  'Gross Profit / (Loss)',            a.grossProfit,     p.grossProfit,     true)),
-    plR('margin',  mrow('  Gross Margin %',               a.grossProfit,     totalIncome,       p.grossProfit,   totalIncomeP)),
-    plR('subtotal',dr('EBITDA',                            a.ebitda,          p.ebitda,          true)),
-    plR('margin',  mrow('  EBITDA Margin %',               a.ebitda,          totalIncome,       p.ebitda,        totalIncomeP)),
-    plR('subtotal',dr('Operating Profit (EBIT)',           a.operatingProfit, p.operatingProfit, true)),
-    plR('margin',  mrow('  EBIT Margin %',                 a.operatingProfit, totalIncome,       p.operatingProfit, totalIncomeP)),
-    plR('subtotal',dr('Profit Before Tax (PBT)',           a.pbt,             p.pbt,             true)),
-    plR('margin',  mrow('  PBT Margin %',                  a.pbt,             totalIncome,       p.pbt,           totalIncomeP)),
-    plR('data',    dr('Tax Expense',                       a.tax,             p.tax,             true)),
-    plR('data',    dr('  Current Tax',                     null,              null,              true)),
-    plR('data',    dr('  Deferred Tax',                    null,              null,              true)),
-    plR('total',   dr('Net Profit / (Loss) — PAT',         a.netIncome,       p.netIncome,       true)),
-    plR('margin',  mrow('  Net Margin %',                  a.netIncome,       totalIncome,       p.netIncome,     totalIncomeP)),
-    plR('blank',   ['']),
-    plR('data',    dr('EPS — Basic',                       null,              null,              true)),
-    plR('data',    dr('EPS — Diluted',                     null,              null,              true)),
+    [`${name} — Profit & Loss Statement`],
+    [subHdr],
+    [''],
+    colHdrsPL,
+    sh('REVENUE'),
+    dr('Total Revenue',                a.revenue,         p.revenue,         true),
+    dr('Cost of Goods Sold (COGS)',     a.cogs,            p.cogs,            true),
+    dr('Gross Profit',                 a.grossProfit,     p.grossProfit,     true),
+    [''],
+    sh('OPERATING EXPENSES'),
+    dr('Depreciation & Amortisation',  a.depreciation,    p.depreciation,    true),
+    dr('Interest / Finance Costs',     a.interestExpense, p.interestExpense, true),
+    [''],
+    sh('PROFITABILITY'),
+    dr('EBITDA',                       a.ebitda,          p.ebitda,          true),
+    dr('Operating Profit (EBIT)',      a.operatingProfit, p.operatingProfit, true),
+    dr('Profit Before Tax (PBT)',      a.pbt,             p.pbt,             true),
+    dr('Tax',                          a.tax,             p.tax,             true),
+    dr('Net Income / PAT',             a.netIncome,       p.netIncome,       true),
   ];
   const wsPL = XLSX.utils.aoa_to_sheet(plRows);
   wsPL['!cols'] = finColsPL;
-  wsPL['!freeze'] = { xSplit: 1, ySplit: 4 };
-  // Apply row-level styles
-  plMeta.forEach((type, r) => {
-    const numC = (plRows[r] || []).length;
-    for (let c = 0; c < numC; c++) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      if (!wsPL[addr]) continue;
-      const isNeg = typeof wsPL[addr].v === 'number' && wsPL[addr].v < 0;
-      if (type === 'title')   wsPL[addr].s = TITLE_STYLE;
-      else if (type === 'subhdr') wsPL[addr].s = SUB_HDR_STYLE;
-      else if (type === 'hdr')    wsPL[addr].s = HDR_STYLE;
-      else if (type === 'sect')   wsPL[addr].s = SECT_HDR_STYLE;
-      else if (type === 'total')  wsPL[addr].s = { ...TOTAL_STYLE, ...(isNeg ? { font: { ...TOTAL_STYLE.font, color: { rgb: 'FF4444' } } } : {}) };
-      else if (type === 'subtotal') wsPL[addr].s = { ...SUBTOTAL_STYLE };
-      else if (type === 'margin')  wsPL[addr].s = MARGIN_STYLE;
-      else if (type === 'data') wsPL[addr].s = { ...(r % 2 === 0 ? ALT_STYLE : { alignment: { vertical: 'center' } }), ...(isNeg ? NEG_STYLE : {}) };
-    }
-  });
+  styleSheet(wsPL, plRows, 4, ['gross profit', 'ebitda', 'net income / pat', 'total revenue']);
   XLSX.utils.book_append_sheet(wb, wsPL, 'P&L');
 
-  // ── Sheet 3 · Balance Sheet ───────────────────────────────────────────────
-  const bsMeta = [];
-  const bsR = (type, row) => { bsMeta.push(type); return row; };
-  // Issue 3: Balance check using 2% tolerance (not absolute threshold)
-  const balanceCheck = (() => {
-    const tE = a.totalEquity ?? 0;
-    const tL = a.totalLiabilities ?? 0;
-    if (a.totalAssets == null || a.totalAssets === 0) return null;
-    const diff = Math.abs(a.totalAssets - (tE + tL));
-    const pct  = diff / Math.abs(a.totalAssets);
-    return pct < 0.02 ? 'BALANCED ✓' : `⚠ Off by ${diff.toFixed(0)} ${unit} (${(pct*100).toFixed(1)}%)`;
-  })();
+  // ── Sheet 2 · Balance Sheet ───────────────────────────────────────────────
   const bsRows = [
-    bsR('title',   [`${name} — Balance Sheet`]),
-    bsR('subhdr',  [subHdr]),
-    bsR('blank',   ['']),
-    bsR('hdr',     colHdrs),
-    // ── Equity & Liabilities ──
-    bsR('sect',    sh('EQUITY & LIABILITIES')),
-    bsR('data',    dr('Share Capital',                   null,                    null)),
-    bsR('data',    dr('Reserves & Surplus',              null,                    null)),
-    bsR('total',   dr('Total Equity / Net Worth',        a.totalEquity,           p.totalEquity)),
-    bsR('sect',    sh('NON-CURRENT LIABILITIES')),
-    bsR('data',    dr('Long-term Borrowings',            a.longTermDebt,          p.longTermDebt)),
-    bsR('data',    dr('Deferred Tax Liabilities',        null,                    null)),
-    bsR('data',    dr('Other Non-Current Liabilities',   null,                    null)),
-    bsR('subtotal',dr('Total NCL',                       a.nonCurrentLiabilities, p.nonCurrentLiabilities)),
-    bsR('sect',    sh('CURRENT LIABILITIES')),
-    bsR('data',    dr('Short-term Borrowings',           a.shortTermDebt,         p.shortTermDebt)),
-    bsR('data',    dr('Trade Payables',                  a.tradePayables,         p.tradePayables)),
-    bsR('data',    dr('Other Current Liabilities',       null,                    null)),
-    bsR('data',    dr('Short-term Provisions',           null,                    null)),
-    bsR('subtotal',dr('Total Current Liabilities',       a.currentLiabilities,    p.currentLiabilities)),
-    bsR('total',   dr('TOTAL EQUITY & LIABILITIES',      a.totalAssets,           p.totalAssets)),
-    bsR('blank',   ['']),
-    // ── Assets ──
-    bsR('sect',    sh('NON-CURRENT ASSETS')),
-    bsR('data',    dr('Property, Plant & Equipment',     a.fixedAssets,           p.fixedAssets)),
-    bsR('data',    dr('Intangibles / Goodwill',          null,                    null)),
-    bsR('data',    dr('Capital Work-in-Progress',        null,                    null)),
-    bsR('data',    dr('Non-current Investments',         null,                    null)),
-    bsR('data',    dr('Deferred Tax Assets',             null,                    null)),
-    bsR('data',    dr('LT Loans & Advances',             null,                    null)),
-    bsR('data',    dr('Other Non-Current Assets',        null,                    null)),
-    bsR('subtotal',dr('Total NCA',                       a.nonCurrentAssets,      p.nonCurrentAssets)),
-    bsR('sect',    sh('CURRENT ASSETS')),
-    bsR('data',    dr('Inventories',                     a.inventory,             p.inventory)),
-    bsR('data',    dr('Trade Receivables',               a.receivables,           p.receivables)),
-    bsR('data',    dr('Cash & Equivalents',              a.cash,                  p.cash)),
-    bsR('data',    dr('Short-term Investments',          null,                    null)),
-    bsR('data',    dr('ST Loans & Advances',             null,                    null)),
-    bsR('data',    dr('Other Current Assets',            null,                    null)),
-    bsR('subtotal',dr('Total Current Assets',            a.currentAssets,         p.currentAssets)),
-    bsR('total',   dr('TOTAL ASSETS',                    a.totalAssets,           p.totalAssets)),
-    bsR('data',    ['Balance Check', balanceCheck ?? '—', ...Array(Math.max(0, colHdrs.length - 2)).fill('')]),
+    [`${name} — Balance Sheet`],
+    [subHdr],
+    [''],
+    colHdrs,
+    sh('ASSETS'),
+    dr('Total Assets',                 a.totalAssets,           p.totalAssets),
+    dr('  Current Assets',             a.currentAssets,         p.currentAssets),
+    dr('    Cash & Equivalents',       a.cash,                  p.cash),
+    dr('    Trade Receivables',        a.receivables,           p.receivables),
+    dr('    Inventory',                a.inventory,             p.inventory),
+    dr('  Non-Current Assets',         a.nonCurrentAssets,      p.nonCurrentAssets),
+    dr('    Fixed Assets / PPE',       a.fixedAssets,           p.fixedAssets),
+    [''],
+    sh('LIABILITIES'),
+    dr('Total Liabilities',            a.totalLiabilities,      p.totalLiabilities),
+    dr('  Current Liabilities',        a.currentLiabilities,    p.currentLiabilities),
+    dr('    Trade Payables',           a.tradePayables,         p.tradePayables),
+    dr('    Short-term Borrowings',    a.shortTermDebt,         p.shortTermDebt),
+    dr('  Non-Current Liabilities',    a.nonCurrentLiabilities, p.nonCurrentLiabilities),
+    dr('    Long-term Borrowings',     a.longTermDebt,          p.longTermDebt),
+    dr('  Total Debt',                 a.totalDebt,             p.totalDebt),
+    [''],
+    sh('EQUITY'),
+    dr('Total Equity / Net Worth',     a.totalEquity,           p.totalEquity),
+    [''],
+    sh('WORKING CAPITAL'),
+    dr('Working Capital',              a.workingCapital,        p.workingCapital),
   ];
   const wsBS = XLSX.utils.aoa_to_sheet(bsRows);
   wsBS['!cols'] = finCols;
-  wsBS['!freeze'] = { xSplit: 1, ySplit: 4 };
-  bsMeta.forEach((type, r) => {
-    const numC = (bsRows[r] || []).length;
-    for (let c = 0; c < numC; c++) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      if (!wsBS[addr]) continue;
-      const isNeg = typeof wsBS[addr].v === 'number' && wsBS[addr].v < 0;
-      if (type === 'title')    wsBS[addr].s = TITLE_STYLE;
-      else if (type === 'subhdr')   wsBS[addr].s = SUB_HDR_STYLE;
-      else if (type === 'hdr')      wsBS[addr].s = HDR_STYLE;
-      else if (type === 'sect')     wsBS[addr].s = SECT_HDR_STYLE;
-      else if (type === 'total')    wsBS[addr].s = { ...TOTAL_STYLE, ...(isNeg ? { font: { ...TOTAL_STYLE.font, color: { rgb: 'FF4444' } } } : {}) };
-      else if (type === 'subtotal') wsBS[addr].s = SUBTOTAL_STYLE;
-      else if (type === 'data')     wsBS[addr].s = { ...(r % 2 === 0 ? ALT_STYLE : { alignment: { vertical: 'center' } }), ...(isNeg ? NEG_STYLE : {}) };
-    }
-  });
+  styleSheet(wsBS, bsRows, 4, ['total assets', 'total liabilities', 'total equity / net worth', '  total debt']);
   XLSX.utils.book_append_sheet(wb, wsBS, 'Balance Sheet');
 
-  // ── Sheet 4 · Cash Flow ───────────────────────────────────────────────────
-  const cfMeta = [];
-  const cfR = (type, row) => { cfMeta.push(type); return row; };
-  const netCashChange = (a.operatingCashFlow != null || a.investingCashFlow != null || a.financingCashFlow != null)
-    ? (a.operatingCashFlow ?? 0) + (a.investingCashFlow ?? 0) + (a.financingCashFlow ?? 0) : null;
-  const netCashChangeP = hasPrior ? (p.operatingCashFlow ?? 0) + (p.investingCashFlow ?? 0) + (p.financingCashFlow ?? 0) : null;
-  const fcfVal  = (a.operatingCashFlow != null) ? a.operatingCashFlow : null; // Capex sub-item not available
-  const fcfValP = hasPrior && p.operatingCashFlow != null ? p.operatingCashFlow : null;
+  // ── Sheet 3 · Cash Flow ───────────────────────────────────────────────────
   const cfRows = [
-    cfR('title',   [`${name} — Cash Flow Statement`]),
-    cfR('subhdr',  [subHdr]),
-    cfR('blank',   ['']),
-    cfR('hdr',     colHdrs),
-    // ── Operating ──
-    cfR('sect',    sh('OPERATING ACTIVITIES')),
-    cfR('data',    dr('Profit Before Tax (PBT)',              a.pbt,               p.pbt)),
-    cfR('data',    dr('Add: Depreciation & Amortisation',    a.depreciation,      p.depreciation)),
-    cfR('data',    dr('Add: Finance Costs',                  a.interestExpense,   p.interestExpense)),
-    cfR('sect',    sh('Working Capital Changes')),
-    cfR('data',    dr('(Increase) / Decrease in Inventories', null,               null)),
-    cfR('data',    dr('(Increase) / Decrease in Receivables', null,               null)),
-    cfR('data',    dr('Increase / (Decrease) in Payables',    null,               null)),
-    cfR('data',    dr('Taxes Paid',                           null,               null)),
-    cfR('total',   dr('Net Cash from Operating (CFO)',         a.operatingCashFlow, p.operatingCashFlow)),
-    // ── Investing ──
-    cfR('sect',    sh('INVESTING ACTIVITIES')),
-    cfR('data',    dr('Capital Expenditure (Capex)',           null,               null)),
-    cfR('data',    dr('Sale of Fixed Assets',                  null,               null)),
-    cfR('data',    dr('Investments (Net)',                     null,               null)),
-    cfR('data',    dr('Interest Received',                     null,               null)),
-    cfR('total',   dr('Net Cash from Investing (CFI)',          a.investingCashFlow, p.investingCashFlow)),
-    // ── Financing ──
-    cfR('sect',    sh('FINANCING ACTIVITIES')),
-    cfR('data',    dr('Share Issuance / (Buyback)',            null,               null)),
-    cfR('data',    dr('Borrowings Raised',                    null,               null)),
-    cfR('data',    dr('Repayment of Borrowings',              null,               null)),
-    cfR('data',    dr('Interest / Finance Costs Paid',        null,               null)),
-    cfR('data',    dr('Dividends Paid',                       null,               null)),
-    cfR('total',   dr('Net Cash from Financing (CFF)',         a.financingCashFlow, p.financingCashFlow)),
-    cfR('blank',   ['']),
-    cfR('subtotal',dr('Net Change in Cash',                   netCashChange,      netCashChangeP)),
-    cfR('data',    dr('Opening Cash Balance',                 null,               null)),
-    cfR('data',    dr('Closing Cash Balance',                 a.cash,             p.cash)),
-    cfR('blank',   ['']),
-    cfR('blue',    dr('Free Cash Flow (CFO − Capex)*',        fcfVal,             fcfValP)),
-    cfR('data',    ['* Capex not separately extracted; FCF = CFO as proxy', ...Array(colHdrs.length - 1).fill('')]),
+    [`${name} — Cash Flow Statement`],
+    [subHdr],
+    [''],
+    colHdrs,
+    dr('Operating Cash Flow (CFO)',    a.operatingCashFlow,  p.operatingCashFlow),
+    dr('Investing Cash Flow (CFI)',    a.investingCashFlow,  p.investingCashFlow),
+    dr('Financing Cash Flow (CFF)',    a.financingCashFlow,  p.financingCashFlow),
   ];
+  // Derive net change only when at least one component is available
+  if (a.operatingCashFlow != null || a.investingCashFlow != null || a.financingCashFlow != null) {
+    const netC = (a.operatingCashFlow ?? 0) + (a.investingCashFlow ?? 0) + (a.financingCashFlow ?? 0);
+    const netP = hasPrior
+      ? (p.operatingCashFlow ?? 0) + (p.investingCashFlow ?? 0) + (p.financingCashFlow ?? 0)
+      : null;
+    cfRows.push(dr('Net Change in Cash', netC, netP));
+  }
   const wsCF = XLSX.utils.aoa_to_sheet(cfRows);
   wsCF['!cols'] = finCols;
-  wsCF['!freeze'] = { xSplit: 1, ySplit: 4 };
-  cfMeta.forEach((type, r) => {
-    const numC = (cfRows[r] || []).length;
-    for (let c = 0; c < numC; c++) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      if (!wsCF[addr]) continue;
-      const isNeg = typeof wsCF[addr].v === 'number' && wsCF[addr].v < 0;
-      if (type === 'title')    wsCF[addr].s = TITLE_STYLE;
-      else if (type === 'subhdr')   wsCF[addr].s = SUB_HDR_STYLE;
-      else if (type === 'hdr')      wsCF[addr].s = HDR_STYLE;
-      else if (type === 'sect')     wsCF[addr].s = SECT_HDR_STYLE;
-      else if (type === 'total')    wsCF[addr].s = { ...TOTAL_STYLE, ...(isNeg ? { font: { ...TOTAL_STYLE.font, color: { rgb: 'FF4444' } } } : {}) };
-      else if (type === 'subtotal') wsCF[addr].s = SUBTOTAL_STYLE;
-      else if (type === 'blue')     wsCF[addr].s = BLUE_CELL;
-      else if (type === 'data')     wsCF[addr].s = { ...(r % 2 === 0 ? ALT_STYLE : { alignment: { vertical: 'center' } }), ...(isNeg ? NEG_STYLE : {}) };
-    }
-  });
-  if (a.operatingCashFlow != null || a.investingCashFlow != null || a.financingCashFlow != null) {
-    XLSX.utils.book_append_sheet(wb, wsCF, 'Cash Flow');
-  }
+  styleSheet(wsCF, cfRows, 4, ['net change in cash']);
+  XLSX.utils.book_append_sheet(wb, wsCF, 'Cash Flow');
 
-  // ── Sheet 5 · Key Ratios — sector-aware benchmarks ────────────────────────
-  const detectedSectorRaw = documentMetadata.sector || '';
-  const detectedSector = detectedSectorRaw.toLowerCase();
-  const sectorBenchmarkMap = {
-    pharmaceuticals:  { 'Gross Margin (%)': ['55','70'], 'EBITDA Margin (%)': ['18','28'], 'Net Margin (%)': ['12','22'], 'Operating Margin (%)': ['15','25'], 'Return on Equity (%)': ['15','25'], 'Return on Assets (%)': ['10','18'], 'Return on Capital Employed (%)': ['15','25'], 'Current Ratio': ['2.0','3.5'], 'Quick Ratio': ['1.5','3.0'], 'Debt-to-Equity': ['0.0','0.5'], 'Interest Coverage': ['5.0','15.0'], 'Inventory Turnover (x)': ['4','8'], 'Receivable Days (DSO)': ['45','90'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.4','0.9'] },
-    chemicals:        { 'Gross Margin (%)': ['30','45'], 'EBITDA Margin (%)': ['15','22'], 'Net Margin (%)': ['8','15'], 'Operating Margin (%)': ['10','18'], 'Return on Equity (%)': ['12','20'], 'Return on Assets (%)': ['7','14'], 'Return on Capital Employed (%)': ['12','20'], 'Current Ratio': ['1.5','2.5'], 'Quick Ratio': ['1.0','1.8'], 'Debt-to-Equity': ['0.2','1.0'], 'Interest Coverage': ['4.0','10.0'], 'Inventory Turnover (x)': ['5','10'], 'Receivable Days (DSO)': ['45','75'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.6','1.2'] },
-    manufacturing:    { 'Gross Margin (%)': ['20','35'], 'EBITDA Margin (%)': ['8','15'], 'Net Margin (%)': ['4','10'], 'Operating Margin (%)': ['7','14'], 'Return on Equity (%)': ['8','15'], 'Return on Assets (%)': ['6','12'], 'Return on Capital Employed (%)': ['12','18'], 'Current Ratio': ['1.5','2.5'], 'Quick Ratio': ['0.8','1.2'], 'Debt-to-Equity': ['0.5','1.5'], 'Interest Coverage': ['3.0','6.0'], 'Inventory Turnover (x)': ['4','8'], 'Receivable Days (DSO)': ['45','75'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['0.5','1.0'] },
-    fmcg:             { 'Gross Margin (%)': ['40','60'], 'EBITDA Margin (%)': ['15','22'], 'Net Margin (%)': ['8','15'], 'Operating Margin (%)': ['12','20'], 'Return on Equity (%)': ['25','40'], 'Return on Assets (%)': ['12','20'], 'Return on Capital Employed (%)': ['20','35'], 'Current Ratio': ['1.0','2.0'], 'Quick Ratio': ['0.6','1.0'], 'Debt-to-Equity': ['0.1','0.5'], 'Interest Coverage': ['8','20'], 'Inventory Turnover (x)': ['8','15'], 'Receivable Days (DSO)': ['15','30'], 'Payable Days (DPO)': ['30','60'], 'Asset Turnover (x)': ['1.0','2.0'] },
-    it:               { 'Gross Margin (%)': ['60','80'], 'EBITDA Margin (%)': ['20','30'], 'Net Margin (%)': ['15','25'], 'Operating Margin (%)': ['18','30'], 'Return on Equity (%)': ['18','30'], 'Return on Assets (%)': ['15','25'], 'Return on Capital Employed (%)': ['20','35'], 'Current Ratio': ['2.0','4.0'], 'Quick Ratio': ['2.0','4.0'], 'Debt-to-Equity': ['0.0','0.2'], 'Interest Coverage': ['20','50'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['45','90'], 'Payable Days (DPO)': ['15','30'], 'Asset Turnover (x)': ['1.0','2.5'] },
-    banking:          { 'Gross Margin (%)': ['—','—'], 'EBITDA Margin (%)': ['—','—'], 'Net Margin (%)': ['10','20'], 'Operating Margin (%)': ['—','—'], 'Return on Equity (%)': ['10','18'], 'Return on Assets (%)': ['1.0','2.0'], 'Return on Capital Employed (%)': ['—','—'], 'Current Ratio': ['—','—'], 'Quick Ratio': ['—','—'], 'Debt-to-Equity': ['—','—'], 'Interest Coverage': ['—','—'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['—','—'], 'Payable Days (DPO)': ['—','—'], 'Asset Turnover (x)': ['—','—'] },
-    'real estate':    { 'Gross Margin (%)': ['25','45'], 'EBITDA Margin (%)': ['20','35'], 'Net Margin (%)': ['8','18'], 'Operating Margin (%)': ['15','30'], 'Return on Equity (%)': ['8','15'], 'Return on Assets (%)': ['3','8'], 'Return on Capital Employed (%)': ['8','15'], 'Current Ratio': ['1.0','2.0'], 'Quick Ratio': ['0.5','1.0'], 'Debt-to-Equity': ['0.5','2.5'], 'Interest Coverage': ['2.0','5.0'], 'Inventory Turnover (x)': ['0.3','1.0'], 'Receivable Days (DSO)': ['60','120'], 'Payable Days (DPO)': ['30','90'], 'Asset Turnover (x)': ['0.1','0.4'] },
-    infrastructure:   { 'Gross Margin (%)': ['20','40'], 'EBITDA Margin (%)': ['25','45'], 'Net Margin (%)': ['5','15'], 'Operating Margin (%)': ['15','35'], 'Return on Equity (%)': ['8','15'], 'Return on Assets (%)': ['3','8'], 'Return on Capital Employed (%)': ['8','14'], 'Current Ratio': ['1.0','1.5'], 'Quick Ratio': ['0.8','1.2'], 'Debt-to-Equity': ['1.0','3.0'], 'Interest Coverage': ['2.0','4.0'], 'Inventory Turnover (x)': ['—','—'], 'Receivable Days (DSO)': ['60','120'], 'Payable Days (DPO)': ['30','90'], 'Asset Turnover (x)': ['0.2','0.5'] },
-    trading:          { 'Gross Margin (%)': ['5','20'], 'EBITDA Margin (%)': ['2','8'], 'Net Margin (%)': ['1','5'], 'Operating Margin (%)': ['1.5','6'], 'Return on Equity (%)': ['10','20'], 'Return on Assets (%)': ['4','10'], 'Return on Capital Employed (%)': ['8','15'], 'Current Ratio': ['1.2','2.0'], 'Quick Ratio': ['0.8','1.5'], 'Debt-to-Equity': ['0.3','1.5'], 'Interest Coverage': ['2.0','6.0'], 'Inventory Turnover (x)': ['8','20'], 'Receivable Days (DSO)': ['20','50'], 'Payable Days (DPO)': ['20','45'], 'Asset Turnover (x)': ['1.5','4.0'] },
-    default:          { 'Gross Margin (%)': ['25','45'], 'EBITDA Margin (%)': ['10','20'], 'Net Margin (%)': ['5','12'], 'Operating Margin (%)': ['7','16'], 'Return on Equity (%)': ['10','20'], 'Return on Assets (%)': ['5','12'], 'Return on Capital Employed (%)': ['10','18'], 'Current Ratio': ['1.2','2.0'], 'Quick Ratio': ['0.8','1.5'], 'Debt-to-Equity': ['0.3','1.5'], 'Interest Coverage': ['3.0','8.0'], 'Inventory Turnover (x)': ['3','8'], 'Receivable Days (DSO)': ['30','75'], 'Payable Days (DPO)': ['25','60'], 'Asset Turnover (x)': ['0.5','1.5'] },
+  // ── Sheet 4 · Ratios — with sector benchmarks ─────────────────────────────
+  const SECTOR_BENCHMARKS = {
+    'Gross Margin (%)':                   '35–45%',
+    'Net Margin (%)':                     '8–15%',
+    'EBITDA Margin (%)':                  '15–25%',
+    'Operating Margin (%)':               '12–20%',
+    'Return on Equity (%)':               '12–18%',
+    'Return on Assets (%)':               '8–14%',
+    'Return on Capital Employed (%)':     '15–20%',
+    'Current Ratio':                      '1.5–2.0x',
+    'Quick Ratio':                        '1.0–1.5x',
+    'Debt-to-Equity':                     '0.3–0.8x',
+    'Interest Coverage':                  '3.0–5.0x',
+    'Inventory Turnover':                 '4–8x',
+    'Receivables Days (DSO)':             '45–75 days',
+    'Payable Days (DPO)':                 '30–60 days',
+    'Asset Turnover':                     '0.8–1.5x',
   };
-  // Map detected sector names (from detectMcaAndMetadata) to benchmark keys
-  const sectorAliasMap = {
-    'pharmaceuticals': 'pharmaceuticals',
-    'specialty chemicals': 'chemicals',
-    'chemicals': 'chemicals',
-    'it': 'it',
-    'fmcg': 'fmcg',
-    'banking': 'banking',
-    'real estate': 'real estate',
-    'infrastructure': 'infrastructure',
-    'trading': 'trading',
-    'manufacturing': 'manufacturing',
-  };
-  const sectorKey = sectorAliasMap[detectedSector]
-    || Object.keys(sectorBenchmarkMap).find(k => k !== 'default' && detectedSector.includes(k))
-    || 'default';
-  const SECTOR_BENCHMARKS = sectorBenchmarkMap[sectorKey];
-  const sectorLabel = detectedSectorRaw || (sectorKey.charAt(0).toUpperCase() + sectorKey.slice(1));
-
-  // Traffic-light status: compare ratio value to [low, high] range
-  const getRatioStatus = (rawV, bKey, lowerIsBetter) => {
-    const bounds = SECTOR_BENCHMARKS[bKey];
-    if (!bounds || bounds[0] === '—') return 'NA';
-    const low = parseFloat(bounds[0]);
-    const high = parseFloat(bounds[1]);
-    if (isNaN(low) || isNaN(high) || rawV == null || isNaN(rawV)) return 'NA';
-    if (lowerIsBetter) {
-      return rawV <= high ? 'GREEN' : rawV <= high * 1.5 ? 'AMBER' : 'RED';
-    }
-    return (rawV >= low && rawV <= high) ? 'GREEN' : (rawV >= low * 0.7 || rawV >= high * 0.8) ? 'AMBER' : 'RED';
-  };
-  const LOWER_IS_BETTER = new Set(['Receivable Days (DSO)', 'Payable Days (DPO)', 'Debt-to-Equity']);
 
   const ratRows = [
-    [`${name} — Key Ratios`],
-    [`Period: ${period}  |  Benchmarks: ${sectorLabel} Sector  |  Generated: ${todayStr}`],
+    [`${name} — Financial Ratios`],
+    [`Period: ${period}  |  Generated: ${todayStr}`],
+    [`Benchmarks: Indian Medical Devices & Healthcare Sector`],
     [''],
-    ['Category', 'Ratio', 'Value', 'Sector Benchmark', 'Status', 'Formula / Interpretation'],
+    ['Category', 'Ratio', 'Value', 'Sector Benchmark', 'Formula', 'Interpretation'],
   ];
-  const ratStatusMap = {}; // row → status colour
   for (const cat of (ratios || [])) {
     for (const item of (cat.items || [])) {
       const rawV = item.rawValue;
       const val  = (rawV != null && !isNaN(rawV) && isFinite(rawV)) ? rawV : '—';
-      const bKey = item.name || '';
-      const bounds = SECTOR_BENCHMARKS[bKey];
-      const benchStr = bounds && bounds[0] !== '—'
-        ? (bKey.includes('Days') ? `${bounds[0]}–${bounds[1]} days`
-          : bKey.includes('(x)') ? `${bounds[0]}–${bounds[1]}x`
-          : `${bounds[0]}–${bounds[1]}%`)
-        : '—';
-      const statusVal = (rawV != null && !isNaN(rawV)) ? getRatioStatus(rawV, bKey, LOWER_IS_BETTER.has(bKey)) : 'NA';
-      ratStatusMap[ratRows.length] = statusVal;
       ratRows.push([
         cat.category        || '',
         item.name           || '',
         val,
-        benchStr,
-        statusVal === 'NA' ? '—' : statusVal,
-        item.interpretation || item.formula || '',
+        SECTOR_BENCHMARKS[item.name] || '—',
+        item.formula        || '',
+        item.interpretation || '',
       ]);
     }
-    ratRows.push(['', '', '', '', '', '']);
+    ratRows.push(['', '', '', '', '', '']); // blank separator between categories
   }
-  const wsRatios = XLSX.utils.aoa_to_sheet(ratRows);
-  wsRatios['!cols'] = [{ wch: 22 }, { wch: 28 }, { wch: 10 }, { wch: 18 }, { wch: 12 }, { wch: 52 }];
-  wsRatios['!freeze'] = { xSplit: 0, ySplit: 4 };
-  // Style header row (row 3)
-  for (let c = 0; c < 6; c++) {
-    const addr = XLSX.utils.encode_cell({ r: 3, c });
-    if (wsRatios[addr]) wsRatios[addr].s = HDR_STYLE;
-  }
-  if (wsRatios['A1']) wsRatios['A1'].s = TITLE_STYLE;
-  if (wsRatios['A2']) wsRatios['A2'].s = SUB_HDR_STYLE;
-  // Apply traffic-light colours to Status column (col 4)
-  Object.entries(ratStatusMap).forEach(([rowStr, st]) => {
-    const r = parseInt(rowStr);
-    const addr = XLSX.utils.encode_cell({ r, c: 4 });
-    if (!wsRatios[addr]) return;
-    wsRatios[addr].s = st === 'GREEN' ? GREEN_CELL : st === 'AMBER' ? AMBER_CELL : st === 'RED' ? RED_CELL : GREY_CELL;
-  });
-  const hasRealRatios = (ratios || []).some(cat => (cat.items || []).some(item => item.rawValue != null && !isNaN(item.rawValue)));
-  if (hasRealRatios) XLSX.utils.book_append_sheet(wb, wsRatios, 'Key Ratios');
-
-  // ── Sheet 5 · SWOT — live Claude call ────────────────────────────────────
-  const bullets = (arr) =>
-    (Array.isArray(arr) ? arr : []).map((s, i) => [`  ${i + 1}. ${String(s).replace(/^[•\-\d.]\s*/, '')}`]);
-
-  let swotData = swot; // use pre-computed swot if already available
-  if (!swotData?.strengths?.length) {
-    try {
-      const fmt1 = (v) => (v != null && !isNaN(v)) ? v.toFixed(2) : 'N/A';
-      const netMargin  = (a.netIncome != null && a.revenue > 0) ? (a.netIncome / a.revenue * 100) : null;
-      const roe        = (a.netIncome != null && a.totalEquity > 0) ? (a.netIncome / a.totalEquity * 100) : null;
-      const curRatio   = (a.currentAssets != null && a.currentLiabilities > 0) ? (a.currentAssets / a.currentLiabilities) : null;
-      const totalDebt  = (a.longTermDebt ?? 0) + (a.shortTermDebt ?? 0);
-      const debtEquity = (a.totalEquity > 0) ? (totalDebt / a.totalEquity) : null;
-
-      const swotPrompt = `You are a senior financial analyst. Based on these financials for ${name}, write a detailed SWOT analysis:
-Revenue: ${fmt1(a.revenue)} ${unit}
-Net Margin: ${fmt1(netMargin)}%
-ROE: ${fmt1(roe)}%
-Current Ratio: ${fmt1(curRatio)}
-Debt/Equity: ${fmt1(debtEquity)}
-Total Assets: ${fmt1(a.totalAssets)} ${unit}
-
-Return JSON only — no markdown, no explanation:
-{
-  "executive_outlook": "200-word paragraph summarising financial health and outlook",
-  "strengths": ["strength 1 with specific numbers", "strength 2", "strength 3", "strength 4", "strength 5"],
-  "weaknesses": ["weakness 1 with specific numbers", "weakness 2", "weakness 3", "weakness 4", "weakness 5"],
-  "opportunities": ["opportunity 1", "opportunity 2", "opportunity 3", "opportunity 4", "opportunity 5"],
-  "threats": ["threat 1", "threat 2", "threat 3", "threat 4", "threat 5"]
-}`;
-
-      const swotRaw = await callClaude({ userMsg: swotPrompt, maxTokens: 2000 });
-      const swotParsed = safeParseClaudeResponse(swotRaw);
-      if (swotParsed?.strengths?.length) swotData = swotParsed;
-    } catch (e) {
-      console.warn('[Excel] SWOT Claude call failed:', e.message);
+  if (swot?.ratioInterpretations?.length) {
+    ratRows.push(['Company-Specific Interpretations', '', '', '', '', '']);
+    for (const interp of swot.ratioInterpretations) {
+      ratRows.push([
+        'Company-Specific',
+        interp.ratio  || '',
+        interp.value  || '—',
+        '—',
+        '',
+        interp.meaning || '',
+      ]);
     }
   }
+  const wsRatios = XLSX.utils.aoa_to_sheet(ratRows);
+  wsRatios['!cols'] = [{ wch: 24 }, { wch: 28 }, { wch: 12 }, { wch: 18 }, { wch: 28 }, { wch: 50 }];
+  // Style header row (row 4)
+  for (let c = 0; c < 6; c++) {
+    const addr = XLSX.utils.encode_cell({ r: 4, c });
+    if (wsRatios[addr]) wsRatios[addr].s = { ...HDR_STYLE };
+  }
+  const ratTitleAddr = XLSX.utils.encode_cell({ r: 0, c: 0 });
+  if (wsRatios[ratTitleAddr]) wsRatios[ratTitleAddr].s = TITLE_STYLE;
+  XLSX.utils.book_append_sheet(wb, wsRatios, 'Ratios');
+
+  // ── Sheet 5 · SWOT ────────────────────────────────────────────────────────
+  const bullets = (arr) =>
+    (Array.isArray(arr) ? arr : []).map((s, i) => [`  ${i + 1}. ${String(s).replace(/^[•\-\d.]\s*/, '')}`]);
 
   const swotRows = [
     [`${name} — SWOT Analysis`],
     [`Period: ${period}  |  Generated by FinSight AI  |  ${todayStr}`],
     [''],
     ['EXECUTIVE OUTLOOK'],
-    [swotData?.executive_outlook || swotData?.executiveOutlook || '—'],
+    [swot?.executiveOutlook || '—'],
     [''],
     ['STRENGTHS'],
-    ...bullets(swotData?.strengths),
+    ...bullets(swot?.strengths),
     [''],
     ['WEAKNESSES'],
-    ...bullets(swotData?.weaknesses),
+    ...bullets(swot?.weaknesses),
     [''],
     ['OPPORTUNITIES'],
-    ...bullets(swotData?.opportunities),
+    ...bullets(swot?.opportunities),
     [''],
     ['THREATS'],
-    ...bullets(swotData?.threats),
+    ...bullets(swot?.threats),
   ];
   const wsSWOT = XLSX.utils.aoa_to_sheet(swotRows);
   wsSWOT['!cols'] = [{ wch: 90 }];
-  if (swotData?.strengths?.length > 0) XLSX.utils.book_append_sheet(wb, wsSWOT, 'SWOT');
-  if (revenueA != null || ebitdaA != null || netIncA != null) XLSX.utils.book_append_sheet(wb, wsCharts, 'Charts');
+  XLSX.utils.book_append_sheet(wb, wsSWOT, 'SWOT');
 
   // ── Validation sheet + cell highlighting ─────────────────────────────────
   try {
     const { years: vYears, sortedYears: vSorted } = wrapAggToYears(aggregated, aggregatedPrior);
     const vRes = validateFinancialData(vYears, vSorted);
-    // col 0 = Particulars, col 1 = prior (when hasPrior), col 1 or 2 = current
-    const colToYrFin = hasPrior ? { 2: 'cur', 1: 'pri' } : { 1: 'cur' };
-    // P&L row indices in the new spec-order layout
+    // col offset shifts by +4 (historical N/A columns) — map to expanded column indices
+    // Historical cols 1-4 are N/A; actual data starts at col 5 (cur) or 5+6 (pri/cur)
+    const colToYrFin = hasPrior ? { 6: 'cur', 5: 'pri' } : { 5: 'cur' };
     applyValidationStyles(wsPL, {
-      4:  { section: 'profit_loss', field: 'revenue' },
-      13: { section: 'profit_loss', field: 'interest_expense' },
-      14: { section: 'profit_loss', field: 'depreciation' },
-      18: { section: 'profit_loss', field: 'gross_profit' },
-      20: { section: 'profit_loss', field: 'ebitda' },
-      22: { section: 'profit_loss', field: 'ebit' },
-      24: { section: 'profit_loss', field: 'pbt' },
-      26: { section: 'profit_loss', field: 'tax_expense' },
-      29: { section: 'profit_loss', field: 'net_income' },
+      5:  { section: 'profit_loss', field: 'revenue' },
+      7:  { section: 'profit_loss', field: 'gross_profit' },
+      10: { section: 'profit_loss', field: 'depreciation' },
+      11: { section: 'profit_loss', field: 'interest_expense' },
+      14: { section: 'profit_loss', field: 'ebitda' },
+      15: { section: 'profit_loss', field: 'ebit' },
+      16: { section: 'profit_loss', field: 'pbt' },
+      17: { section: 'profit_loss', field: 'tax_expense' },
+      18: { section: 'profit_loss', field: 'net_income' },
     }, colToYrFin, vRes.rowFlags, XLSX);
-    // BS row indices in the new spec-order layout
     applyValidationStyles(wsBS, {
-      7:  { section: 'balance_sheet', field: 'total_equity' },
-      18: { section: 'balance_sheet', field: 'current_liabilities' },
-      22: { section: 'balance_sheet', field: 'fixed_assets' },
-      29: { section: 'balance_sheet', field: 'non_current_assets' },
-      33: { section: 'balance_sheet', field: 'cash_and_equivalents' },
-      37: { section: 'balance_sheet', field: 'current_assets' },
-      38: { section: 'balance_sheet', field: 'total_assets' },
+      5:  { section: 'balance_sheet', field: 'total_assets' },
+      6:  { section: 'balance_sheet', field: 'current_assets' },
+      7:  { section: 'balance_sheet', field: 'cash_and_equivalents' },
+      10: { section: 'balance_sheet', field: 'non_current_assets' },
+      11: { section: 'balance_sheet', field: 'fixed_assets' },
+      14: { section: 'balance_sheet', field: 'total_liabilities' },
+      15: { section: 'balance_sheet', field: 'current_liabilities' },
+      20: { section: 'balance_sheet', field: 'total_debt' },
+      23: { section: 'balance_sheet', field: 'total_equity' },
     }, colToYrFin, vRes.rowFlags, XLSX);
-    // CF row indices in the new spec-order layout
     applyValidationStyles(wsCF, {
-      13: { section: 'cash_flow', field: 'cfo' },
-      19: { section: 'cash_flow', field: 'cfi' },
-      26: { section: 'cash_flow', field: 'cff' },
+      4: { section: 'cash_flow', field: 'cfo' },
+      5: { section: 'cash_flow', field: 'cfi' },
+      6: { section: 'cash_flow', field: 'cff' },
     }, colToYrFin, vRes.rowFlags, XLSX);
     XLSX.utils.book_append_sheet(wb, buildValidationSheet(vRes, XLSX), 'Validation');
   } catch (valErr) {
@@ -4132,20 +4954,12 @@ Return JSON only — no markdown, no explanation:
       ['EXTRACTION SUMMARY'],
       ['Total Pages', documentMetadata.totalPages || '—'],
       ['Financial Pages Detected', (documentMetadata.financialPageNums || []).length || '—'],
-      ['Document Type', documentMetadata.docType || (documentMetadata.isXBRL ? 'XBRL' : 'Standard PDF')],
+      ['Document Type', documentMetadata.docType || 'Unknown'],
       ['Currency Detected', currency, documentMetadata.isMCA ? '(MCA filing — forced INR)' : '(auto-detected)'],
-      [''],
-      ['ISSUE 1 — YEAR DETECTION'],
-      ['Year Detection Log', documentMetadata.yearDetectionLog || 'Year validation not run'],
-      ['Year Columns Swapped', documentMetadata.yearSwapped ? '⚠ YES — columns were reversed and corrected' : '✓ No swap needed'],
-      [''],
-      ['ISSUE 2 — REVENUE EXTRACTION'],
-      ['Revenue Extraction Method', documentMetadata.revenueExtractionMethod || 'Claude API'],
       [''],
       ['CLAUDE VISION LOG — FINANCIAL PAGES'],
       ['Page', 'Method', 'Confidence', 'Page Type', 'Items Extracted', 'Notes'],
-      ...vpl.map(vp => [vp.page, vp.method || 'Claude Vision', vp.confidence || '—', vp.pageType || '—', vp.itemCount ?? '—', vp.error || '']),
-      ...(!vpl.length ? [['—', 'Text extraction', '—', '—', '—', 'No vision pages used']] : []),
+      ...vpl.map(p => [p.page, p.method || 'Claude Vision', p.confidence || '—', p.pageType || '—', p.itemCount ?? '—', p.error || '']),
       [''],
       ['SANITY VALIDATION BLOCKS'],
       ['Year', 'Field', 'Blocked Value', 'Reason'],
@@ -4164,182 +4978,25 @@ Return JSON only — no markdown, no explanation:
       ]),
     ];
     const wsDQ = XLSX.utils.aoa_to_sheet(dqRows);
-    wsDQ['!cols'] = [{ wch: 30 }, { wch: 65 }, { wch: 30 }, { wch: 18 }, { wch: 16 }, { wch: 55 }];
+    wsDQ['!cols'] = [{ wch: 10 }, { wch: 18 }, { wch: 14 }, { wch: 18 }, { wch: 16 }, { wch: 55 }];
+    // Style header row for vision log table
     const vLogHeaderRow = dqRows.findIndex(r => r[0] === 'Page' && r[1] === 'Method');
-    if (vLogHeaderRow >= 0) { for (let c = 0; c < 6; c++) { const addr = XLSX.utils.encode_cell({ r: vLogHeaderRow, c }); if (wsDQ[addr]) wsDQ[addr].s = HDR_STYLE; } }
+    if (vLogHeaderRow >= 0) {
+      for (let c = 0; c < 6; c++) {
+        const addr = XLSX.utils.encode_cell({ r: vLogHeaderRow, c });
+        if (wsDQ[addr]) wsDQ[addr].s = { ...HDR_STYLE };
+      }
+    }
     const sanityHeaderRow = dqRows.findIndex(r => r[0] === 'Year' && r[1] === 'Field');
-    if (sanityHeaderRow >= 0) { for (let c = 0; c < 4; c++) { const addr = XLSX.utils.encode_cell({ r: sanityHeaderRow, c }); if (wsDQ[addr]) wsDQ[addr].s = HDR_STYLE; } }
+    if (sanityHeaderRow >= 0) {
+      for (let c = 0; c < 4; c++) {
+        const addr = XLSX.utils.encode_cell({ r: sanityHeaderRow, c });
+        if (wsDQ[addr]) wsDQ[addr].s = { ...HDR_STYLE };
+      }
+    }
     XLSX.utils.book_append_sheet(wb, wsDQ, 'Data Quality');
   } catch (dqErr) {
     console.warn('[FinSight] Data quality sheet skipped:', dqErr.message);
-  }
-
-  // ── Verification Sheet ────────────────────────────────────────────────────
-  try {
-    const _va = aggregated, _vp = aggregatedPrior;
-    const _vperiod = companyInfo.period || 'Current Year';
-    const _fv = (v) => v != null ? Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-    const _pct2 = (a, b) => b != null && b !== 0 ? Math.abs(a - b) / Math.abs(b) : null;
-    const _ok  = { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { color: { rgb: '065F46' }, bold: true }, alignment: { horizontal: 'center' } };
-    const _warn= { fill: { fgColor: { rgb: 'FFF3CD' } }, font: { color: { rgb: '856404' }, bold: true }, alignment: { horizontal: 'center' } };
-    const _fail= { fill: { fgColor: { rgb: 'FDE8E8' } }, font: { color: { rgb: 'C04040' }, bold: true }, alignment: { horizontal: 'center' } };
-    const vRows = [];
-
-    vRows.push(['Data Verification & Accuracy Report']);
-    vRows.push([`${companyInfo.name || 'Company'} — Every figure cross-checked for mathematical accuracy`]);
-    vRows.push([`Generated by FinSight AI  |  finsightai.org  |  ${new Date().toLocaleDateString('en-IN')}`]);
-    vRows.push(['']);
-
-    // ── Section A: Extracted figures ──
-    const vHdrIdx = vRows.length;
-    vRows.push(['Line Item', 'Source Document Value', 'FinSight Output', 'Match', 'Confidence']);
-    const verItems = [];
-    const _vr = (label, val, conf = 'HIGH') => { if (val != null) verItems.push([label, _fv(val), _fv(val), '✓ Exact', conf]); };
-    _vr(`Revenue from Operations  ${_vperiod}`,  _va.revenue,      documentMetadata.revenueExtractionMethod !== 'Claude API' ? 'MED' : 'HIGH');
-    _vr(`Revenue from Operations  Prior Year`,   _vp.revenue);
-    _vr(`Total Income  ${_vperiod}`,              _va.totalIncome);
-    _vr(`Other Income  ${_vperiod}`,              _va.otherIncome);
-    _vr(`Cost of Materials  ${_vperiod}`,         _va.cogs);
-    _vr(`Employee Benefit Expenses  ${_vperiod}`, _va.employeeCosts);
-    _vr(`Finance Costs  ${_vperiod}`,             _va.interestExpense);
-    _vr(`Depreciation  ${_vperiod}`,              _va.depreciation);
-    _vr(`Profit Before Tax  ${_vperiod}`,         _va.pbt);
-    _vr(`Profit Before Tax  Prior Year`,          _vp.pbt);
-    _vr(`Tax Expense  ${_vperiod}`,               _va.tax);
-    _vr(`Net Profit (PAT)  ${_vperiod}`,          _va.netIncome);
-    _vr(`Net Profit (PAT)  Prior Year`,           _vp.netIncome);
-    _vr(`Total Equity  ${_vperiod}`,              _va.totalEquity);
-    _vr(`Total Equity  Prior Year`,               _vp.totalEquity);
-    _vr(`Total Assets  ${_vperiod}`,              _va.totalAssets);
-    _vr(`Total Assets  Prior Year`,               _vp.totalAssets);
-    _vr(`Trade Receivables  ${_vperiod}`,         _va.receivables);
-    _vr(`Inventories  ${_vperiod}`,               _va.inventory);
-    _vr(`Cash & Equivalents  ${_vperiod}`,        _va.cash);
-    _vr(`Cash & Equivalents  Prior Year`,         _vp.cash);
-    const vDataStart = vRows.length;
-    verItems.forEach(r => vRows.push(r));
-
-    // ── Section B: Derived metrics ──
-    vRows.push(['']);
-    const vDerivedHdrIdx = vRows.length;
-    vRows.push(['DERIVED METRICS VERIFICATION', '', '', '', '']);
-    const vDerHdr2Idx = vRows.length;
-    vRows.push(['Metric', 'Formula', 'Calculated Value', 'Status', '']);
-    const nm   = (_va.netIncome != null && _va.revenue != null && _va.revenue !== 0) ? (_va.netIncome / _va.revenue * 100).toFixed(2) + '%' : null;
-    const cr   = (_va.currentAssets != null && _va.currentLiabilities != null && _va.currentLiabilities > 0) ? (_va.currentAssets / _va.currentLiabilities).toFixed(2) + 'x' : null;
-    const totD = (_va.longTermDebt ?? 0) + (_va.shortTermDebt ?? 0);
-    const de   = (_va.totalEquity != null && _va.totalEquity > 0) ? (totD / _va.totalEquity).toFixed(3) + 'x' : null;
-    const avgEq = (_va.totalEquity != null && _vp.totalEquity != null) ? (_va.totalEquity + _vp.totalEquity) / 2 : _va.totalEquity;
-    const roe  = (_va.netIncome != null && avgEq != null && avgEq > 0) ? (_va.netIncome / avgEq * 100).toFixed(2) + '%' : null;
-    const revY = (_va.revenue != null && _vp.revenue != null && _vp.revenue > 0) ? ((_va.revenue - _vp.revenue) / _vp.revenue * 100).toFixed(1) + '%' : null;
-    const patY = (_va.netIncome != null && _vp.netIncome != null && _vp.netIncome > 0) ? ((_va.netIncome - _vp.netIncome) / _vp.netIncome * 100).toFixed(1) + '%' : null;
-    if (nm)   vRows.push(['Net Margin',       `${_fv(_va.netIncome)} / ${_fv(_va.revenue)}`,                             nm,   '✓ Correct', '']);
-    if (cr)   vRows.push(['Current Ratio',    `${_fv(_va.currentAssets)} / ${_fv(_va.currentLiabilities)}`,             cr,   '✓ Correct', '']);
-    if (de)   vRows.push(['Debt / Equity',    `${_fv(totD)} / ${_fv(_va.totalEquity)}`,                                  de,   '✓ Correct', '']);
-    if (roe)  vRows.push(['Return on Equity', `${_fv(_va.netIncome)} / avg equity`,                                      roe,  '✓ Correct', '']);
-    if (revY) vRows.push(['Revenue YoY',      `(${_fv(_va.revenue)} − ${_fv(_vp.revenue)}) / ${_fv(_vp.revenue)}`,     revY, '✓ Correct', '']);
-    if (patY) vRows.push(['PAT YoY',          `(${_fv(_va.netIncome)} − ${_fv(_vp.netIncome)}) / ${_fv(_vp.netIncome)}`, patY, '✓ Correct', '']);
-
-    // ── Section C: Issue 3 — 4 Structural Validation Checks ──
-    vRows.push(['']);
-    const vBsHdrIdx = vRows.length;
-    vRows.push(['STRUCTURAL VALIDATION CHECKS', '', '', '', '']);
-    const vChkHdrIdx = vRows.length;
-    vRows.push(['Check', 'Formula / Rule', 'Left Side', 'Right Side', 'Result']);
-
-    const vCheckRows = []; // track row indices for coloring
-
-    // Check 1: Balance Sheet (Issue 3 fix — correct formula)
-    {
-      const tE = _va.totalEquity ?? 0; const tL = _va.totalLiabilities ?? 0; const tA = _va.totalAssets;
-      if (tA != null && tA !== 0) {
-        const calc = tE + tL; const pct = Math.abs(tA - calc) / Math.abs(tA);
-        const ok = pct < 0.02;
-        const diff = tA - calc;
-        vCheckRows.push({ ok, warn: !ok });
-        vRows.push([
-          'Check 1 — Balance Sheet',
-          `Total Assets = Total Equity + Total Liabilities (2% tol.)`,
-          `Assets: ${_fv(tA)}`,
-          `Equity ${_fv(tE)} + Liabilities ${_fv(tL)} = ${_fv(calc)}`,
-          ok ? `✓ BALANCED (Δ ${_fv(Math.abs(diff))})` : `⚠ MISMATCH Δ ${_fv(Math.abs(diff))} (${(pct*100).toFixed(1)}%)`
-        ]);
-      } else { vCheckRows.push({ ok: null }); vRows.push(['Check 1 — Balance Sheet', '—', '—', '—', 'Insufficient data']); }
-    }
-
-    // Check 2: P&L Waterfall
-    {
-      const opProfit = _va.operatingProfit ?? _va.ebitda;
-      if (_va.revenue != null && _va.totalExpenses != null && opProfit != null) {
-        const calc = _va.revenue - _va.totalExpenses; const pct = _pct2(calc, opProfit);
-        const ok = pct != null && pct < 0.05;
-        vCheckRows.push({ ok, warn: !ok && pct != null });
-        vRows.push(['Check 2 — P&L Waterfall', 'Revenue − Total Expenses ≈ Operating Profit (5% tol.)', `${_fv(_va.revenue)} − ${_fv(_va.totalExpenses)} = ${_fv(calc)}`, `Op. Profit: ${_fv(opProfit)}`, ok ? '✓ CONSISTENT' : pct != null ? `⚠ ${(pct*100).toFixed(1)}% gap` : '— N/A']);
-      } else { vCheckRows.push({ ok: null }); vRows.push(['Check 2 — P&L Waterfall', '—', '—', '—', 'Insufficient data']); }
-    }
-
-    // Check 3: PAT Derivation (PBT − Tax = PAT within 1%)
-    {
-      if (_va.pbt != null && _va.tax != null && _va.netIncome != null) {
-        const calc = _va.pbt - _va.tax; const pct = _pct2(calc, _va.netIncome);
-        const ok = pct != null && pct < 0.01;
-        vCheckRows.push({ ok, warn: !ok && pct != null });
-        vRows.push(['Check 3 — PAT Derivation', 'PBT − Tax = PAT (1% tol.)', `${_fv(_va.pbt)} − ${_fv(_va.tax)} = ${_fv(calc)}`, `Reported PAT: ${_fv(_va.netIncome)}`, ok ? '✓ CORRECT' : pct != null ? `⚠ ${(pct*100).toFixed(1)}% gap — possible year swap` : '— N/A']);
-      } else { vCheckRows.push({ ok: null }); vRows.push(['Check 3 — PAT Derivation', '—', '—', '—', 'Insufficient data']); }
-    }
-
-    // Check 4: Year Consistency (if >80% of fields identical, flag)
-    {
-      const fields = ['revenue','netIncome','totalAssets','totalEquity','pbt','tax','ebitda','currentAssets'];
-      const hasBoth = fields.filter(f => _va[f] != null && _vp[f] != null);
-      if (hasBoth.length >= 4) {
-        const identical = hasBoth.filter(f => _va[f] === _vp[f]).length;
-        const identPct = identical / hasBoth.length;
-        const ok = identPct < 0.8;
-        vCheckRows.push({ ok, warn: !ok });
-        vRows.push(['Check 4 — Year Consistency', '>80% identical current/prior = possible year swap', `${identical} of ${hasBoth.length} fields identical`, `${(identPct*100).toFixed(0)}%`, ok ? '✓ Years appear distinct' : '⚠ Possible year ordering error']);
-      } else { vCheckRows.push({ ok: null }); vRows.push(['Check 4 — Year Consistency', '—', '—', '—', 'Insufficient prior data']); }
-    }
-
-    // ── Summary row ──
-    vRows.push(['']);
-    const vSummaryIdx = vRows.length;
-    vRows.push([`✓ ${verItems.length} figures verified  |  Year detection: ${documentMetadata.yearDetectionLog?.split('|')[0]?.trim() || '—'}`, '', '', '', '']);
-    vRows.push([`Revenue extracted via: ${documentMetadata.revenueExtractionMethod || 'Claude API'}  |  Generated by FinSight AI`]);
-
-    const wsV = XLSX.utils.aoa_to_sheet(vRows);
-    wsV['!cols'] = [{ wch: 30 }, { wch: 42 }, { wch: 26 }, { wch: 26 }, { wch: 26 }];
-
-    // Style titles
-    [[0, 13, true], [1, 11, false], [2, 10, false]].forEach(([r, sz, bold]) => {
-      const a0 = XLSX.utils.encode_cell({ r, c: 0 }); if (wsV[a0]) wsV[a0].s = { font: { bold, sz, color: { rgb: '0F2044' } } };
-    });
-    // Main header
-    for (let c = 0; c < 5; c++) { const a0 = XLSX.utils.encode_cell({ r: vHdrIdx, c }); if (wsV[a0]) wsV[a0].s = { ...HDR_STYLE }; }
-    // Data rows match column
-    for (let r = vDataStart; r < vDataStart + verItems.length; r++) {
-      const a0 = XLSX.utils.encode_cell({ r, c: 3 }); if (wsV[a0]) wsV[a0].s = _ok;
-      const conf = verItems[r - vDataStart]?.[4];
-      const a1 = XLSX.utils.encode_cell({ r, c: 4 });
-      if (wsV[a1]) wsV[a1].s = conf === 'MED' ? _warn : _ok;
-    }
-    // Section headers
-    [vDerivedHdrIdx, vBsHdrIdx].forEach(idx => { const a0 = XLSX.utils.encode_cell({ r: idx, c: 0 }); if (wsV[a0]) wsV[a0].s = SECT_HDR_STYLE; });
-    for (let c = 0; c < 5; c++) { const a0 = XLSX.utils.encode_cell({ r: vDerHdr2Idx, c }); if (wsV[a0]) wsV[a0].s = HDR_STYLE; }
-    for (let c = 0; c < 5; c++) { const a0 = XLSX.utils.encode_cell({ r: vChkHdrIdx, c }); if (wsV[a0]) wsV[a0].s = HDR_STYLE; }
-    // Colour each check row result cell
-    const chkStart = vChkHdrIdx + 1;
-    vCheckRows.forEach(({ ok, warn }, i) => {
-      const a0 = XLSX.utils.encode_cell({ r: chkStart + i, c: 4 });
-      if (wsV[a0]) wsV[a0].s = ok == null ? {} : ok ? _ok : warn ? _warn : _fail;
-    });
-    // Summary
-    const a0 = XLSX.utils.encode_cell({ r: vSummaryIdx, c: 0 });
-    if (wsV[a0]) wsV[a0].s = { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { color: { rgb: '065F46' }, bold: true, sz: 12 } };
-
-    XLSX.utils.book_append_sheet(wb, wsV, 'Verification');
-  } catch (vErr) {
-    console.warn('[FinSight] Verification sheet skipped:', vErr.message);
   }
 
   // ── Serialize ─────────────────────────────────────────────────────────────
@@ -4348,7 +5005,7 @@ Return JSON only — no markdown, no explanation:
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
   const fileName = generateSmartFilename(companyInfo, 'xlsx');
-  return { excelBlob, fileName, sheetCount: wb.SheetNames.length };
+  return { excelBlob, fileName };
 }
 
 async function generatePPTFull(data, periodLabel) {
@@ -4479,15 +5136,15 @@ const ChartTip = ({ active, payload, label, sym = "$", isPct = false }) => {
 };
 
 const US_EX = ["Apple", "Microsoft", "Tesla", "Amazon", "Nvidia", "Meta"];
-const IN_EX = ["Reliance", "TCS", "HDFC Bank", "Infosys", "Wipro", "Bajaj Finance"];
+const IN_EX = ["Reliance Industries", "Infosys", "TCS", "HDFC Bank", "Wipro", "Bajaj Finance"];
 const STEPS = ["Searching financial databases", "Fetching latest financial data", "Analyzing profitability trends", "Computing key financial ratios", "Generating AI insights", "Building your dashboard"];
 
 const FinSightLogo = ({ size = 32 }) => (
   <svg width={size} height={size} viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="fs-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stopColor="#0D7A3E"/>
-        <stop offset="100%" stopColor="#0A1628"/>
+        <stop offset="0%" stopColor="#E48164"/>
+        <stop offset="100%" stopColor="#B85A3A"/>
       </linearGradient>
     </defs>
     <rect width="40" height="40" rx="10" fill="url(#fs-grad)"/>
@@ -4503,23 +5160,23 @@ const FinSightLogo = ({ size = 32 }) => (
 const Spinner = () => <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${C.accentLight}`, borderTopColor: C.accent, animation: "fs-spin .8s linear infinite" }} />;
 
 const MetricCard = ({ label, value, sub, accent }) => (
-  <div className="fs-card" style={{ background: "#FFFFFF", border: "1px solid #E8ECF0", borderRadius: 12, padding: "14px 12px", boxShadow: "0 1px 3px rgba(10,22,40,.06)", transition: "all .2s", minWidth: 0 }}>
-    <div style={{ color: "#9CA3AF", fontSize: 10, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
-    <div style={{ fontSize: 16, fontWeight: 600, color: accent || "#0A1628", marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
-    <div style={{ color: "#9CA3AF", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>
+  <div className="fs-card" style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 12px", boxShadow: C.shadow, transition: "all .2s", minWidth: 0 }}>
+    <div style={{ color: C.textMuted, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".6px", marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+    <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 16, fontWeight: 500, color: accent || C.textPrimary, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
+    <div style={{ color: C.textMuted, fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>
   </div>
 );
 
-const Byline = () => null;
+const Byline = () => <span style={{ color: C.textMuted, fontSize: 11.5 }}>by <span style={{ fontWeight: 600, color: C.accent }}>{AUTHOR_NAME}</span></span>;
 
 function ChartFrame({ icon, title, subtitle, children }) {
   return (
-    <div className="fs-chart-card" style={{ background: "#FFFFFF", border: "1px solid #E8ECF0", borderRadius: 12, padding: 22, boxShadow: "0 1px 3px rgba(10,22,40,.06)", display: "flex", flexDirection: "column", gap: 14, transition: "all .2s" }}>
+    <div className="fs-chart-card" style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 16, padding: 22, boxShadow: C.shadow, display: "flex", flexDirection: "column", gap: 14 }}>
       <div>
-        <div style={{ fontWeight: 600, fontSize: 15, color: "#0A1628", display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-          <span style={{ fontSize: 16 }}>{icon}</span><span>{title}</span>
+        <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, color: C.textPrimary, display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <span style={{ fontSize: 18 }}>{icon}</span><span>{title}</span>
         </div>
-        <div style={{ color: "#9CA3AF", fontSize: 12, lineHeight: 1.5 }}>{subtitle}</div>
+        <div style={{ color: C.textMuted, fontSize: 12, lineHeight: 1.5 }}>{subtitle}</div>
       </div>
       <div style={{ flex: 1 }}>{children}</div>
     </div>
@@ -4726,123 +5383,101 @@ function PeriodDropdown({ value, onChange }) {
 function DocumentReadyScreen({ docReady, onReset }) {
   const { pdfBlob, pdfFileName, docxBlob, docxFileName, excelBlob, excelFileName,
     briefWordBlob, briefWordFileName, briefWordError, noFinancialData, apiUnavailable,
-    extractionWarnings = [], financials,
+    extractionWarnings = [],
     selectedOutputs = {}, companyName, summary } = docReady;
-
-  const METHOD_LABEL = { text: 'Text extraction', ocr: 'OCR (Tesseract)', vision: 'Claude Vision OCR', xml: 'XBRL/XML parsing', 'excel-input': 'Excel parsing', word: 'Word extraction', 'image-pdf': 'XBRL recommended — financial tables are image-based' };
-
+  const METHOD_LABEL = { text: 'Text extraction', ocr: 'OCR (Tesseract)', vision: 'Claude Vision OCR', xml: 'XBRL/XML parsing', 'excel-input': 'Excel parsing', word: 'Word extraction' };
   const errBox = (msg) => (
-    <div style={{ padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, color: '#991B1B', fontSize: 13, textAlign: 'left', lineHeight: 1.5 }}>
+    <div style={{ padding: '10px 14px', background: '#FEF3F2', border: '1px solid #F4B5B5', borderRadius: 8, color: '#9A3412', fontSize: 13, textAlign: 'left', lineHeight: 1.5 }}>
       ⚠ {msg} Other deliverables are unaffected.
     </div>
   );
-
-  const fmtVal = (v, unit) => {
-    if (v == null || isNaN(v)) return '—';
-    return `${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 1 })} ${unit || 'Cr'}`;
+  const btn = (variant) => {
+    const base = { width: "100%", height: 48, borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, transition: "opacity 0.15s", border: "none" };
+    if (variant === "primary")   return { ...base, background: C.brown,    color: "#fff" };
+    if (variant === "excel")     return { ...base, background: C.green,    color: "#fff" };
+    if (variant === "secondary") return { ...base, border: `1.5px solid ${C.border}`, background: C.bgSidebar, color: C.textPrimary };
+    return base;
   };
-  const yoy = (cur, prior) => {
-    if (cur == null || prior == null || prior === 0) return null;
-    return ((cur - prior) / Math.abs(prior)) * 100;
-  };
-  const Arrow = ({ cur, prior, invert = false }) => {
-    const pct = yoy(cur, prior);
-    if (pct == null) return null;
-    const up = invert ? pct < 0 : pct >= 0;
-    return (
-      <span style={{ fontSize: 11.5, fontWeight: 600, color: up ? C.green : C.red, marginLeft: 6 }}>
-        {up ? '▲' : '▼'} {Math.abs(pct).toFixed(1)}%
-      </span>
-    );
-  };
-
-  const metricCards = financials ? [
-    { label: 'Revenue', value: fmtVal(financials.revenue, financials.unit), cur: financials.revenue, prior: financials.revenuePrior },
-    { label: 'Net Profit', value: fmtVal(financials.netIncome, financials.unit), cur: financials.netIncome, prior: financials.netIncomePrior },
-    { label: 'Total Assets', value: fmtVal(financials.totalAssets, financials.unit), cur: financials.totalAssets, prior: financials.totalAssetsPrior },
-    { label: 'Net Margin', value: financials.netMargin != null ? `${Number(financials.netMargin).toFixed(1)}%` : '—', cur: null, prior: null },
-  ] : [];
-
   return (
-    <div style={{ width: "100%", maxWidth: 560, margin: "0 auto", background: "#FFFFFF", borderRadius: 16, padding: "40px", boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}>
-      {/* Success header */}
-      <div style={{ textAlign: "center", marginBottom: 28 }}>
-        <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#ECFDF5", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17L4 12" stroke="#0D7A3E" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </div>
-        <div style={{ fontSize: 11, fontWeight: 600, color: "#0D7A3E", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>Analysis Complete</div>
-        <div style={{ fontSize: 26, fontWeight: 700, color: "#0A1628", letterSpacing: "-0.5px", lineHeight: 1.2 }}>{companyName}</div>
-      </div>
-
-      {/* Metric cards 2×2 */}
-      {metricCards.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 28 }}>
-          {metricCards.map(m => (
-            <div key={m.label} style={{ background: "#FFFFFF", border: "1px solid #E5E7EB", borderRadius: 10, padding: "16px 20px" }}>
-              <div style={{ fontSize: 11, fontWeight: 500, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{m.label}</div>
-              <div style={{ fontSize: 24, fontWeight: 700, color: "#0A1628", marginTop: 4, lineHeight: 1.2 }}>{m.value}</div>
-              <Arrow cur={m.cur} prior={m.prior} />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Alerts */}
+    <div style={{ width: "100%", maxWidth: 480, margin: "16px auto 0", background: C.bgCard, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: "28px 28px 24px", boxShadow: C.shadowMd, textAlign: "center" }}>
+      <div style={{ width: 56, height: 56, borderRadius: "50%", background: C.greenBg, border: `2px solid ${C.green}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", fontSize: 26 }}>✓</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Your document is ready!</div>
+      <div style={{ fontSize: 13.5, fontWeight: 600, color: C.brown, marginBottom: 16 }}>{companyName}</div>
       {apiUnavailable && (
-        <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#991B1B', lineHeight: 1.6 }}>
+        <div style={{ background: '#FEF3F2', border: '1px solid #F4B5B5', borderRadius: 10, padding: '10px 14px', marginBottom: 14, textAlign: 'left', fontSize: 12.5, color: '#9A3412', lineHeight: 1.6 }}>
           <div style={{ fontWeight: 700, marginBottom: 4 }}>⚠ AI analysis unavailable — API limit reached</div>
-          <div>Your Excel workbook has been generated with extracted financial data.</div>
+          <div>Your Excel workbook has been generated with extracted financial data. AI-generated SWOT, narrative, and PDF/Word analysis will be available once API credits are restored.</div>
+          <div style={{ marginTop: 6, color: '#7C3D12', fontSize: 12 }}>A rule-based analysis has been used as a fallback. Your analysis has been queued — when you return and credits are restored, you can regenerate.</div>
         </div>
       )}
-      {summary?.extractionMethod === 'image-pdf' && (
-        <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#92400E', lineHeight: 1.6 }}>
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>⚠ Financial tables are image-based</div>
-          <div>Upload the <strong>XBRL file</strong> from <strong>mca.gov.in</strong> for accurate extraction.</div>
+      {noFinancialData && !apiUnavailable && (
+        <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 10, padding: '10px 14px', marginBottom: 14, textAlign: 'left', fontSize: 12.5, color: '#92400E', lineHeight: 1.6 }}>
+          ⚠ Limited financial data was extracted. The PDF may contain scanned images instead of text. Try the MCA portal XBRL/text-based PDF version for better results.
         </div>
       )}
-      {noFinancialData && !apiUnavailable && summary?.extractionMethod !== 'image-pdf' && (
-        <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#92400E', lineHeight: 1.6 }}>
-          ⚠ Limited financial data extracted. Use an MCA portal XBRL/text-based PDF for best results.
-        </div>
-      )}
-
-      {/* Divider */}
-      <div style={{ height: 1, background: "#E5E7EB", margin: "28px 0" }} />
-
-      {/* Download heading */}
-      <div style={{ fontSize: 16, fontWeight: 600, color: "#0A1628", marginBottom: 16 }}>Your reports are ready</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+      <div style={{ background: C.brownLight, borderRadius: 10, padding: "12px 16px", marginBottom: 20, textAlign: "left" }}>
+        {[
+          summary.extractionMethod && `Extracted via: ${METHOD_LABEL[summary.extractionMethod] || summary.extractionMethod}`,
+          summary.sectionCount > 0 && `${summary.sectionCount} sections organised`,
+          summary.ratioCount > 0 && `${summary.ratioCount} financial ratios calculated`,
+          summary.hasSWOT && "SWOT analysis included",
+          summary.hasCharts && "Bar charts generated",
+          summary.failedChunks > 0 && `${summary.failedChunks} section(s) used fallback content`,
+        ].filter(Boolean).map((line, i) => (
+          <div key={i} style={{ fontSize: 12.5, color: C.textSec, lineHeight: 1.8, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: C.green, fontWeight: 700 }}>•</span> {line}
+          </div>
+        ))}
+        {extractionWarnings.map((w, i) => (
+          <div key={`w${i}`} style={{ fontSize: 12, color: '#B45309', lineHeight: 1.7, display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 4 }}>
+            <span>⚠</span> {w}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+        {briefWordBlob ? (
+          <button style={btn("primary")} onClick={() => triggerBlobDownload(briefWordBlob, briefWordFileName)}>
+            <span>📄</span><span>Download Brief Word Note</span>
+          </button>
+        ) : selectedOutputs.briefWord && briefWordError
+          ? errBox(`Brief Word doc failed. Reason: ${briefWordError}`)
+          : null
+        }
         {excelBlob ? (
-          <button className="fs-result-btn fs-result-btn-excel" style={{ background: "#0D7A3E", color: "#fff" }} onClick={() => triggerBlobDownload(excelBlob, excelFileName)}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="white" strokeWidth="1.8"/><path d="M3 9h18M9 3v18" stroke="white" strokeWidth="1.8"/></svg>
-            <span>Download {companyName} Excel Workbook</span>
+          <button style={btn("excel")} onClick={() => triggerBlobDownload(excelBlob, excelFileName)}>
+            <span>📊</span><span>Download Excel Workbook</span>
           </button>
-        ) : selectedOutputs.excel ? (
-          <div style={{ padding: '10px 16px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, color: '#991B1B', fontSize: 13 }}>
-            ⚠ Excel generation failed. Other deliverables are unaffected.
-          </div>
-        ) : null}
+        ) : selectedOutputs.excel && !excelBlob
+          ? errBox('Excel workbook generation failed.')
+          : null
+        }
+        {(briefWordBlob || excelBlob) && (pdfBlob || docxBlob) && (
+          <div style={{ height: 1, background: C.border, margin: "4px 0" }} />
+        )}
+        {pdfBlob ? (
+          <button style={btn("secondary")} onClick={() => triggerBlobDownload(pdfBlob, pdfFileName)}>
+            <span>📕</span>
+            <span>Download Detailed PDF{summary.fileSizeKB > 0 ? ` · ${summary.fileSizeKB < 1024 ? summary.fileSizeKB + ' KB' : (summary.fileSizeKB / 1024).toFixed(1) + ' MB'}` : ''}</span>
+          </button>
+        ) : selectedOutputs.detailedPdf && !pdfBlob
+          ? errBox('Detailed PDF generation failed.')
+          : null
+        }
         {docxBlob ? (
-          <button className="fs-result-btn fs-result-btn-word" style={{ background: "#0A1628", color: "#fff" }} onClick={() => triggerBlobDownload(docxBlob, docxFileName)}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14 2H6C5.46957 2 4.96086 2.21071 4.58579 2.58579C4.21071 2.96086 4 3.46957 4 4V20C4 20.5304 4.21071 21.0391 4.58579 21.4142C4.96086 21.7893 5.46957 22 6 22H18C18.5304 22 19.0391 21.7893 19.4142 21.4142C19.7893 21.0391 20 20.5304 20 20V8L14 2Z" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M14 2V8H20" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            <span>Download {companyName} Word Report</span>
+          <button style={btn("secondary")} onClick={() => triggerBlobDownload(docxBlob, docxFileName)}>
+            <span>📘</span><span>Download Detailed Word</span>
           </button>
-        ) : selectedOutputs.detailedWord ? (
-          <div style={{ padding: '10px 16px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, color: '#991B1B', fontSize: 13 }}>
-            ⚠ Word Report generation failed. Other deliverables are unaffected.
-          </div>
-        ) : null}
-        {!excelBlob && !docxBlob && (
-          <div style={{ fontSize: 13, color: "#DC2626", textAlign: "center" }}>Document generation failed. Please try again.</div>
+        ) : selectedOutputs.detailedWord && !docxBlob
+          ? errBox('Detailed Word doc generation failed.')
+          : null
+        }
+        {!briefWordBlob && !excelBlob && !pdfBlob && !docxBlob && (
+          <div style={{ fontSize: 12.5, color: C.red }}>Document generation failed. Please try again.</div>
         )}
       </div>
-
-      <div style={{ textAlign: "center" }}>
-        <button onClick={onReset} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#6B7280", fontFamily: "inherit", transition: "color 150ms ease" }}
-          onMouseEnter={e => e.target.style.color = "#0A1628"} onMouseLeave={e => e.target.style.color = "#6B7280"}>
-          ← Process another document
-        </button>
-      </div>
+      <button onClick={onReset} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: C.textSec, textDecoration: "underline" }}>
+        ⟲ Process another document
+      </button>
     </div>
   );
 }
@@ -4919,21 +5554,23 @@ function PendingAnalysisBanner({ onRetry }) {
 }
 
 const PIPELINE_STEPS = [
-  { id: 'read',    label: 'Reading document...' },
-  { id: 'extract', label: 'Extracting financial data...' },
-  { id: 'claude',  label: 'Claude AI analysing...' },
-  { id: 'excel',   label: 'Generating Excel workbook...' },
-  { id: 'word',    label: 'Generating Word report...' },
-  { id: 'done',    label: 'Finalising...' },
+  { id: 'read',    label: 'Reading document',            icon: '📄' },
+  { id: 'split',   label: 'Splitting into sections',     icon: '🔍' },
+  { id: 'extract', label: 'Extracting financial data',   icon: '📊' },
+  { id: 'analyse', label: 'Calculating ratios & SWOT',   icon: '🔢' },
+  { id: 'excel',   label: 'Building Excel workbook',     icon: '📑' },
+  { id: 'docs',    label: 'Generating documents',        icon: '📝' },
 ];
 
 function getStepIndex(msg) {
   if (!msg) return -1;
-  if (/^complete$/i.test(msg) || /documents?\s*are\s*ready/i.test(msg)) return 5;
-  if (/^generating$/i.test(msg) || /building word|generating word/i.test(msg)) return 4;
-  if (/building excel/i.test(msg)) return 3;
-  if (/^extracting$/i.test(msg) || /analysing financials/i.test(msg)) return 2;
-  if (/^reading$/i.test(msg) || /extracting text/i.test(msg)) return 0;
+  // Test from last step to first so more-specific patterns win
+  if (/generating.*pdf|generating.*word|generating company narr|building brief|generating brief|generating detailed|pdf generation|large document.*pdf/i.test(msg)) return 5;
+  if (/generating excel|building excel workbook|excel ready|scanned.*vision extraction|📊 building excel/i.test(msg)) return 4;
+  if (/calculating.*ratio|generating swot|building bar chart|done:.*section/i.test(msg)) return 3;
+  if (/processing section|processed section|🤖 claude vision|extracting financials from pages|✅.*data extracted/i.test(msg)) return 2;
+  if (/splitting document|document has \d+.*section|beginning ai|beginning.*processing/i.test(msg)) return 1;
+  if (/reading your document|📄 reading|running ocr|🔍 running ocr|scanned pdf|claude vision ocr|running claude vision/i.test(msg)) return 0;
   return -1;
 }
 
@@ -4959,38 +5596,57 @@ function ProcessingSteps({ progress, error, elapsedSecs }) {
   };
 
   return (
-    <div style={{ background: "#FFFFFF", border: "1px solid #E8ECF0", borderRadius: 12, padding: "28px 32px", boxShadow: "0 4px 20px rgba(10,22,40,.08)" }}>
-      <div style={{ fontSize: 16, fontWeight: 600, color: "#0A1628", marginBottom: 28, letterSpacing: "-0.3px" }}>Processing your document</div>
+    <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14, padding: '20px 24px', boxShadow: C.shadowMd }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, gap: 10 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: C.textPrimary }}>Processing your document</div>
+        <div style={{ fontSize: 12, color: C.textSec, background: C.brownLight, borderRadius: 20, padding: '3px 10px', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+          ⏱ {elapsedStr}
+        </div>
+      </div>
       {PIPELINE_STEPS.map((step, i) => {
         const state = getState(i);
         const isLast = i === PIPELINE_STEPS.length - 1;
         return (
-          <div key={step.id} style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          <div key={step.id} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+            {/* Circle + connector line */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
               <div style={{
                 width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: state === 'done' ? "#0D7A3E" : state === 'active' ? "#F5F7FA" : state === 'error' ? "#FEF2F2" : "#F5F7FA",
-                border: `2px solid ${state === 'done' ? "#0D7A3E" : state === 'active' ? "#0A1628" : state === 'error' ? "#DC2626" : "#E8ECF0"}`,
-                transition: 'all 0.3s',
+                background: state === 'done' ? C.green : state === 'active' ? C.amberBg : state === 'error' ? C.redBg : '#FAFAFA',
+                border: `2px solid ${state === 'done' ? C.green : state === 'active' ? C.amber : state === 'error' ? C.red : C.border}`,
+                transition: 'background 0.3s, border-color 0.3s',
               }}>
-                {state === 'done' && <span style={{ color: '#fff', fontSize: 12, fontWeight: 700 }}>✓</span>}
-                {state === 'active' && <span className="fs-step-active-dot" style={{ display: 'inline-block', width: 14, height: 14, borderRadius: '50%', background: "#0A1628" }} />}
-                {state === 'error' && <span style={{ color: "#DC2626", fontSize: 12, fontWeight: 700 }}>✕</span>}
-                {state === 'pending' && <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: "#E5E7EB" }} />}
+                {state === 'done' && <span style={{ color: '#fff', fontSize: 13, fontWeight: 700, lineHeight: 1 }}>✓</span>}
+                {state === 'active' && (
+                  <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: '50%', border: `2px solid ${C.amber}`, borderTopColor: 'transparent', animation: 'fs-spin 0.8s linear infinite' }} />
+                )}
+                {state === 'error' && <span style={{ color: C.red, fontSize: 13, fontWeight: 700, lineHeight: 1 }}>✕</span>}
+                {state === 'pending' && <span style={{ color: C.textMuted, fontSize: 10, fontWeight: 600 }}>{i + 1}</span>}
               </div>
               {!isLast && (
-                <div style={{ width: 2, flex: 1, minHeight: 20, marginTop: 3, marginBottom: 3, borderRadius: 1, background: state === 'done' ? "#0D7A3E" : "#E8ECF0", opacity: state === 'done' ? 0.5 : 0.4, transition: 'background 0.3s' }} />
+                <div style={{ width: 2, flex: 1, minHeight: 20, marginTop: 2, marginBottom: 2, borderRadius: 1, background: state === 'done' ? C.green : C.border, opacity: state === 'done' ? 0.4 : 0.2, transition: 'background 0.3s' }} />
               )}
             </div>
-            <div style={{ flex: 1, paddingBottom: isLast ? 0 : 16, paddingTop: 3 }}>
-              <div style={{ fontSize: 14, fontWeight: state === 'active' ? 600 : 400, color: state === 'done' ? "#0D7A3E" : state === 'active' ? "#0A1628" : state === 'error' ? "#DC2626" : "#9CA3AF", transition: 'color 0.2s' }}>
-                {state === 'active' && pageMatch && i === 0
-                  ? `${step.label} (${pageMatch[1]} / ${pageMatch[2]})`
-                  : step.label}
+            {/* Label + subtext */}
+            <div style={{ flex: 1, paddingBottom: isLast ? 0 : 16, paddingTop: 4 }}>
+              <div style={{
+                fontSize: 13.5,
+                fontWeight: state === 'active' ? 700 : 500,
+                color: state === 'done' ? C.textSec : state === 'active' ? C.textPrimary : state === 'error' ? C.red : C.textMuted,
+                display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap',
+                transition: 'color 0.2s',
+              }}>
+                <span>{step.icon}</span>
+                <span>{step.label}</span>
+                {state === 'active' && pageMatch && i === 0 && (
+                  <span style={{ fontSize: 12, fontWeight: 400, color: C.textSec }}>({pageMatch[1]} / {pageMatch[2]})</span>
+                )}
               </div>
               {state === 'active' && progress && (
-                <div style={{ fontSize: 12, color: "#6B7280", marginTop: 4, lineHeight: 1.5, wordBreak: 'break-word' }}>{progress}</div>
+                <div style={{ fontSize: 11.5, color: C.textSec, marginTop: 4, fontStyle: 'italic', lineHeight: 1.5, wordBreak: 'break-word' }}>
+                  {progress}
+                </div>
               )}
               {state === 'active' && chunkMatch && i === 2 && (() => {
                 const done = parseInt(chunkMatch[1], 10);
@@ -4998,22 +5654,25 @@ function ProcessingSteps({ progress, error, elapsedSecs }) {
                 const pct = Math.round((done / total) * 100);
                 return (
                   <div style={{ marginTop: 8 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: "#9CA3AF", marginBottom: 4 }}>
-                      <span>Sections</span><span>{done} / {total}</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textMuted, marginBottom: 3 }}>
+                      <span>Sections processed</span><span>{done} / {total}</span>
                     </div>
-                    <div style={{ height: 4, background: "#E8ECF0", borderRadius: 2, overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${pct}%`, background: "#0A1628", borderRadius: 2, transition: 'width 0.4s ease' }} />
+                    <div style={{ height: 5, background: C.border, borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${pct}%`, background: C.brown, borderRadius: 3, transition: 'width 0.4s ease' }} />
                     </div>
                   </div>
                 );
               })()}
               {state === 'error' && error && (
-                <div style={{ fontSize: 12, color: "#DC2626", marginTop: 4, lineHeight: 1.5 }}>{error}</div>
+                <div style={{ fontSize: 12, color: C.red, marginTop: 4, lineHeight: 1.5 }}>{error}</div>
               )}
             </div>
           </div>
         );
       })}
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.border}`, fontSize: 11.5, color: C.textMuted, textAlign: 'center' }}>
+        Multi-pass processing — typically 3–5 minutes for large documents
+      </div>
     </div>
   );
 }
@@ -5035,57 +5694,30 @@ function PrivateDocUploadZone({ onFileSelected, isProcessing, progress, error })
   const handleDragLeave = (e) => { e.preventDefault(); setIsDragging(false); };
   const handleDrop = (e) => { e.preventDefault(); setIsDragging(false); handleFile(e.dataTransfer.files[0]); };
   const handleFile = (file) => {
-    console.log('FILE UPLOADED:', file?.name, file?.size);
     if (!file) return;
     if (!file.name.match(/\.(pdf|docx?|doc|xml|xbrl|xlsx?)$/i)) { alert("Please upload a PDF, Word document, XBRL XML, or Excel file (.pdf, .docx, .xml, .xlsx)"); return; }
     onFileSelected(file);
   };
 
   return (
-    <div style={{ width: "100%" }}>
+    <div style={{ width: "100%", maxWidth: 720, margin: "16px auto 0" }}>
       {isProcessing ? (
-        <div style={{ maxWidth: 480, margin: "0 auto", background: "#FFFFFF", borderRadius: 16, padding: "48px", boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}>
-          <ProcessingSteps progress={progress} error={error} elapsedSecs={elapsedSecs} />
-        </div>
+        <ProcessingSteps progress={progress} error={error} elapsedSecs={elapsedSecs} />
       ) : (
         <>
           <div
-            className="fs-upload-zone"
             onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
-            style={{
-              maxWidth: 560, margin: "0 auto",
-              padding: "56px 40px",
-              background: isDragging ? "#F0F4FF" : "#FFFFFF",
-              border: `2px dashed ${isDragging ? "#0A1628" : "#CBD5E1"}`,
-              borderRadius: 16,
-              cursor: "pointer",
-              textAlign: "center",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04)",
-            }}
+            style={{ padding: "28px 24px", background: isDragging ? C.brownLight : C.bgCard, border: `2px dashed ${isDragging ? C.brown : C.border}`, borderRadius: 14, cursor: "pointer", transition: "all 0.2s", textAlign: "center", boxShadow: C.shadow }}
           >
             <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.xml,.xbrl,.xlsx,.xls" onChange={(e) => handleFile(e.target.files[0])} style={{ display: "none" }} />
-            <div style={{ marginBottom: 16 }}>
-              <svg width="44" height="44" viewBox="0 0 24 24" fill="none">
-                <path d="M14 2H6C5.46957 2 4.96086 2.21071 4.58579 2.58579C4.21071 2.96086 4 3.46957 4 4V20C4 20.5304 4.21071 21.0391 4.58579 21.4142C4.96086 21.7893 5.46957 22 6 22H18C18.5304 22 19.0391 21.7893 19.4142 21.4142C19.7893 21.0391 20 20.5304 20 20V8L14 2Z" stroke="#0A1628" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M14 2V8H20" stroke="#0A1628" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M12 18V12M9 15L12 12L15 15" stroke="#0A1628" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </div>
-            <div style={{ fontSize: 18, fontWeight: 600, color: "#0A1628", marginBottom: 8 }}>
-              Drop your file here
-            </div>
-            <div style={{ fontSize: 14, color: "#9CA3AF", lineHeight: 1.5 }}>
-              PDF, XBRL, Word, or Excel · MCA filings & annual reports
-            </div>
-            <button
-              className="fs-browse-btn"
-              onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}>
-              Browse files
-            </button>
+            <div style={{ fontSize: 32, marginBottom: 10 }}>📄</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Upload Private Company Financials</div>
+            <div style={{ fontSize: 12.5, color: C.textSec, marginBottom: 8 }}>Upload PDF or Word document — drag & drop here, or click to browse</div>
+            <div style={{ fontSize: 11, color: C.textMuted, fontStyle: "italic" }}>Clean XBRL output · Times New Roman · Page borders · Bar charts · SWOT · Ratio interpretations</div>
           </div>
           {error && (
-            <div style={{ maxWidth: 560, margin: "12px auto 0", padding: "12px 16px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, fontSize: 13, color: "#991B1B", lineHeight: 1.5 }}>⚠ {error}</div>
+            <div style={{ marginTop: 12, padding: "10px 14px", background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, fontSize: 12.5, color: C.red }}>⚠ {error}</div>
           )}
         </>
       )}
@@ -5093,135 +5725,101 @@ function PrivateDocUploadZone({ onFileSelected, isProcessing, progress, error })
   );
 }
 
-const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');`;
+const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');`;
 
 const GLOBAL_CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #FFFFFF; overflow-x: hidden; font-family: 'Inter', system-ui, sans-serif; }
-  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #F5F7FA; }
-  ::-webkit-scrollbar-thumb { background: #E5E7EB; border-radius: 3px; }
-
+  body { background: ${C.bgPage}; overflow-x: hidden; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: ${C.bgPage}; }
+  ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }
+  .fs-input:focus { outline: none; border-color: ${C.accent} !important; box-shadow: 0 0 0 3px rgba(207,107,78,.15) !important; }
+  .fs-chip:hover { background: ${C.accentLight} !important; border-color: ${C.accent} !important; color: ${C.accent} !important; }
+  .fs-btn-primary:hover { background: ${C.accentDark} !important; }
+  .fs-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
+  .fs-chart-card:hover { box-shadow: ${C.shadowMd} !important; border-color: ${C.borderHover} !important; }
+  @keyframes fs-fade { from{opacity:0;transform:translateY(12px);} to{opacity:1;transform:none;} }
   @keyframes fs-spin { to { transform: rotate(360deg); } }
-  @keyframes fs-fade { from{opacity:0;transform:translateY(16px);} to{opacity:1;transform:none;} }
-  @keyframes fs-pulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:.4;transform:scale(.7);} }
-  @keyframes fs-pulse-ring { 0%{box-shadow:0 0 0 0 rgba(10,22,40,0.4)} 70%{box-shadow:0 0 0 8px rgba(10,22,40,0)} 100%{box-shadow:0 0 0 0 rgba(10,22,40,0)} }
-  @keyframes fs-hero-in { from{opacity:0;transform:translateY(24px);} to{opacity:1;transform:none;} }
-
-  .fs-header-blur { backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
-  .fs-btn { transition: all 150ms ease; }
-  .fs-btn:active { transform: scale(0.98); }
-
-  .fs-hero-content { animation: fs-hero-in 400ms ease both; }
-  .fs-hero-headline { font-size: 60px; font-weight: 800; color: #FFFFFF; letter-spacing: -2px; line-height: 1.1; max-width: 720px; margin: 20px auto 0; }
-
-  .fs-company-chip { background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 100px; padding: 6px 16px; font-size: 13px; cursor: pointer; transition: all 150ms ease; color: #374151; font-weight: 500; font-family: inherit; white-space: nowrap; }
-  .fs-company-chip:hover { background: #0A1628 !important; color: #FFFFFF !important; border-color: #0A1628 !important; }
-
-  .fs-period-pill { border-radius: 100px; height: 40px; padding: 0 20px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 150ms ease; font-family: inherit; display: inline-flex; align-items: center; }
-  .fs-period-pill-inactive:hover { border-color: #0A1628 !important; color: #0A1628 !important; }
-
-  .fs-upload-zone { transition: border-color 200ms ease, background 200ms ease; }
-
-  .fs-cta-primary { background: #FFFFFF; color: #0A1628; border: none; height: 52px; padding: 0 28px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit; box-shadow: 0 1px 2px rgba(0,0,0,0.05); transition: background 150ms ease, transform 150ms ease; }
-  .fs-cta-primary:hover { background: #F5F7FA; transform: scale(0.99); }
-  .fs-cta-primary:active { transform: scale(0.97); }
-
-  .fs-cta-secondary { background: transparent; color: #FFFFFF; border: 1.5px solid rgba(255,255,255,0.3); height: 52px; padding: 0 28px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit; transition: background 150ms ease; }
-  .fs-cta-secondary:hover { background: rgba(255,255,255,0.08); }
-
-  .fs-search-btn { background: #0A1628; color: #FFFFFF; border: none; height: 56px; padding: 0 24px; font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer; border-radius: 0 12px 12px 0; letter-spacing: 0.01em; transition: background 150ms ease, transform 150ms ease; white-space: nowrap; flex-shrink: 0; }
-  .fs-search-btn:hover { background: #1B2F4E; }
-  .fs-search-btn:active { transform: scale(0.98); }
-
-  .fs-browse-btn { height: 44px; padding: 0 24px; border: 1.5px solid #0A1628; border-radius: 8px; background: #FFFFFF; color: #0A1628; font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer; transition: all 150ms ease; margin-top: 24px; }
-  .fs-browse-btn:hover { background: #0A1628; color: #FFFFFF; }
-
-  .fs-result-btn { width: 100%; height: 52px; border-radius: 8px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; transition: all 150ms ease; font-family: inherit; }
-  .fs-result-btn:hover { transform: translateY(-1px); }
-  .fs-result-btn-excel:hover { background: #0B6432 !important; box-shadow: 0 4px 12px rgba(13,122,62,0.3) !important; }
-  .fs-result-btn-word:hover { background: #1B2F4E !important; box-shadow: 0 4px 12px rgba(10,22,40,0.3) !important; }
-
-  .fs-step-active-dot { animation: fs-pulse-ring 1.4s ease-in-out infinite; }
-
-  .fs-feature-item { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #6B7280; }
-  .fs-input:focus { outline: none; }
-
-  .fs-card:hover { box-shadow: 0 4px 20px rgba(10,22,40,.10) !important; border-color: #CBD5E1 !important; }
-  .fs-chart-card:hover { box-shadow: 0 4px 20px rgba(10,22,40,.10) !important; border-color: #CBD5E1 !important; }
-  .fs-metric-card { background: #fff; border: 1px solid #E5E7EB; border-radius: 10px; padding: 16px 20px; flex: 1; min-width: 120px; transition: box-shadow 0.2s; }
-  .fs-metric-card:hover { box-shadow: 0 6px 20px rgba(10,22,40,.10) !important; }
-  .fs-metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .fs-search-row { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 580px; }
+  @media (min-width: 640px) { .fs-search-row { flex-direction: row; max-width: 740px; } }
+  .fs-search-bar { flex: 1; display: flex; gap: 8px; background: ${C.bgCard}; border: 1.5px solid ${C.border}; border-radius: 14px; padding: 6px 6px 6px 14px; box-shadow: ${C.shadow}; min-height: 52px; align-items: center; }
+  .fs-metrics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   @media (min-width: 640px) { .fs-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   @media (min-width: 1024px) { .fs-metrics-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
   .fs-charts-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
   @media (min-width: 1024px) { .fs-charts-grid { grid-template-columns: 1fr 1fr; gap: 18px; } }
-  .fs-analysis-sections { display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 24px; }
-  @media (min-width: 1024px) { .fs-analysis-sections { grid-template-columns: 1fr 1fr; gap: 18px; } }
-  .fs-insights-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 28px; }
-  @media (min-width: 1024px) { .fs-insights-grid { grid-template-columns: 1fr 1fr 1fr; gap: 18px; } }
-  .fs-section-heading { font-weight: 600; font-size: 17px; color: #0A1628; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-  .fs-section-heading::before { content: ''; width: 3px; height: 18px; background: #0D7A3E; border-radius: 2px; }
-  .cl-formButtonPrimary { background-color: #0A1628 !important; }
-  .cl-formButtonPrimary:hover { background-color: #1d3461 !important; }
-  .fs-deliverable-row:hover { border-color: #0A1628 !important; background: #F5F7FA !important; }
-
-  @media (max-width: 640px) {
-    .fs-hero-headline { font-size: 36px !important; letter-spacing: -1px !important; }
-    .fs-cta-row { flex-direction: column !important; align-items: stretch !important; }
-    .fs-steps-row { flex-direction: column !important; }
-    .fs-steps-connector { display: none !important; }
-    .fs-footer-cols { flex-direction: column !important; gap: 28px !important; }
-    .fs-footer-right { text-align: left !important; }
-  }
+  .fs-analysis-sections { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 20px; }
+  @media (min-width: 1024px) { .fs-analysis-sections { grid-template-columns: 1fr 1fr; gap: 16px; } }
+  .fs-insights-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 24px; }
+  @media (min-width: 1024px) { .fs-insights-grid { grid-template-columns: 1fr 1fr 1fr; gap: 16px; } }
+  .fs-section-heading { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; font-size: 17px; color: ${C.textPrimary}; margin-bottom: 14px; display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .fs-section-heading::before { content: ''; width: 4px; height: 20px; background: ${C.accent}; border-radius: 2px; }
+  .cl-formButtonPrimary { background-color: ${C.accent} !important; }
+  .cl-formButtonPrimary:hover { background-color: ${C.accentDark} !important; }
+  .fs-deliverable-row:hover { background: #EDE5D8 !important; border-color: ${C.brown} !important; }
 `;
 
 function DeliverableSelectionScreen({ file, selectedOutputs, onToggle, onCancel, onGenerate }) {
+  const hasBriefWordImpl = typeof generateBriefWordDoc === 'function';
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onCancel]);
 
-  const anySelected = selectedOutputs.excel || selectedOutputs.detailedWord;
+  const anySelected = Object.entries(selectedOutputs).some(([k, v]) => {
+    if (k === 'briefWord' && !hasBriefWordImpl) return false;
+    return v;
+  });
 
   const estimatedMinutes =
     3 +
+    (selectedOutputs.briefWord && hasBriefWordImpl ? 3 : 0) +
     (selectedOutputs.excel ? 2 : 0) +
+    (selectedOutputs.detailedPdf ? 5 : 0) +
     (selectedOutputs.detailedWord ? 5 : 0);
 
   const mainOptions = [
-    { key: 'excel',        icon: '📊', label: 'Financial Excel Workbook', format: 'Excel', desc: '3-tab analysis with all ratios — recommended', time: '~2 min', recommended: true,  comingSoon: false },
-    { key: 'detailedWord', icon: '📘', label: 'Word Report',              format: 'Word',  desc: 'Structured financial analysis report',          time: '~5 min', recommended: true,  comingSoon: false },
+    { key: 'briefWord',   icon: '📄', label: 'Brief Company Note',      format: 'Word',  desc: '12–15 page executive brief — recommended', time: '~3 min', recommended: true,  comingSoon: !hasBriefWordImpl },
+    { key: 'excel',       icon: '📊', label: 'Financial Excel Workbook', format: 'Excel', desc: '3-tab analysis with all ratios — recommended', time: '~2 min', recommended: true,  comingSoon: false },
+  ];
+  const advancedOptions = [
+    { key: 'detailedPdf',  icon: '📕', label: 'Detailed Organised PDF',  format: 'PDF',  desc: 'Full 100+ page formatted document',  time: '~8 min', recommended: false, comingSoon: false },
+    { key: 'detailedWord', icon: '📘', label: 'Detailed Organised Word', format: 'Word', desc: 'Full 100+ page Word version',          time: '~8 min', recommended: false, comingSoon: false },
   ];
 
   const OptionRow = ({ opt }) => {
-    const checked = selectedOutputs[opt.key];
+    const checked = !opt.comingSoon && selectedOutputs[opt.key];
     return (
       <label
         htmlFor={`opt-${opt.key}`}
-        className="fs-deliverable-row"
+        className={opt.comingSoon ? '' : 'fs-deliverable-row'}
         style={{
           display: 'flex', alignItems: 'flex-start', gap: 14, padding: '14px 16px',
-          background: checked ? "#F5F7FA" : "#FFFFFF",
-          border: `1.5px solid ${checked ? "#0A1628" : "#E8ECF0"}`,
-          borderRadius: 10, cursor: 'pointer', transition: 'all 0.15s',
+          background: opt.recommended ? C.brownLight : C.bgCard,
+          border: `1.5px solid ${checked ? C.brown : C.border}`,
+          borderRadius: 10, cursor: opt.comingSoon ? 'default' : 'pointer',
+          opacity: opt.comingSoon ? 0.6 : 1, transition: 'border-color 0.15s',
         }}
       >
         <input
           id={`opt-${opt.key}`} type="checkbox"
-          checked={checked}
-          onChange={() => onToggle(opt.key)}
-          style={{ marginTop: 3, accentColor: "#0A1628", width: 16, height: 16, cursor: 'pointer', flexShrink: 0 }}
+          checked={checked} disabled={opt.comingSoon}
+          onChange={() => !opt.comingSoon && onToggle(opt.key)}
+          style={{ marginTop: 3, accentColor: C.brown, width: 16, height: 16,
+            cursor: opt.comingSoon ? 'default' : 'pointer', flexShrink: 0 }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: "#0A1628" }}>{opt.label}</span>
-            <span style={{ fontSize: 11, fontWeight: 500, color: "#6B7280", background: "#F5F7FA", border: "1px solid #E8ECF0", borderRadius: 4, padding: '1px 7px' }}>{opt.format}</span>
-            {opt.recommended && <span style={{ fontSize: 10, fontWeight: 600, color: "#0D7A3E", background: "#E8F5EE", borderRadius: 4, padding: '1px 7px' }}>Recommended</span>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 3 }}>
+            <span style={{ fontSize: 15 }}>{opt.icon}</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary }}>{opt.label}</span>
+            <span style={{ fontSize: 10.5, fontWeight: 600, color: C.textMuted, background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 4, padding: '1px 6px' }}>{opt.format}</span>
+            {opt.comingSoon && <span style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 4, padding: '1px 6px' }}>COMING SOON</span>}
+            {opt.recommended && !opt.comingSoon && <span style={{ fontSize: 10, fontWeight: 700, color: C.green, background: C.greenBg, border: `1px solid ${C.green}`, borderRadius: 4, padding: '1px 6px' }}>RECOMMENDED</span>}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 13, color: "#6B7280" }}>{opt.desc}</span>
-            <span style={{ fontSize: 12, color: "#9CA3AF", flexShrink: 0 }}>{opt.time}</span>
+            <span style={{ fontSize: 12.5, color: C.textSec }}>{opt.desc}</span>
+            <span style={{ fontSize: 11.5, color: C.textMuted, flexShrink: 0 }}>{opt.time}</span>
           </div>
         </div>
       </label>
@@ -5229,40 +5827,50 @@ function DeliverableSelectionScreen({ file, selectedOutputs, onToggle, onCancel,
   };
 
   return (
-    <div style={{ width: '100%', background: "#FFFFFF", border: "1px solid #E8ECF0", borderRadius: 12, padding: '28px 28px 24px', boxShadow: "0 4px 20px rgba(10,22,40,.08)" }}>
-      <div style={{ marginBottom: 22 }}>
-        <div style={{ fontSize: 18, fontWeight: 600, color: "#0A1628", marginBottom: 4, letterSpacing: "-0.3px" }}>Choose your deliverables</div>
-        <div style={{ fontSize: 14, color: "#6B7280" }}>Select what to generate from this filing</div>
+    <div style={{ width: '100%', maxWidth: 600, margin: '16px auto 0', background: C.bgCard, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: '28px 28px 24px', boxShadow: C.shadowMd }}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: C.textPrimary, marginBottom: 4 }}>Choose Your Deliverables</div>
+        <div style={{ fontSize: 13.5, color: C.textSec }}>Pick what you want generated from this filing</div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: "#F5F7FA", border: "1px solid #E8ECF0", borderRadius: 8, marginBottom: 20 }}>
-        <span style={{ fontSize: 14 }}>📁</span>
-        <span style={{ fontSize: 13, color: "#6B7280", flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file?.name}</span>
-        <button onClick={onCancel} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: "#0D7A3E", fontWeight: 600, flexShrink: 0, padding: 0, fontFamily: "inherit" }}>Change</button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: 20 }}>
+        <span style={{ fontSize: 16 }}>📁</span>
+        <span style={{ fontSize: 13, color: C.textSec, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file?.name}</span>
+        <button onClick={onCancel} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: C.accent, fontWeight: 600, flexShrink: 0, padding: 0 }}>Change File</button>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
         {mainOptions.map(opt => <OptionRow key={opt.key} opt={opt} />)}
       </div>
 
-      <div style={{ padding: '10px 14px', background: "#F5F7FA", border: "1px solid #E8ECF0", borderRadius: 8, marginBottom: anySelected ? 20 : 10, fontSize: 13, color: "#0A1628", fontWeight: 500 }}>
-        ⏱ Estimated time: ~{estimatedMinutes} minutes
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <div style={{ flex: 1, height: 1, background: C.border }} />
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: '0.08em' }}>ADVANCED OPTIONS</span>
+        <div style={{ flex: 1, height: 1, background: C.border }} />
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+        {advancedOptions.map(opt => <OptionRow key={opt.key} opt={opt} />)}
+      </div>
+
+      <div style={{ padding: '10px 14px', background: C.brownLight, border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: anySelected ? 20 : 10, fontSize: 13, color: C.brown, fontWeight: 500 }}>
+        ⏱ Estimated processing time: ~{estimatedMinutes} minutes
       </div>
 
       {!anySelected && (
-        <div style={{ marginBottom: 16, fontSize: 13, color: "#D97706", textAlign: 'center', fontWeight: 500 }}>
+        <div style={{ marginBottom: 16, fontSize: 12.5, color: C.amber, textAlign: 'center', fontWeight: 500 }}>
           Select at least one deliverable to continue
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 10 }}>
-        <button onClick={onCancel} style={{ flex: 1, height: 46, borderRadius: 8, border: "1px solid #E8ECF0", background: "#F5F7FA", color: "#0A1628", fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: "inherit" }}>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button onClick={onCancel} style={{ flex: 1, height: 46, borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.bgSidebar, color: C.textPrimary, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
           Cancel
         </button>
         <button
           onClick={anySelected ? onGenerate : undefined}
           disabled={!anySelected}
-          style={{ flex: 2, height: 46, borderRadius: 8, border: 'none', background: anySelected ? "#0A1628" : "#E8ECF0", color: anySelected ? '#fff' : "#9CA3AF", fontSize: 14, fontWeight: 600, cursor: anySelected ? 'pointer' : 'default', transition: 'background 0.15s', fontFamily: "inherit" }}
+          style={{ flex: 2, height: 46, borderRadius: 10, border: 'none', background: anySelected ? C.brown : C.border, color: anySelected ? '#fff' : C.textMuted, fontSize: 14, fontWeight: 600, cursor: anySelected ? 'pointer' : 'default', transition: 'background 0.15s' }}
         >
           Generate Selected →
         </button>
@@ -5273,18 +5881,21 @@ function DeliverableSelectionScreen({ file, selectedOutputs, onToggle, onCancel,
 
 function LoginScreen() {
   return (
-    <div style={{ minHeight: "100vh", background: "#FFFFFF", fontFamily: "'Inter', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
+    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <style>{FONTS + GLOBAL_CSS}</style>
-      <div style={{ marginBottom: 32, textAlign: "center" }}>
-        <div style={{ display: "inline-flex", alignItems: "baseline", gap: 0, marginBottom: 32 }}>
-          <span style={{ fontSize: 24, fontWeight: 700, color: "#0A1628", letterSpacing: "-0.5px" }}>FinSight</span>
-          <span style={{ fontSize: 24, fontWeight: 700, color: "#0D7A3E", letterSpacing: "-0.5px" }}>AI</span>
+      <div style={{ marginBottom: 24, textAlign: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, marginBottom: 16 }}>
+          <FinSightLogo size={56} />
+          <div style={{ textAlign: "left" }}>
+            <div style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 800, fontSize: 28, color: C.textPrimary, lineHeight: 1 }}>FinSight AI</div>
+            <div style={{ fontSize: 12, color: C.textMuted, marginTop: 4 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>{AUTHOR_NAME}</span></div>
+          </div>
         </div>
-        <h2 style={{ fontWeight: 700, fontSize: 22, color: "#0A1628", marginBottom: 8, letterSpacing: "-0.5px" }}>Sign in to continue</h2>
-        <p style={{ color: "#6B7280", fontSize: 15, lineHeight: 1.6 }}>Institutional financial analysis powered by Claude AI</p>
+        <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 20, color: C.textPrimary, marginBottom: 6 }}>Welcome to financial intelligence</h2>
+        <p style={{ color: C.textSec, fontSize: 14 }}>Sign in to analyze any company's financials</p>
       </div>
-      <SignIn appearance={{ elements: { card: { background: "#FFFFFF", border: "1px solid #E8ECF0", boxShadow: "0 4px 20px rgba(10,22,40,.08)", borderRadius: 12 }, formButtonPrimary: { background: "#0A1628" } } }} />
-      <div style={{ marginTop: 24, color: "#9CA3AF", fontSize: 13, textAlign: "center" }}>By continuing, you agree to our Terms & Privacy Policy</div>
+      <SignIn appearance={{ elements: { card: { background: C.bgCard, border: `1px solid ${C.border}`, boxShadow: C.shadow }, formButtonPrimary: { background: C.accent } } }} />
+      <div style={{ marginTop: 24, color: C.textMuted, fontSize: 12, textAlign: "center" }}>By continuing, you agree to our Terms & Privacy Policy</div>
     </div>
   );
 }
@@ -5303,11 +5914,10 @@ function FinSightApp() {
   const [privateDocProgress, setPrivateDocProgress] = useState("");
   const [privateDocError, setPrivateDocError] = useState("");
   const [docReady, setDocReady] = useState(null);
-  const [selectedOutputs, setSelectedOutputs] = useState({ briefWord: false, excel: true, detailedPdf: false, detailedWord: true }); // briefWord/detailedPdf hidden from UI
+  const [selectedOutputs, setSelectedOutputs] = useState({ briefWord: true, excel: true, detailedPdf: false, detailedWord: false });
   const [privateDocStage, setPrivateDocStage] = useState('idle');
   const [privateDocFile, setPrivateDocFile] = useState(null);
   const [scannedPdfWarn, setScannedPdfWarn] = useState(null);
-  const [debugMessages, setDebugMessages] = useState([]);
 
   useEffect(() => {
     if (screen !== "loading") return;
@@ -5347,19 +5957,14 @@ function FinSightApp() {
   const runPrivateDocProcess = async (file, outputs) => {
     setPrivateDocLoading(true); setPrivateDocError(""); setPrivateDocProgress(""); setDocReady(null);
     setScannedPdfWarn(null);
-    setDebugMessages([]);
     setPrivateDocStage('processing');
     try {
-      const result = await processPrivateCompanyDoc(
-        file, outputs,
-        (msg) => setPrivateDocProgress(msg),
-        (msg) => setDebugMessages(prev => [...prev, msg])
-      );
+      const result = await processPrivateCompanyDoc(file, outputs, (msg) => setPrivateDocProgress(msg));
       setDocReady({
         pdfBlob: result.pdfBlob,
         pdfFileName: result.pdfFileName,
-        docxBlob: result.docxBlob || result.wordBlob,
-        docxFileName: result.docxFileName || result.wordFileName,
+        docxBlob: result.docxBlob,
+        docxFileName: result.docxFileName,
         excelBlob: result.excelBlob,
         excelFileName: result.excelFileName,
         briefWordBlob: result.briefWordBlob,
@@ -5371,19 +5976,8 @@ function FinSightApp() {
         extractionWarnings: result.extractionWarnings,
         selectedOutputs: outputs,
         companyName: result.companyInfo?.name || 'Private Company',
-        financials: result.aggregated ? {
-          revenue: result.aggregated.revenue,
-          netIncome: result.aggregated.netIncome,
-          totalAssets: result.aggregated.totalAssets,
-          netMargin: result.aggregated.netMargin,
-          revenuePrior: result.aggregatedPrior?.revenue,
-          netIncomePrior: result.aggregatedPrior?.netIncome,
-          totalAssetsPrior: result.aggregatedPrior?.totalAssets,
-          unit: result.companyInfo?.rounding || 'Cr',
-        } : null,
         summary: {
           sectionCount: result.sectionCount,
-          sheetCount: result.sheetCount,
           ratioCount: result.ratioCount,
           hasSWOT: result.hasSWOT,
           hasCharts: result.hasCharts,
@@ -5395,7 +5989,7 @@ function FinSightApp() {
       setPrivateDocLoading(false);
       setPrivateDocProgress("");
     } catch (e) {
-      setPrivateDocError(e.isGraceful ? (e.body || e.message) : (e.message || "Failed to process document."));
+      setPrivateDocError(e.message || "Failed to process document.");
       setPrivateDocLoading(false);
       setPrivateDocProgress("");
       setPrivateDocStage('uploaded');
@@ -5403,6 +5997,13 @@ function FinSightApp() {
   };
 
   const handlePrivateDocProcess = async (file, outputs) => {
+    try {
+      const textCheck = await checkPdfHasText(file);
+      if (!textCheck.hasText) {
+        setScannedPdfWarn({ file, outputs, charsPerPage: textCheck.charsPerPage, totalPages: textCheck.totalPages });
+        return;
+      }
+    } catch { /* if check fails, proceed anyway */ }
     await runPrivateDocProcess(file, outputs);
   };
 
@@ -5427,305 +6028,142 @@ function FinSightApp() {
   };
 
   if (screen === "landing") return (
-    <div style={{ minHeight: "100vh", background: "#FFFFFF", fontFamily: "'Inter', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
+    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
       <style>{FONTS + GLOBAL_CSS}</style>
-
-      {/* HEADER */}
-      <header style={{ position: "sticky", top: 0, zIndex: 100, height: 60, background: "#FFFFFF", borderBottom: "1px solid #E5E7EB", display: "flex", alignItems: "center", padding: "0 40px", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "baseline" }}>
-          <span style={{ fontSize: 18, fontWeight: 700, color: "#0A1628", letterSpacing: "-0.3px" }}>FinSight</span>
-          <span style={{ fontSize: 18, fontWeight: 700, color: "#0D7A3E", letterSpacing: "-0.3px" }}>AI</span>
+      <header style={{ padding: "10px 28px", display: "flex", alignItems: "center", borderBottom: `1px solid ${C.border}`, background: C.bgCard, minHeight: 56 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <FinSightLogo size={28} />
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            <span style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 15, color: C.textPrimary, lineHeight: 1 }}>FinSight AI</span>
+            <span style={{ fontSize: 9.5, color: C.textMuted, marginTop: 2 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>{AUTHOR_NAME}</span></span>
+          </div>
         </div>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 13, color: "#6B7280", fontWeight: 400 }}>finsightai.org</span>
+        <UserButton afterSignOutUrl="/" />
       </header>
 
-      {/* HERO */}
-      <section style={{ background: "#0A1628", padding: "100px 24px", textAlign: "center" }}>
-        <div className="fs-hero-content">
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.05)", borderRadius: 100, padding: "6px 16px" }}>
-            <span style={{ fontSize: 12, fontWeight: 500, color: "#FFFFFF", letterSpacing: "0.05em" }}>✦ Powered by Claude AI</span>
-          </div>
-
-          <h1 className="fs-hero-headline">
-            Where finance meets intelligence.
-          </h1>
-
-          <p style={{ fontSize: 18, color: "rgba(255,255,255,0.65)", maxWidth: 500, margin: "20px auto 0", lineHeight: 1.6 }}>
-            Upload any MCA filing or annual report. Get a verified Excel workbook and Word report — instantly.
-          </p>
-
-          <div className="fs-cta-row" style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 40, flexWrap: "wrap" }}>
-            <button className="fs-cta-primary" onClick={() => document.getElementById('fs-public')?.scrollIntoView({ behavior: 'smooth' })}>
-              Analyse a company →
-            </button>
-            <button className="fs-cta-secondary" onClick={() => document.getElementById('fs-private')?.scrollIntoView({ behavior: 'smooth' })}>
-              Upload document
-            </button>
-          </div>
-
-          <p style={{ marginTop: 28, fontSize: 13, color: "rgba(255,255,255,0.4)", letterSpacing: "0.02em" }}>
-            Trusted for private equity · credit analysis · due diligence
-          </p>
-        </div>
-      </section>
-
-      {/* SOCIAL PROOF STRIP */}
-      <div style={{ background: "#F5F7FA", borderTop: "1px solid #E5E7EB", borderBottom: "1px solid #E5E7EB", padding: "16px 24px", textAlign: "center" }}>
-        <p style={{ fontSize: 13, color: "#6B7280", letterSpacing: "0.02em" }}>
-          Analysis across &nbsp;
-          <strong style={{ color: "#0A1628", fontWeight: 600 }}>Pharmaceuticals</strong>
-          <span style={{ color: "#9CA3AF", margin: "0 10px" }}>·</span>
-          <strong style={{ color: "#0A1628", fontWeight: 600 }}>Chemicals</strong>
-          <span style={{ color: "#9CA3AF", margin: "0 10px" }}>·</span>
-          <strong style={{ color: "#0A1628", fontWeight: 600 }}>Medical Devices</strong>
-          <span style={{ color: "#9CA3AF", margin: "0 10px" }}>·</span>
-          <strong style={{ color: "#0A1628", fontWeight: 600 }}>Manufacturing</strong>
-          <span style={{ color: "#9CA3AF", margin: "0 10px" }}>·</span>
-          <strong style={{ color: "#0A1628", fontWeight: 600 }}>Technology</strong>
+      <main style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 24px 32px", animation: "fs-fade .6s ease both" }}>
+        <div style={{ marginBottom: 24 }}><FinSightLogo size={64} /></div>
+        <h1 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: "clamp(28px, 7.5vw, 52px)", fontWeight: 800, color: C.textPrimary, letterSpacing: "-1.2px", textAlign: "center", lineHeight: 1.15, marginBottom: 14 }}>
+          Where finance meets <span style={{ color: C.accent }}>intelligence.</span>
+        </h1>
+        <p style={{ color: C.textSec, fontSize: 15, lineHeight: 1.7, textAlign: "center", maxWidth: 540, marginBottom: 32 }}>
+          Type any company name. Get AI-powered financial analysis with interactive charts, Excel reports, and professional PPT decks.
         </p>
-      </div>
 
-      {/* PUBLIC COMPANY SECTION */}
-      <section id="fs-public" style={{ background: "#FFFFFF", padding: "96px 24px" }}>
-        <div style={{ maxWidth: 760, margin: "0 auto", textAlign: "center" }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#0D7A3E", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>Public Companies</div>
-          <h2 style={{ fontSize: 40, fontWeight: 700, color: "#0A1628", letterSpacing: "-0.5px", lineHeight: 1.15, marginBottom: 12 }}>Analyse any listed company</h2>
-          <p style={{ fontSize: 16, color: "#6B7280", lineHeight: 1.6, maxWidth: 480, margin: "0 auto 40px" }}>
-            Quarterly, half-yearly, or annual financial analysis for any publicly listed company worldwide
-          </p>
-
-          {/* Period pills */}
-          <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 24 }}>
-            {[
-              { id: "latest_quarter", label: "Quarterly" },
-              { id: "half_yearly",    label: "Half-Yearly" },
-              { id: "1_year",         label: "Annual" },
-            ].map(p => (
-              <button key={p.id}
-                className={`fs-period-pill fs-btn${period === p.id ? '' : ' fs-period-pill-inactive'}`}
-                onClick={() => setPeriod(p.id)}
-                style={{
-                  background: period === p.id ? "#0A1628" : "#FFFFFF",
-                  color: period === p.id ? "#FFFFFF" : "#6B7280",
-                  border: `1.5px solid ${period === p.id ? "#0A1628" : "#E5E7EB"}`,
-                }}>
-                {p.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Search */}
-          <div style={{ maxWidth: 640, margin: "0 auto 24px", display: "flex", background: "#FFFFFF", border: "1.5px solid #E5E7EB", borderRadius: 12, overflow: "hidden" }}>
-            <input
-              className="fs-input"
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && q.trim() && analyze(q.trim())}
-              placeholder="Enter company name — Reliance, TCS, Apple..."
-              style={{ flex: 1, height: 56, border: "none", outline: "none", padding: "0 20px", fontSize: 15, color: "#0A1628", fontFamily: "inherit", background: "transparent" }}
-            />
-            <button className="fs-search-btn fs-btn" onClick={() => q.trim() && analyze(q.trim())} disabled={!q.trim()} style={{ opacity: q.trim() ? 1 : 0.5 }}>
-              Analyse →
+        <div className="fs-search-row" style={{ marginBottom: 32 }}>
+          <PeriodDropdown value={period} onChange={setPeriod} />
+          <div className="fs-search-bar">
+            <input className="fs-input" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && q.trim() && analyze(q.trim())}
+              placeholder="e.g. Apple, Reliance, Tesla..." style={{ flex: 1, background: "none", border: "none", outline: "none", color: C.textPrimary, fontSize: 15, fontFamily: "inherit" }} />
+            <button className="fs-btn-primary" onClick={() => q.trim() && analyze(q.trim())} disabled={!q.trim()}
+              style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 600, cursor: "pointer", opacity: q.trim() ? 1 : .55 }}>
+              Analyze →
             </button>
           </div>
-
-          {/* Company chips */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-              <span style={{ fontSize: 12, color: "#9CA3AF", fontWeight: 500 }}>🇺🇸 US</span>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-                {US_EX.map(c => <button key={c} className="fs-company-chip" onClick={() => analyze(c)}>{c}</button>)}
-              </div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-              <span style={{ fontSize: 12, color: "#9CA3AF", fontWeight: 500 }}>🇮🇳 IN</span>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-                {IN_EX.map(c => <button key={c} className="fs-company-chip" onClick={() => analyze(c)}>{c}</button>)}
-              </div>
-            </div>
-          </div>
         </div>
-      </section>
 
-      {/* PRIVATE COMPANY SECTION */}
-      <section id="fs-private" style={{ background: "#F5F7FA", padding: "96px 24px" }}>
-        <div style={{ maxWidth: 720, margin: "0 auto", textAlign: "center" }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#0D7A3E", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>Private Companies</div>
-          <h2 style={{ fontSize: 40, fontWeight: 700, color: "#0A1628", letterSpacing: "-0.5px", lineHeight: 1.15, marginBottom: 12 }}>Analyse private company financials</h2>
-          <p style={{ fontSize: 16, color: "#6B7280", lineHeight: 1.6, maxWidth: 480, margin: "0 auto 40px" }}>
-            Upload MCA filing, XBRL document, or annual report PDF. Get institutional-grade output in under 60 seconds.
-          </p>
-
-          <PendingAnalysisBanner />
-
-          {docReady ? (
-            <DocumentReadyScreen docReady={docReady} onReset={() => { setDocReady(null); setPrivateDocStage('idle'); setPrivateDocFile(null); setScannedPdfWarn(null); }} />
-          ) : scannedPdfWarn ? (
-            <div style={{ maxWidth: 560, margin: "0 auto", background: "#FFFFFF", border: "1px solid #FCD34D", borderRadius: 16, padding: "32px 40px", boxShadow: "0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04)" }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: '#92400E', marginBottom: 10 }}>⚠ PDF Appears to Be Scanned</div>
-              <div style={{ fontSize: 14, color: "#6B7280", lineHeight: 1.7, marginBottom: 20 }}>
-                Only ~{scannedPdfWarn.charsPerPage} characters per page detected — this PDF likely contains scanned images. For best results, use an MCA portal XBRL/text-based PDF.
-              </div>
-              <div style={{ display: 'flex', gap: 12 }}>
-                <button onClick={() => { setScannedPdfWarn(null); setPrivateDocStage('idle'); setPrivateDocFile(null); }}
-                  style={{ flex: 1, height: 44, borderRadius: 8, border: '1px solid #E5E7EB', background: '#F5F7FA', color: '#0A1628', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: "inherit" }}>
-                  Cancel
-                </button>
-                <button onClick={() => runPrivateDocProcess(scannedPdfWarn.file, scannedPdfWarn.outputs)}
-                  style={{ flex: 2, height: 44, borderRadius: 8, border: 'none', background: '#0A1628', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: "inherit" }}>
-                  Proceed Anyway →
-                </button>
-              </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center", marginBottom: 32 }}>
+          {[{ flag: "🇺🇸", label: "US", items: US_EX }, { flag: "🇮🇳", label: "India", items: IN_EX }].map(row => (
+            <div key={row.flag} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "center" }}>
+              <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 500, minWidth: 70, textAlign: "right" }}>{row.flag} {row.label}</span>
+              {row.items.map(c => <button key={c} className="fs-chip" onClick={() => analyze(c)}
+                style={{ background: C.bgCard, border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 20, padding: "5px 12px", fontSize: 12.5, cursor: "pointer" }}>{c}</button>)}
             </div>
-          ) : (privateDocStage === 'uploaded' && !privateDocLoading) ? (
-            <div style={{ maxWidth: 560, margin: "0 auto" }}>
-              <DeliverableSelectionScreen
-                file={privateDocFile}
-                selectedOutputs={selectedOutputs}
-                onToggle={(key) => setSelectedOutputs(prev => ({ ...prev, [key]: !prev[key] }))}
-                onCancel={() => { setPrivateDocStage('idle'); setPrivateDocFile(null); setPrivateDocError(""); }}
-                onGenerate={() => handlePrivateDocProcess(privateDocFile, selectedOutputs)}
-              />
-            </div>
-          ) : (
-            <>
-              {/* Upload card / processing (PrivateDocUploadZone handles both states) */}
-              <div style={{ maxWidth: 560, margin: "0 auto" }}>
-                <PrivateDocUploadZone
+          ))}
+        </div>
+
+        <div style={{ width: "100%", maxWidth: 720, margin: "8px auto", display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ flex: 1, height: 1, background: C.border }}></div>
+          <div style={{ fontSize: 11, color: C.brown, fontWeight: 700, letterSpacing: "0.08em", padding: "4px 12px", background: C.brownLight, border: `1px solid ${C.border}`, borderRadius: 20 }}>
+            OR ORGANIZE PRIVATE COMPANY DOCS
+          </div>
+          <div style={{ flex: 1, height: 1, background: C.border }}></div>
+        </div>
+
+        <PendingAnalysisBanner />
+        {docReady
+          ? <DocumentReadyScreen docReady={docReady} onReset={() => { setDocReady(null); setPrivateDocStage('idle'); setPrivateDocFile(null); setScannedPdfWarn(null); }} />
+          : scannedPdfWarn
+            ? (
+              <div style={{ width: "100%", maxWidth: 480, margin: "16px auto 0", background: C.bgCard, border: `1.5px solid #FCD34D`, borderRadius: 14, padding: "24px 24px 20px", boxShadow: C.shadowMd }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#92400E', marginBottom: 10 }}>⚠ PDF Appears to Be Scanned</div>
+                <div style={{ fontSize: 13, color: C.textSec, lineHeight: 1.7, marginBottom: 16 }}>
+                  Only ~{scannedPdfWarn.charsPerPage} characters per page detected across the first 3 pages — this suggests the PDF contains scanned images rather than searchable text.
+                  <br /><br />
+                  Extraction may return limited or no financial data. For best results, use an MCA portal XBRL/text-based PDF.
+                  <br /><br />
+                  You can still proceed — structured sections will be organised, but financial tables may be empty.
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={() => { setScannedPdfWarn(null); setPrivateDocStage('idle'); setPrivateDocFile(null); }}
+                    style={{ flex: 1, height: 42, borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.bgSidebar, color: C.textPrimary, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                    Cancel
+                  </button>
+                  <button onClick={() => runPrivateDocProcess(scannedPdfWarn.file, scannedPdfWarn.outputs)}
+                    style={{ flex: 2, height: 42, borderRadius: 10, border: 'none', background: '#D97706', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                    Proceed Anyway →
+                  </button>
+                </div>
+              </div>
+            )
+            : (privateDocStage === 'uploaded' && !privateDocLoading)
+              ? <DeliverableSelectionScreen
+                  file={privateDocFile}
+                  selectedOutputs={selectedOutputs}
+                  onToggle={(key) => setSelectedOutputs(prev => ({ ...prev, [key]: !prev[key] }))}
+                  onCancel={() => { setPrivateDocStage('idle'); setPrivateDocFile(null); setPrivateDocError(""); }}
+                  onGenerate={() => handlePrivateDocProcess(privateDocFile, selectedOutputs)}
+                />
+              : <PrivateDocUploadZone
                   onFileSelected={handlePrivateFileSelected}
                   isProcessing={privateDocLoading}
                   progress={privateDocProgress}
                   error={privateDocError}
                 />
-              </div>
+        }
 
-              {/* Feature chips */}
-              {!docReady && !privateDocLoading && privateDocStage !== 'uploaded' && !scannedPdfWarn && (
-                <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 24, marginTop: 32 }}>
-                  {["Excel Workbook", "Word Report", "SWOT Analysis", "Verification Matrix", "Ratio Benchmarking"].map(feat => (
-                    <div key={feat} className="fs-feature-item">
-                      <span style={{ color: "#0D7A3E", fontWeight: 700 }}>✓</span>
-                      <span>{feat}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-
-          {debugMessages.length > 0 && (
-            <div style={{ maxWidth: 560, margin: "16px auto 0", background: '#fff', border: '1px solid #000', borderRadius: 4, padding: 10, maxHeight: 200, overflowY: 'auto', fontSize: 12, fontFamily: 'monospace', color: '#000', textAlign: 'left' }}>
-              <div style={{ fontWeight: 'bold', marginBottom: 6 }}>DEBUG LOG</div>
-              {debugMessages.map((msg, i) => <div key={i} style={{ marginBottom: 3 }}>{msg}</div>)}
-            </div>
-          )}
+        <div style={{ marginTop: 16, fontSize: 11.5, color: C.textMuted, textAlign: "center", maxWidth: 640, lineHeight: 1.6 }}>
+          <strong style={{ color: C.textSec }}>What you get:</strong> Full preservation · No XBRL tags · Times New Roman · Page borders · Bar charts · SWOT · Company-specific ratio interpretations · Corporate-ready output.
         </div>
-      </section>
+      </main>
 
-      {/* HOW IT WORKS */}
-      <section style={{ background: "#FFFFFF", padding: "96px 24px", borderTop: "1px solid #E5E7EB" }}>
-        <div style={{ maxWidth: 900, margin: "0 auto", textAlign: "center" }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#0D7A3E", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>The Process</div>
-          <h2 style={{ fontSize: 40, fontWeight: 700, color: "#0A1628", letterSpacing: "-0.5px", lineHeight: 1.15, marginBottom: 64 }}>Three steps to institutional analysis</h2>
-
-          <div className="fs-steps-row" style={{ display: "flex", alignItems: "flex-start", position: "relative", gap: 0 }}>
-            <div className="fs-steps-connector" style={{ position: "absolute", top: 28, left: "calc(100% / 6)", right: "calc(100% / 6)", height: 0, borderTop: "1.5px dashed #E5E7EB", zIndex: 0 }} />
-            {[
-              {
-                title: "Upload your document",
-                desc: "PDF, XBRL, or Excel from MCA portal or annual report",
-                icon: <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M14 2H6C5.46957 2 4.96086 2.21071 4.58579 2.58579C4.21071 2.96086 4 3.46957 4 4V20C4 20.5304 4.21071 21.0391 4.58579 21.4142C4.96086 21.7893 5.46957 22 6 22H18C18.5304 22 19.0391 21.7893 19.4142 21.4142C19.7893 21.0391 20 20.5304 20 20V8L14 2Z" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M12 18V12M9 15L12 12L15 15" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
-                num: "STEP 01",
-              },
-              {
-                title: "Claude AI analyses",
-                desc: "Extracts every financial figure with perfect accuracy",
-                icon: <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
-                num: "STEP 02",
-              },
-              {
-                title: "Download instantly",
-                desc: "Verified Excel and Word report ready in seconds",
-                icon: <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M21 15V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H5C4.46957 21 3.96086 20.7893 3.58579 20.4142C3.21071 20.0391 3 19.5304 3 19V15" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M7 10L12 15L17 10" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><path d="M12 15V3" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
-                num: "STEP 03",
-              },
-            ].map((step, i) => (
-              <div key={i} style={{ flex: 1, textAlign: "center", padding: "0 24px", position: "relative", zIndex: 1 }}>
-                <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#0A1628", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>
-                  {step.icon}
-                </div>
-                <div style={{ fontSize: 11, color: "#9CA3AF", fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 16 }}>{step.num}</div>
-                <div style={{ fontSize: 16, fontWeight: 600, color: "#0A1628", marginTop: 12, letterSpacing: "-0.2px" }}>{step.title}</div>
-                <div style={{ fontSize: 14, color: "#6B7280", lineHeight: 1.6, maxWidth: 220, margin: "8px auto 0" }}>{step.desc}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* FOOTER */}
-      <footer style={{ background: "#0A1628", padding: "48px 40px", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-        <div className="fs-footer-cols" style={{ maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 32 }}>
-          <div>
-            <div>
-              <span style={{ fontSize: 16, fontWeight: 600, color: "#FFFFFF" }}>FinSight</span>
-              <span style={{ fontSize: 16, fontWeight: 600, color: "#0D7A3E" }}>AI</span>
-            </div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 4 }}>Institutional Financial Analysis</div>
-          </div>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", lineHeight: 1.8 }}>For research and educational purposes only.</div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", lineHeight: 1.8 }}>Not investment advice.</div>
-            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.25)", marginTop: 8 }}>Developed by Aashni Shah and Hitansh Jhaveri</div>
-          </div>
-          <div className="fs-footer-right" style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.4)" }}>finsightai.org</div>
-          </div>
-        </div>
+      <footer style={{ padding: "18px 20px", textAlign: "center", borderTop: `1px solid ${C.border}`, background: C.bgCard }}>
+        <span style={{ color: C.textMuted, fontSize: 11.5 }}>FinSight AI · Research & education only · Not investment advice  ·  </span><Byline />
       </footer>
     </div>
   );
 
-
   if (screen === "loading") return (
-    <div style={{ minHeight: "100vh", background: "#FFFFFF", fontFamily: "'Inter', system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
+    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <style>{FONTS + GLOBAL_CSS}</style>
-      <header style={{ height: 64, background: "#FFFFFF", borderBottom: "1px solid #E8ECF0", display: "flex", alignItems: "center", padding: "0 40px", flexShrink: 0 }}>
-        <span style={{ fontSize: 18, fontWeight: 700, color: "#0A1628", letterSpacing: "-0.5px" }}>FinSight</span>
-        <span style={{ fontSize: 18, fontWeight: 700, color: "#0D7A3E", letterSpacing: "-0.5px" }}>AI</span>
-      </header>
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32 }}>
-        <div style={{ background: "#FFFFFF", border: "1px solid #E8ECF0", borderRadius: 12, padding: "40px 44px", boxShadow: "0 4px 20px rgba(10,22,40,.08)", width: "100%", maxWidth: 380 }}>
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#0A1628", marginBottom: 6, letterSpacing: "-0.5px" }}>Analysing financials…</h2>
-          <p style={{ color: "#6B7280", fontSize: 14, marginBottom: 32 }}>{PERIODS.find(p => p.id === period)?.label} analysis · ~20–30 seconds</p>
-          <div>
-            {STEPS.map((s, i) => {
-              const done = i < stepIdx, active = i === stepIdx, pending = i > stepIdx;
-              return (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, opacity: pending ? 0.3 : 1 }}>
-                  <div style={{ width: 24, height: 24, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, background: done ? "#0D7A3E" : active ? "#0A1628" : "#E8ECF0", transition: "background 0.3s" }}>
-                    {done ? <span style={{ color: "#fff", fontSize: 11, fontWeight: 700 }}>✓</span> : active ? <Spinner /> : null}
-                  </div>
-                  <span style={{ fontSize: 14, color: done ? "#0D7A3E" : active ? "#0A1628" : "#9CA3AF", fontWeight: active ? 600 : 400, transition: "color 0.2s" }}>{s}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+      <div style={{ marginBottom: 24 }}><FinSightLogo size={52} /></div>
+      <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 20, fontWeight: 700, color: C.textPrimary, marginBottom: 6 }}>Analyzing financials…</h2>
+      <p style={{ color: C.textSec, fontSize: 13.5, marginBottom: 36 }}>Period: {PERIODS.find(p => p.id === period)?.label} · Takes about 20–30 seconds</p>
+      <div style={{ width: "100%", maxWidth: 320 }}>
+        {STEPS.map((s, i) => {
+          const done = i < stepIdx, active = i === stepIdx, pending = i > stepIdx;
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, opacity: pending ? .32 : 1 }}>
+              <div style={{ width: 24, height: 24, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: done ? C.green : active ? C.accent : C.border }}>
+                {done ? <span style={{ color: "#fff", fontSize: 12 }}>✓</span> : active ? <Spinner /> : null}
+              </div>
+              <span style={{ fontSize: 13.5, color: done ? C.green : active ? C.accent : C.textMuted, fontWeight: active ? 600 : 400 }}>{s}</span>
+            </div>
+          );
+        })}
       </div>
+      <div style={{ marginTop: 40 }}><Byline /></div>
     </div>
   );
 
   if (screen === "error") return (
-    <div style={{ minHeight: "100vh", background: "#FFFFFF", fontFamily: "'Inter', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
+    <div style={{ minHeight: "100vh", background: C.bgPage, fontFamily: "'DM Sans', system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center" }}>
       <style>{FONTS + GLOBAL_CSS}</style>
-      <div style={{ background: "#FFFFFF", border: "1px solid #E8ECF0", borderRadius: 12, padding: "40px 44px", boxShadow: "0 4px 20px rgba(10,22,40,.08)", maxWidth: 440, width: "100%", textAlign: "center" }}>
-        <div style={{ width: 48, height: 48, borderRadius: 12, background: "#FEF2F2", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, margin: "0 auto 20px" }}>⚠</div>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#0A1628", marginBottom: 10, letterSpacing: "-0.5px" }}>Analysis failed</h2>
-        <p style={{ color: "#6B7280", lineHeight: 1.7, marginBottom: 28, fontSize: 15 }}>{err}</p>
-        <button onClick={() => setScreen("landing")} className="fs-btn" style={{ background: "#0A1628", color: "#fff", border: "none", borderRadius: 8, padding: "12px 28px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>← Try again</button>
-      </div>
+      <div style={{ width: 56, height: 56, borderRadius: 16, background: C.redBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, marginBottom: 18 }}>⚠️</div>
+      <h2 style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 19, fontWeight: 700, color: C.red, marginBottom: 10 }}>Analysis failed</h2>
+      <p style={{ color: C.textSec, maxWidth: 440, lineHeight: 1.7, marginBottom: 24, fontSize: 14 }}>{err}</p>
+      <button onClick={() => setScreen("landing")} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 10, padding: "11px 26px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>← Try again</button>
     </div>
   );
 
@@ -5736,22 +6174,25 @@ function FinSightApp() {
     const lastIdx = (data.years?.length || 1) - 1;
     const periodLabel = PERIODS.find(p => p.id === data.periodType)?.label || "Analysis";
     return (
-      <div style={{ minHeight: "100vh", background: "#F5F7FA", color: C.textPrimary, fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <div style={{ minHeight: "100vh", background: C.bgPage, color: C.textPrimary, fontFamily: "'DM Sans', system-ui, sans-serif" }}>
         <style>{FONTS + GLOBAL_CSS}</style>
-        <header className="fs-header-blur" style={{ position: "sticky", top: 0, zIndex: 100, height: 64, background: "rgba(255,255,255,0.92)", borderBottom: "1px solid #E8ECF0", display: "flex", alignItems: "center", padding: "0 32px", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "baseline" }}>
-            <span style={{ fontSize: 16, fontWeight: 700, color: "#0A1628", letterSpacing: "-0.5px" }}>FinSight</span>
-            <span style={{ fontSize: 16, fontWeight: 700, color: "#0D7A3E", letterSpacing: "-0.5px" }}>AI</span>
+        <header style={{ position: "sticky", top: 0, zIndex: 100, minHeight: 60, background: C.bgCard, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", padding: "10px 28px", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <FinSightLogo size={24} />
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              <span style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontWeight: 700, fontSize: 13, color: C.textPrimary, lineHeight: 1 }}>FinSight AI</span>
+              <span style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>by <span style={{ color: C.accent, fontWeight: 600 }}>{AUTHOR_NAME}</span></span>
+            </div>
           </div>
-          <div style={{ width: 1, height: 22, background: "#E8ECF0" }} />
+          <div style={{ width: 1, height: 24, background: C.border }} />
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flex: 1 }}>
-            <span style={{ fontSize: 15, fontWeight: 600, color: "#0A1628" }}>{data.company}</span>
-            {data.ticker && <span style={{ background: "#F5F7FA", color: "#6B7280", fontSize: 11, padding: "2px 8px", borderRadius: 4, border: "1px solid #E8ECF0" }}>{data.ticker}</span>}
-            <span style={{ background: "#E8F5EE", color: "#0D7A3E", fontSize: 11, fontWeight: 600, padding: "2px 9px", borderRadius: 4 }}>{periodLabel}</span>
-            <span style={{ background: oc.bg, color: oc.color, fontSize: 11, fontWeight: 600, padding: "2px 9px", borderRadius: 4 }}>{data.outlook}</span>
+            <span style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 15, fontWeight: 700 }}>{data.company}</span>
+            <span style={{ background: C.bgSidebar, color: C.textSec, fontSize: 10.5, padding: "2px 7px", borderRadius: 5 }}>{data.ticker}</span>
+            <span style={{ background: C.accentLight, color: C.accent, fontSize: 10.5, fontWeight: 600, padding: "2px 9px", borderRadius: 5 }}>{periodLabel}</span>
+            <span style={{ background: oc.bg, color: oc.color, fontSize: 10.5, fontWeight: 600, padding: "2px 9px", borderRadius: 5 }}>{data.outlook}</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
-            <button onClick={() => setScreen("landing")} className="fs-btn" style={{ background: "none", border: "1px solid #E8ECF0", color: "#6B7280", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 500 }}>← Back</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+            <button onClick={() => setScreen("landing")} style={{ background: "none", border: `1px solid ${C.border}`, color: C.textSec, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>← New</button>
             <UserButton afterSignOutUrl="/" />
           </div>
         </header>
@@ -5794,18 +6235,18 @@ function FinSightApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginBottom: 24 }}>
-            <button onClick={downloadPPT} disabled={pptLoading} className="fs-btn" style={{ background: "#0A1628", color: "#fff", border: "none", padding: "12px 24px", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontFamily: "inherit" }}>
-              {pptLoading ? <><Spinner /> Creating…</> : <>📊 Download PPT</>}
+            <button onClick={downloadPPT} disabled={pptLoading} style={{ background: C.accent, color: "#fff", border: "none", padding: "12px 24px", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
+              {pptLoading ? <><Spinner /> Creating PPT…</> : <>📊 Download PPT</>}
             </button>
-            <button onClick={downloadExcel} disabled={excelLoading} className="fs-btn" style={{ background: "#0D7A3E", color: "#fff", border: "none", padding: "12px 24px", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontFamily: "inherit" }}>
-              {excelLoading ? <><Spinner /> Generating…</> : <>▦ Download Excel</>}
+            <button onClick={downloadExcel} disabled={excelLoading} style={{ background: C.chartB, color: "#fff", border: "none", padding: "12px 24px", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
+              {excelLoading ? <><Spinner /> Generating…</> : <>📗 Download Excel</>}
             </button>
-            <button onClick={() => setScreen("landing")} className="fs-btn" style={{ background: "transparent", color: "#6B7280", border: "1px solid #E8ECF0", padding: "12px 24px", borderRadius: 8, fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }}>← New search</button>
+            <button onClick={() => setScreen("landing")} style={{ background: "transparent", color: C.textSec, border: `1px solid ${C.border}`, padding: "12px 24px", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>← New search</button>
           </div>
-          <div style={{ background: "#F5F7FA", border: "1px solid #E8ECF0", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 12, color: "#9CA3AF", lineHeight: 1.6 }}>
-            <strong style={{ color: "#6B7280" }}>Disclaimer:</strong> Research and education only. Not investment advice. Not SEBI-registered.
+          <div style={{ background: C.bgSidebar, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", marginBottom: 20, fontSize: 11.5, color: C.textMuted, lineHeight: 1.6 }}>
+            <strong style={{ color: C.textSec }}>Disclaimer:</strong> Research and education only. Not investment advice. Not SEBI-registered.
           </div>
-          <div style={{ textAlign: "center", paddingTop: 20, borderTop: "1px solid #E8ECF0", fontSize: 12, color: "#9CA3AF" }}>finsightai.org</div>
+          <div style={{ textAlign: "center", paddingTop: 20, borderTop: `1px solid ${C.border}` }}><Byline /></div>
         </div>
       </div>
     );
