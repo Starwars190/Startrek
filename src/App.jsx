@@ -24,7 +24,7 @@ const C = {
 };
 
 const API_URL = "/api/claude?v=" + Date.now();
-const MODEL = "claude-sonnet-4-5";
+const MODEL = "claude-sonnet-4-5-20250514";
 const VISION_MODEL = "claude-sonnet-4-5-20250514";
 const AUTHOR_NAME = "Aashni Shah and Hitansh Jhaveri";
 
