@@ -23,7 +23,7 @@ const C = {
   shadowMd: "0 2px 12px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.04)",
 };
 
-const API_URL = "/api/claude";
+const API_URL = "/api/claude?v=" + Date.now();
 const MODEL = "claude-sonnet-4-5";
 const VISION_MODEL = "claude-sonnet-4-5-20250514";
 const AUTHOR_NAME = "Aashni Shah and Hitansh Jhaveri";
