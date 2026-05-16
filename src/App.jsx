@@ -4089,377 +4089,267 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
   return { excelBlob: blob, fileName };
 }
 
-async function processPrivateCompanyDoc(file, selectedOutputs, onProgress) {
+async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () => {}) {
   try {
-    onProgress?.("🔍 Analysing document structure...");
-    const fname = (file.name || '').toLowerCase();
-    let extractionResult;
-    try {
-      if (fname.endsWith('.pdf')) {
-        extractionResult = await extractPdfContent(file, onProgress);
-      } else if (fname.endsWith('.xml') || fname.endsWith('.xbrl')) {
-        extractionResult = await extractXmlContent(file);
-      } else if (fname.endsWith('.xlsx') || fname.endsWith('.xls')) {
-        extractionResult = await extractExcelInputContent(file);
+    onProgress('reading')
+    onDebug('FILE RECEIVED: ' + file.name)
+
+    const arrayBuffer = await file.arrayBuffer()
+    let fullText = ''
+
+    const pdfjsLib = await loadPdfJs()
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+    onDebug('PDF: ' + pdf.numPages + ' pages')
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      try {
+        const page = await pdf.getPage(i)
+        const content = await page.getTextContent()
+        fullText += content.items.map(item => item.str).join(' ') + '\n'
+      } catch(e) {}
+    }
+
+    onDebug('TEXT: ' + fullText.length + ' chars')
+
+    if (fullText.length < 500) {
+      throw new Error('This PDF appears to be image-based. Please download the XBRL version from mca.gov.in instead.')
+    }
+
+    let textToSend = fullText
+    if (fullText.length > 60000) {
+      const fsIndex = fullText.search(/Balance Sheet|Statement of Profit|Profit and Loss/i)
+      if (fsIndex > 0) {
+        const start = Math.max(0, fsIndex - 3000)
+        textToSend = fullText.substring(start, start + 60000)
+        onDebug('TEXT FOCUSED: financial section found')
       } else {
-        const wordText = await extractWordContent(file);
-        extractionResult = { text: wordText || '', method: 'word', warnings: [] };
-      }
-    } catch (extractErr) {
-      const msg = extractErr.message || '';
-      if (msg === 'PASSWORD_PROTECTED') throw new Error(
-        'This PDF is password-protected.\n\nPlease unlock it and re-upload. Most MCA filings are available without a password at mca.gov.in'
-      );
-      if (msg === 'CORRUPT_PDF') throw new Error('This PDF appears to be corrupt or uses an unsupported format. Please try converting it or using a different file.');
-      throw extractErr;
-    }
-
-    const extractedText = extractionResult.text || '';
-    const extractionMethod = extractionResult.method || 'text';
-    const extractionWarnings = extractionResult.warnings || [];
-    const documentMetadata = extractionResult.documentMetadata || {};
-    const visionStructuredData = extractionResult.visionStructuredData || { years: {}, currency: 'INR', unit: 'Lakhs' };
-
-    if (!extractedText || extractedText.trim().length < 50) {
-      throw new Error(
-        "FinSight could not extract enough data from this PDF. Please download the XBRL version from mca.gov.in and upload that instead. This is a technical limitation, not a company disclosure issue."
-      );
-    }
-
-    onProgress?.("📋 Detecting financial statements and building sections...");
-    const chunks = chunkText(extractedText, 12000, 500);
-    onProgress?.(`📄 Extracting text from pages — ${chunks.length} sections identified. Processing with AI...`);
-
-    const chunkResults = [];
-    let companyInfo = {
-      name: "", period: "", rounding: "Lakhs", currency: "INR", sector: ""
-    };
-
-    // Force INR for MCA filings — never auto-detect
-    if (documentMetadata.isMCA) {
-      companyInfo.currency = 'INR';
-      companyInfo.rounding = documentMetadata.unit || 'Lakhs';
-    }
-
-    const loopStart = Date.now();
-    const chunkTimes = [];
-    let failedChunks = 0;
-    let apiUnavailable = false;
-
-    for (let i = 0; i < chunks.length; i++) {
-      const chunkStart = Date.now();
-      let chunkResult;
-      try {
-        chunkResult = await processChunkWithAI(
-          chunks[i], i + 1, chunks.length,
-          i > 0 ? `Company: ${companyInfo.name || "unknown"}, Period: ${companyInfo.period || "unknown"}, Sector: ${companyInfo.sector || "unknown"}` : null,
-          onProgress
-        );
-      } catch (chunkErr) {
-        if (chunkErr.apiUnavailable) apiUnavailable = true;
-        failedChunks++;
-        console.error(`[processPrivateCompanyDoc] Chunk ${i + 1}/${chunks.length} failed:`, chunkErr);
-        chunkResult = {
-          chunkSummary: `Section ${i + 1} failed to process`,
-          sectionNumber: "",
-          sectionTitle: `Section ${i + 1} (Failed)`,
-          blocks: [{
-            type: "paragraph_block",
-            paragraphs: [
-              "This section could not be processed automatically due to a technical issue. The original content has been preserved below for manual review.",
-              chunks[i].substring(0, 5000) + "..."
-            ]
-          }],
-          companyInfoFound: {},
-          financialDataExtracted: {}
-        };
-      }
-      const chunkSecs = Math.round((Date.now() - chunkStart) / 1000);
-      chunkTimes.push(chunkSecs);
-      chunkResults.push(chunkResult);
-      if (chunkResult.companyInfoFound) {
-        const ci = chunkResult.companyInfoFound;
-        if (ci.name && !companyInfo.name) companyInfo.name = ci.name;
-        if (ci.period && !companyInfo.period) companyInfo.period = ci.period;
-        if (ci.rounding && !documentMetadata.isMCA) companyInfo.rounding = ci.rounding;
-        // Never override INR with auto-detected currency for MCA filings
-        if (ci.currency && !documentMetadata.isMCA) companyInfo.currency = ci.currency;
-        if (ci.sector && !companyInfo.sector) companyInfo.sector = ci.sector;
-      }
-      if (i < chunks.length - 1) {
-        onProgress?.(`Processing section ${i + 1} of ${chunks.length} (${chunkSecs}s). Continuing...`);
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        textToSend = fullText.substring(0, 60000)
+        onDebug('TEXT TRIMMED: first 60000 chars')
       }
     }
 
-    const totalSecs = Math.round((Date.now() - loopStart) / 1000);
-    console.log(`[processPrivateCompanyDoc] Total: ${totalSecs}s | Failed: ${failedChunks}`);
+    onProgress('extracting')
+    onDebug('CALLING CLAUDE API...')
 
-    if (failedChunks > 0) {
-      chunkResults.unshift({
-        chunkSummary: "Processing notice",
-        sectionNumber: "",
-        sectionTitle: "Processing Notice",
-        blocks: [{
-          type: "paragraph_block",
-          paragraphs: [
-            `NOTE: ${failedChunks} of ${chunks.length} sections required manual processing. The original content for those sections is preserved verbatim in the document.`
-          ]
-        }],
-        companyInfoFound: {},
-        financialDataExtracted: {}
-      });
-    }
+    const apiResponse = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 8192,
+        system: 'You are a chartered accountant with 20 years experience reading Indian company annual reports. Extract financial data with perfect accuracy. Return only valid JSON with no text before or after.',
+        messages: [{
+          role: 'user',
+          content: `Extract all financial data from this Indian company annual report text. Return ONLY this JSON structure with no other text:
 
-    onProgress?.("🔢 Running sanity validation and cross-checking figures...");
-    const aggregated = aggregateFinancialData(chunkResults);
-    computeDerivedFinancials(aggregated);
-
-    // Merge Vision-extracted structured data into aggregated — Vision takes priority
-    if (visionStructuredData.years && Object.keys(visionStructuredData.years).length > 0) {
-      const vYears = visionStructuredData.years;
-      const sortedVYears = Object.keys(vYears).sort();
-      if (sortedVYears.length > 0) {
-        const latestVY = vYears[sortedVYears[sortedVYears.length - 1]];
-        const priorVY = sortedVYears.length > 1 ? vYears[sortedVYears[sortedVYears.length - 2]] : null;
-        // Merge PL
-        const vpl = latestVY?.profit_loss || {};
-        if (vpl.revenue != null && aggregated.revenue == null) aggregated.revenue = vpl.revenue;
-        if (vpl.net_income != null && aggregated.netIncome == null) aggregated.netIncome = vpl.net_income;
-        if (vpl.pbt != null && aggregated.pbt == null) aggregated.pbt = vpl.pbt;
-        if (vpl.ebitda != null && aggregated.ebitda == null) aggregated.ebitda = vpl.ebitda;
-        if (vpl.depreciation != null && aggregated.depreciation == null) aggregated.depreciation = vpl.depreciation;
-        if (vpl.finance_costs != null && aggregated.interestExpense == null) aggregated.interestExpense = vpl.finance_costs;
-        if (vpl.tax_expense != null && aggregated.tax == null) aggregated.tax = vpl.tax_expense;
-        if (vpl.cost_of_goods != null && aggregated.cogs == null) aggregated.cogs = vpl.cost_of_goods;
-        // Merge BS
-        const vbs = latestVY?.balance_sheet || {};
-        if (vbs.total_assets != null && aggregated.totalAssets == null) aggregated.totalAssets = vbs.total_assets;
-        if (vbs.total_equity != null && aggregated.totalEquity == null) aggregated.totalEquity = vbs.total_equity;
-        if (vbs.total_liabilities != null && aggregated.totalLiabilities == null) aggregated.totalLiabilities = vbs.total_liabilities;
-        if (vbs.current_assets != null && aggregated.currentAssets == null) aggregated.currentAssets = vbs.current_assets;
-        if (vbs.current_liabilities != null && aggregated.currentLiabilities == null) aggregated.currentLiabilities = vbs.current_liabilities;
-        if (vbs.cash_and_equivalents != null && aggregated.cash == null) aggregated.cash = vbs.cash_and_equivalents;
-        if (vbs.trade_receivables != null && aggregated.receivables == null) aggregated.receivables = vbs.trade_receivables;
-        if (vbs.inventory != null && aggregated.inventory == null) aggregated.inventory = vbs.inventory;
-        if (vbs.long_term_debt != null && aggregated.longTermDebt == null) aggregated.longTermDebt = vbs.long_term_debt;
-        if (vbs.short_term_debt != null && aggregated.shortTermDebt == null) aggregated.shortTermDebt = vbs.short_term_debt;
-        if (vbs.fixed_assets != null && aggregated.fixedAssets == null) aggregated.fixedAssets = vbs.fixed_assets;
-        if (vbs.trade_payables != null && aggregated.tradePayables == null) aggregated.tradePayables = vbs.trade_payables;
-        // Merge CF
-        const vcf = latestVY?.cash_flow || {};
-        if (vcf.cfo != null && aggregated.operatingCashFlow == null) aggregated.operatingCashFlow = vcf.cfo;
-        if (vcf.cfi != null && aggregated.investingCashFlow == null) aggregated.investingCashFlow = vcf.cfi;
-        if (vcf.cff != null && aggregated.financingCashFlow == null) aggregated.financingCashFlow = vcf.cff;
-
-        // Merge prior year if available
-        if (priorVY) {
-          // Will be used in aggregatedPrior merge below
-          visionStructuredData._priorYearData = priorVY;
-        }
-      }
-    }
-
-    // Force currency to INR for MCA filings after all merges
-    if (documentMetadata.isMCA) {
-      companyInfo.currency = 'INR';
-    }
-
-    validateExtractedData(aggregated);
-    const noFinancialData = !hasAnyFinancialData(aggregated);
-    if (noFinancialData) {
-      console.warn('[FinSight] No financial data found — PDF may be scanned or financial statements not in expected format');
-    }
-
-    // ── Minimum figure count check ──────────────────────────────────────────
-    const wrapYears = wrapAggToYears(aggregated, {});
-    const figureCount = countValidFigures(wrapYears.years);
-    if (figureCount < 10 && !apiUnavailable) {
-      throw new Error(
-        "FinSight could not extract enough data from this PDF. This is a technical limitation of the document format.\n\nPlease try:\n1. Download the XBRL filing from mca.gov.in → Company search → Financial Statements → XBRL\n2. Upload individual pages of the Balance Sheet and P&L\n3. Contact support: support@finsightai.org\n\nDO NOT generate Excel or Word with empty data."
-      );
-    }
-
-    const aggregatedPrior = aggregatePriorFinancialData(chunkResults);
-    computeDerivedFinancials(aggregatedPrior);
-    let sectorHint = companyInfo.sector || "";
-    if (!sectorHint) {
-      const nameLower = (companyInfo.name || "").toLowerCase();
-      if (nameLower.includes("medical") || nameLower.includes("pharma") || nameLower.includes("health")) sectorHint = "medical";
-      else if (nameLower.includes("steel") || nameLower.includes("manufact")) sectorHint = "manufacturing";
-    }
-    const ratios = calculateRatios(aggregated, sectorHint, aggregatedPrior);
-    const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress, aggregatedPrior);
-
-    onProgress?.("📊 Building Excel workbook...");
-    const chartImages = [];
-    if (aggregated.revenue || aggregated.netIncome || aggregated.operatingProfit || aggregated.ebitda) {
-      try {
-        const dataURL = createFinancialBarChart({
-          title: "Key Financial Performance",
-          subtitle: `${companyInfo.name || "Company"} • Values in ${companyInfo.rounding || "Lakhs"} of ${companyInfo.currency || 'INR'}`,
-          labels: ["Revenue", "Gross Profit", "EBITDA", "Operating Profit", "Net Income"],
-          values: [aggregated.revenue, aggregated.grossProfit, aggregated.ebitda, aggregated.operatingProfit, aggregated.netIncome],
-          colors: ["#CF6B4E", "#2D7D5C", "#3B82B0", "#7C5CB8", "#D9A441"],
-          unit: companyInfo.rounding || "Lakhs of INR"
-        });
-        chartImages.push({ dataURL, caption: "Chart 1: Key Financial Performance Metrics" });
-      } catch (e) { console.error("Chart 1 failed:", e); }
-    }
-    if (aggregated.totalAssets || aggregated.totalEquity || aggregated.totalLiabilities || aggregated.currentAssets) {
-      try {
-        const dataURL = createFinancialBarChart({
-          title: "Balance Sheet Composition",
-          subtitle: `${companyInfo.name || "Company"} • Values in ${companyInfo.rounding || "Lakhs"} of ${companyInfo.currency || 'INR'}`,
-          labels: ["Total Assets", "Current Assets", "Fixed Assets", "Total Equity", "Total Liabilities"],
-          values: [aggregated.totalAssets, aggregated.currentAssets, aggregated.fixedAssets, aggregated.totalEquity, aggregated.totalLiabilities],
-          colors: ["#8B6F47", "#D9A441", "#CF6B4E", "#2D7D5C", "#C04040"],
-          unit: companyInfo.rounding || "Lakhs of INR"
-        });
-        chartImages.push({ dataURL, caption: "Chart 2: Balance Sheet Composition" });
-      } catch (e) { console.error("Chart 2 failed:", e); }
-    }
-    const profitabilityRatios = ratios.find(r => r.category === "Profitability Ratios");
-    if (profitabilityRatios) {
-      try {
-        const validItems = profitabilityRatios.items.filter(i => i.rawValue != null && !isNaN(i.rawValue));
-        if (validItems.length > 0) {
-          const dataURL = createFinancialBarChart({
-            title: "Profitability Ratios (%)",
-            subtitle: `${companyInfo.name || "Company"} • Values in Percentage`,
-            labels: validItems.map(i => i.name.replace(" (ROE)", "").replace(" (ROA)", "")),
-            values: validItems.map(i => i.rawValue),
-            colors: ["#CF6B4E", "#A8553C", "#D9A441", "#2D7D5C", "#3B82B0"],
-            unit: "Percentage (%)"
-          });
-          chartImages.push({ dataURL, caption: "Chart 3: Profitability Ratio Analysis" });
-        }
-      } catch (e) { console.error("Chart 3 failed:", e); }
-    }
-
-    // ─── Conditional document generation ──────────────────────────────────
-    let pdfResult = null;
-    let pdfError = null;
-    let docxResult = null;
-    let excelResult = null;
-    let briefWordResult = null;
-
-    if (selectedOutputs.detailedPdf) {
-      const totalBlocks = chunkResults.reduce((sum, cr) => sum + (cr.blocks?.length || 0), 0);
-      if (totalBlocks > 500) {
-        onProgress?.(`Large document detected (${totalBlocks} blocks). PDF generation may take 60-180 seconds. Please wait...`);
-      } else {
-        onProgress?.("Generating PDF document...");
-      }
-      const pdfStart = Date.now();
-      const pdfElapsedInterval = setInterval(() => {
-        const elapsed = Math.round((Date.now() - pdfStart) / 1000);
-        onProgress?.(`Generating PDF... (${elapsed}s elapsed)`);
-      }, 5000);
-      try {
-        pdfResult = await Promise.race([
-          generateOrganizedPdfDoc(chunkResults, companyInfo, ratios, swot, chartImages),
-          new Promise((_, reject) => setTimeout(
-            () => reject(new Error("PDF generation timed out. Your data has been organized but the file is too large for browser rendering.")),
-            180_000
-          )),
-        ]);
-      } catch (err) {
-        pdfError = err;
-        console.error("[processPrivateCompanyDoc] PDF failed:", pdfError);
-      } finally {
-        clearInterval(pdfElapsedInterval);
-      }
-    }
-
-    if (selectedOutputs.detailedWord) {
-      onProgress?.("📝 Generating 12-page Word document...");
-      try {
-        docxResult = await generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot, chartImages, file.name, { documentMetadata, visionStructuredData, aggregated, aggregatedPrior });
-      } catch (wordErr) {
-        console.error("[processPrivateCompanyDoc] Word generation failed:", wordErr);
-        if (apiUnavailable) {
-          onProgress?.('⚠️ AI service temporarily unavailable — Word document will generate once service restores. Excel data is ready.');
-        }
-      }
-    }
-
-    if (selectedOutputs.excel) {
-      onProgress?.("📊 Building Excel workbook (8 sheets)...");
-      try {
-        const useScannedPipeline = fname.endsWith('.pdf') &&
-          (extractionMethod === 'ocr' || extractionMethod === 'hybrid' || noFinancialData);
-        if (useScannedPipeline && Object.keys(visionStructuredData.years || {}).length === 0) {
-          onProgress?.("Scanned PDF — running Tesseract extraction for structured Excel...");
-          const scannedData = await extractFinancialsWithTesseract(file, onProgress);
-          excelResult = await generateScannedExcel(scannedData, companyInfo, onProgress);
-        } else {
-          excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot, documentMetadata, visionStructuredData);
-        }
-      } catch (excelErr) {
-        console.error("[processPrivateCompanyDoc] Excel generation failed:", excelErr);
-        if (apiUnavailable) {
-          onProgress?.('⚠️ Excel generation failed — AI service unavailable. Job saved for retry.');
-        }
-      }
-    }
-
-    let briefWordErr = null;
-    if (selectedOutputs.briefWord) {
-      try {
-        onProgress?.("Generating company narrative (AI)...");
-        const briefNarrative = await generateBriefNarrative(companyInfo, aggregated, aggregatedPrior, ratios, swot, chunkResults);
-        onProgress?.("Building brief company note...");
-        briefWordResult = await generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggregatedPrior, ratios, swot, briefNarrative);
-        if (!briefWordResult?.blob) throw new Error('Brief Word generator returned no blob');
-        console.log('[BriefWord] ✓ Generated successfully', { fileName: briefWordResult.fileName, size: briefWordResult.blob.size });
-      } catch (briefErr) {
-        briefWordErr = briefErr.message || 'Generation failed';
-        console.error('[BriefWord] Generation failed:', briefErr);
-        console.error('[BriefWord] Stack:', briefErr.stack);
-      }
-    }
-
-    const anyGenerated = pdfResult || docxResult || excelResult || briefWordResult;
-    const anyRequested = selectedOutputs.detailedPdf || selectedOutputs.detailedWord || selectedOutputs.excel ||
-      selectedOutputs.briefWord;
-    if (anyRequested && !anyGenerated) {
-      throw pdfError || new Error("All document generation attempts failed.");
-    }
-
-    // If API was unavailable, queue this analysis for retry when credits are restored
-    if (apiUnavailable) {
-      queuePendingAnalysis(companyInfo, aggregated, aggregatedPrior, ratios, swot);
-    }
-
-    return {
-      pdfBlob: pdfResult?.pdfBlob || null,
-      pdfFileName: pdfResult?.fileName || null,
-      pdfFileSizeKB: pdfResult?.fileSizeKB || 0,
-      docxBlob: docxResult?.docxBlob || null,
-      docxFileName: docxResult?.fileName || null,
-      excelBlob: excelResult?.excelBlob || null,
-      excelFileName: excelResult?.fileName || null,
-      briefWordBlob: briefWordResult?.blob || null,
-      briefWordFileName: briefWordResult?.fileName || null,
-      briefWordError: briefWordErr,
-      noFinancialData,
-      apiUnavailable,
-      extractionMethod,
-      extractionWarnings,
-      companyInfo,
-      chunkCount: chunks.length,
-      failedChunks,
-      sectionCount: pdfResult?.sectionCount || chunkResults.length,
-      ratioCount: pdfResult?.ratioCount || 0,
-      hasSWOT: pdfResult?.hasSWOT ?? !!swot,
-      hasCharts: pdfResult?.hasCharts ?? chartImages.length > 0,
-    };
-  } catch (error) {
-    console.error("Private company doc processing error:", error);
-    throw error;
+{
+  "company_name": "string",
+  "cin": "string or null",
+  "financial_year": "string",
+  "currency": "INR",
+  "unit": "Lakhs or Crores",
+  "sector": "string or null",
+  "auditor": "string or null",
+  "directors": [{"name": "string", "designation": "string"}],
+  "profit_loss": {
+    "revenue_from_operations": {"current": number, "prior": number},
+    "other_income": {"current": number, "prior": number},
+    "total_income": {"current": number, "prior": number},
+    "cogs": {"current": number, "prior": number},
+    "gross_profit": {"current": number, "prior": number},
+    "changes_in_inventories": {"current": number, "prior": number},
+    "employee_costs": {"current": number, "prior": number},
+    "interest_expense": {"current": number, "prior": number},
+    "depreciation": {"current": number, "prior": number},
+    "other_expenses": {"current": number, "prior": number},
+    "total_expenses": {"current": number, "prior": number},
+    "ebitda": {"current": number, "prior": number},
+    "operating_profit": {"current": number, "prior": number},
+    "pbt": {"current": number, "prior": number},
+    "tax": {"current": number, "prior": number},
+    "net_income": {"current": number, "prior": number},
+    "eps_basic": {"current": number, "prior": number},
+    "eps_diluted": {"current": number, "prior": number}
+  },
+  "balance_sheet": {
+    "share_capital": {"current": number, "prior": number},
+    "reserves_and_surplus": {"current": number, "prior": number},
+    "total_equity": {"current": number, "prior": number},
+    "long_term_debt": {"current": number, "prior": number},
+    "non_current_liabilities": {"current": number, "prior": number},
+    "short_term_debt": {"current": number, "prior": number},
+    "trade_payables": {"current": number, "prior": number},
+    "current_liabilities": {"current": number, "prior": number},
+    "total_liabilities": {"current": number, "prior": number},
+    "fixed_assets": {"current": number, "prior": number},
+    "non_current_assets": {"current": number, "prior": number},
+    "inventory": {"current": number, "prior": number},
+    "receivables": {"current": number, "prior": number},
+    "cash": {"current": number, "prior": number},
+    "current_assets": {"current": number, "prior": number},
+    "total_assets": {"current": number, "prior": number}
+  },
+  "cash_flow": {
+    "cfo": {"current": number, "prior": number},
+    "investing": {"current": number, "prior": number},
+    "financing": {"current": number, "prior": number},
+    "net_change_in_cash": {"current": number, "prior": number},
+    "closing_cash": {"current": number, "prior": number}
   }
 }
+
+RULES:
+1. revenue_from_operations may be labeled: Revenue from Operations, Total Revenue from Operations, Net Revenue, Turnover, Net Sales, Revenue from Contracts with Customers. Extract whichever you find.
+2. Current year is always the MORE RECENT date.
+3. Strip all commas from numbers. 73,698.16 becomes 73698.16
+4. Brackets mean negative. (1,680.94) becomes -1680.94
+5. Return null for any field not found. Never guess.
+6. Page numbers at page edges are NOT financial figures.
+7. Note reference numbers in narrow columns are NOT financial figures.
+
+DOCUMENT TEXT:
+${textToSend}`
+        }]
+      })
+    })
+
+    const apiData = await apiResponse.json()
+    if (!apiData?.content?.[0]?.text) {
+      throw new Error('Claude API returned no content. Status: ' + apiResponse.status)
+    }
+
+    const rawText = apiData.content[0].text
+    const start = rawText.indexOf('{')
+    const end = rawText.lastIndexOf('}')
+    if (start === -1 || end === -1) throw new Error('No JSON in Claude response')
+
+    const claudeResult = JSON.parse(rawText.substring(start, end + 1))
+    onDebug('CLAUDE: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue_from_operations?.current)
+
+    const pl = claudeResult.profit_loss || {}
+    const bs = claudeResult.balance_sheet || {}
+    const cf = claudeResult.cash_flow || {}
+
+    const aggregated = {
+      revenue: pl.revenue_from_operations?.current ?? pl.total_income?.current ?? null,
+      otherIncome: pl.other_income?.current ?? null,
+      totalIncome: pl.total_income?.current ?? null,
+      grossProfit: pl.gross_profit?.current ?? null,
+      ebitda: pl.ebitda?.current ?? null,
+      operatingProfit: pl.operating_profit?.current ?? null,
+      pbt: pl.pbt?.current ?? null,
+      tax: pl.tax?.current ?? null,
+      netIncome: pl.net_income?.current ?? null,
+      interestExpense: pl.interest_expense?.current ?? null,
+      depreciation: pl.depreciation?.current ?? null,
+      cogs: pl.cogs?.current ?? null,
+      employeeCosts: pl.employee_costs?.current ?? null,
+      otherExpenses: pl.other_expenses?.current ?? null,
+      totalExpenses: pl.total_expenses?.current ?? null,
+      eps: pl.eps_basic?.current ?? null,
+      totalAssets: bs.total_assets?.current ?? null,
+      currentAssets: bs.current_assets?.current ?? null,
+      nonCurrentAssets: bs.non_current_assets?.current ?? null,
+      cash: bs.cash?.current ?? null,
+      inventory: bs.inventory?.current ?? null,
+      receivables: bs.receivables?.current ?? null,
+      fixedAssets: bs.fixed_assets?.current ?? null,
+      totalLiabilities: bs.total_liabilities?.current ?? null,
+      currentLiabilities: bs.current_liabilities?.current ?? null,
+      nonCurrentLiabilities: bs.non_current_liabilities?.current ?? null,
+      totalEquity: bs.total_equity?.current ?? null,
+      longTermDebt: bs.long_term_debt?.current ?? null,
+      shortTermDebt: bs.short_term_debt?.current ?? null,
+      tradePayables: bs.trade_payables?.current ?? null,
+      shareCapital: bs.share_capital?.current ?? null,
+      reserves: bs.reserves_and_surplus?.current ?? null,
+      operatingCashFlow: cf.cfo?.current ?? null,
+      investingCashFlow: cf.investing?.current ?? null,
+      financingCashFlow: cf.financing?.current ?? null,
+    }
+
+    const aggregatedPrior = {
+      revenue: pl.revenue_from_operations?.prior ?? pl.total_income?.prior ?? null,
+      otherIncome: pl.other_income?.prior ?? null,
+      totalIncome: pl.total_income?.prior ?? null,
+      grossProfit: pl.gross_profit?.prior ?? null,
+      ebitda: pl.ebitda?.prior ?? null,
+      operatingProfit: pl.operating_profit?.prior ?? null,
+      pbt: pl.pbt?.prior ?? null,
+      tax: pl.tax?.prior ?? null,
+      netIncome: pl.net_income?.prior ?? null,
+      interestExpense: pl.interest_expense?.prior ?? null,
+      depreciation: pl.depreciation?.prior ?? null,
+      cogs: pl.cogs?.prior ?? null,
+      employeeCosts: pl.employee_costs?.prior ?? null,
+      otherExpenses: pl.other_expenses?.prior ?? null,
+      totalExpenses: pl.total_expenses?.prior ?? null,
+      eps: pl.eps_basic?.prior ?? null,
+      totalAssets: bs.total_assets?.prior ?? null,
+      currentAssets: bs.current_assets?.prior ?? null,
+      nonCurrentAssets: bs.non_current_assets?.prior ?? null,
+      cash: bs.cash?.prior ?? null,
+      inventory: bs.inventory?.prior ?? null,
+      receivables: bs.receivables?.prior ?? null,
+      fixedAssets: bs.fixed_assets?.prior ?? null,
+      totalLiabilities: bs.total_liabilities?.prior ?? null,
+      currentLiabilities: bs.current_liabilities?.prior ?? null,
+      nonCurrentLiabilities: bs.non_current_liabilities?.prior ?? null,
+      totalEquity: bs.total_equity?.prior ?? null,
+      longTermDebt: bs.long_term_debt?.prior ?? null,
+      shortTermDebt: bs.short_term_debt?.prior ?? null,
+      tradePayables: bs.trade_payables?.prior ?? null,
+      shareCapital: bs.share_capital?.prior ?? null,
+      reserves: bs.reserves_and_surplus?.prior ?? null,
+      operatingCashFlow: cf.cfo?.prior ?? null,
+      investingCashFlow: cf.investing?.prior ?? null,
+      financingCashFlow: cf.financing?.prior ?? null,
+    }
+
+    const companyInfo = {
+      name: claudeResult.company_name || file.name.replace('.pdf',''),
+      cin: claudeResult.cin || null,
+      sector: claudeResult.sector || null,
+      auditor: claudeResult.auditor || null,
+      directors: claudeResult.directors || [],
+      financialYear: claudeResult.financial_year || 'FY2025',
+      currency: claudeResult.currency || 'INR',
+      unit: claudeResult.unit || 'Lakhs',
+      reportingType: claudeResult.standalone_or_consolidated || 'Standalone'
+    }
+
+    onProgress('generating')
+
+    const validCount = Object.values(aggregated).filter(v => v !== null).length
+    onDebug('VALID FIELDS: ' + validCount)
+
+    if (validCount < 5) {
+      throw new Error('Insufficient data extracted. Please upload the XBRL version from mca.gov.in')
+    }
+
+    const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, null, null, aggregatedPrior)
+    const excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, null, swot, {}, {})
+    const wordResult = await generateOrganizedWordDoc([], companyInfo, null, swot, [], file.name, { aggregated, aggregatedPrior })
+
+    onProgress('complete')
+
+    return {
+      excelBlob: excelResult?.excelBlob || excelResult,
+      excelFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Financials.xlsx',
+      docxBlob: wordResult?.blob || wordResult,
+      docxFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Report.docx',
+      companyInfo,
+      aggregated,
+      aggregatedPrior,
+      swot
+    }
+
+  } catch(err) {
+    onDebug('ERROR: ' + err.message)
+    throw err
+  }
+}
+
 
 async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, ratios, swot, documentMetadata = {}, visionStructuredData = {}) {
   const XLSX = await loadSheetJS();

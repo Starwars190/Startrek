@@ -1,4 +1,4 @@
-async function processPrivateCompanyDoc(file, options, onProgress, onDebug) {
+async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () => {}) {
   try {
     onProgress('reading')
     onDebug('FILE RECEIVED: ' + file.name)
@@ -6,36 +6,45 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug) {
     const arrayBuffer = await file.arrayBuffer()
     let fullText = ''
 
-    try {
-      const pdfjsLib = await import('pdfjs-dist')
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-      onDebug('PDF: ' + pdf.numPages + ' pages')
-      for (let i = 1; i <= pdf.numPages; i++) {
-        try {
-          const page = await pdf.getPage(i)
-          const content = await page.getTextContent()
-          fullText += content.items.map(item => item.str).join(' ') + '\n'
-        } catch(e) {}
-      }
-    } catch(e) {
-      onDebug('PDF read error: ' + e.message)
+    const pdfjsLib = await loadPdfJs()
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+    onDebug('PDF: ' + pdf.numPages + ' pages')
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      try {
+        const page = await pdf.getPage(i)
+        const content = await page.getTextContent()
+        fullText += content.items.map(item => item.str).join(' ') + '\n'
+      } catch(e) {}
     }
 
     onDebug('TEXT: ' + fullText.length + ' chars')
 
     if (fullText.length < 500) {
-      throw new Error('This PDF appears to be image-based. Please download the XBRL version from mca.gov.in and upload that instead.')
+      throw new Error('This PDF appears to be image-based. Please download the XBRL version from mca.gov.in instead.')
+    }
+
+    let textToSend = fullText
+    if (fullText.length > 60000) {
+      const fsIndex = fullText.search(/Balance Sheet|Statement of Profit|Profit and Loss/i)
+      if (fsIndex > 0) {
+        const start = Math.max(0, fsIndex - 3000)
+        textToSend = fullText.substring(start, start + 60000)
+        onDebug('TEXT FOCUSED: financial section found')
+      } else {
+        textToSend = fullText.substring(0, 60000)
+        onDebug('TEXT TRIMMED: first 60000 chars')
+      }
     }
 
     onProgress('extracting')
     onDebug('CALLING CLAUDE API...')
 
-    const apiResponse = await fetch('/api/claude', {
+    const apiResponse = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: MODEL,
         max_tokens: 8192,
         system: 'You are a chartered accountant with 20 years experience reading Indian company annual reports. Extract financial data with perfect accuracy. Return only valid JSON with no text before or after.',
         messages: [{
@@ -98,31 +107,33 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug) {
   }
 }
 
-RULES - never break these:
-1. revenue_from_operations is the top line. It may be labeled: Revenue from Operations, Total Revenue from Operations, Net Revenue, Turnover, Net Sales, Revenue from Contracts with Customers, Total revenue from operations other than finance company. Extract whichever you find.
-2. current year is always the MORE RECENT date. For example if document shows 01/04/2024 to 31/03/2025 and 01/04/2023 to 31/03/2024, the first period is current year FY2025.
+RULES:
+1. revenue_from_operations may be labeled: Revenue from Operations, Total Revenue from Operations, Net Revenue, Turnover, Net Sales, Revenue from Contracts with Customers. Extract whichever you find.
+2. Current year is always the MORE RECENT date.
 3. Strip all commas from numbers. 73,698.16 becomes 73698.16
 4. Brackets mean negative. (1,680.94) becomes -1680.94
 5. Return null for any field not found. Never guess.
-6. Page numbers like 1, 2, 3 at page edges are NOT financial figures.
-7. Note reference numbers like 3, 4, 5 in narrow columns are NOT financial figures.
+6. Page numbers at page edges are NOT financial figures.
+7. Note reference numbers in narrow columns are NOT financial figures.
 
 DOCUMENT TEXT:
-${fullText}`
+${textToSend}`
         }]
       })
     })
 
     const apiData = await apiResponse.json()
-    if (!apiData?.content?.[0]?.text) throw new Error('Claude API returned no content')
+    if (!apiData?.content?.[0]?.text) {
+      throw new Error('Claude API returned no content. Status: ' + apiResponse.status)
+    }
 
     const rawText = apiData.content[0].text
     const start = rawText.indexOf('{')
     const end = rawText.lastIndexOf('}')
-    if (start === -1 || end === -1) throw new Error('No JSON found in Claude response')
+    if (start === -1 || end === -1) throw new Error('No JSON in Claude response')
 
     const claudeResult = JSON.parse(rawText.substring(start, end + 1))
-    onDebug('CLAUDE RESULT: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue_from_operations?.current)
+    onDebug('CLAUDE: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue_from_operations?.current)
 
     const pl = claudeResult.profit_loss || {}
     const bs = claudeResult.balance_sheet || {}
@@ -205,7 +216,7 @@ ${fullText}`
     }
 
     const companyInfo = {
-      name: claudeResult.company_name || file.name,
+      name: claudeResult.company_name || file.name.replace('.pdf',''),
       cin: claudeResult.cin || null,
       sector: claudeResult.sector || null,
       auditor: claudeResult.auditor || null,
@@ -226,7 +237,6 @@ ${fullText}`
     }
 
     const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, null, null, aggregatedPrior)
-
     const excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, null, swot, {}, {})
     const wordResult = await generateOrganizedWordDoc([], companyInfo, null, swot, [], file.name, { aggregated, aggregatedPrior })
 
@@ -234,15 +244,13 @@ ${fullText}`
 
     return {
       excelBlob: excelResult?.excelBlob || excelResult,
-      excelFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_') + '_Financials.xlsx',
-      wordBlob: wordResult?.blob || wordResult,
-      wordFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_') + '_Report.docx',
+      excelFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Financials.xlsx',
+      docxBlob: wordResult?.blob || wordResult,
+      docxFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Report.docx',
       companyInfo,
       aggregated,
       aggregatedPrior,
-      swot,
-      sectionCount: wordResult?.sectionCount || 0,
-      sheetCount: excelResult?.sheetCount || 0,
+      swot
     }
 
   } catch(err) {
