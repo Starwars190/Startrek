@@ -4222,7 +4222,7 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
       // ── Text path ──────────────────────────────────────────────────────────
       onProgress('extracting')
       rawText = await callClaude({
-        systemMsg: `You are a senior chartered accountant. Extract financial data from Indian company filings. Return ONLY valid JSON. No markdown, no text outside the JSON object.`,
+        system: `You are a senior chartered accountant. Extract financial data from Indian company filings. Return ONLY valid JSON. No markdown, no text outside the JSON object.`,
         userMsg: `Extract ALL financial data and return as JSON:
 {
   "company_name": "",
