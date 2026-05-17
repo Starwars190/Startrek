@@ -4607,6 +4607,7 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
   // ── Shared row builders ───────────────────────────────────────────────────
   // Safe number — keep null as null so cells stay blank
   const n  = (v) => (v != null && !isNaN(v) && isFinite(v)) ? v : null;
+  const r2 = (v) => v != null ? Math.round(v * 100) / 100 : v;
   // YoY % as formatted string
   const yoyStr = (c, pr) => {
     if (c == null || pr == null || pr === 0) return '—';
@@ -4666,10 +4667,10 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
     : ['Particulars', 'FY20', 'FY21', 'FY22', 'FY23', fyLabels.cur, 'CAGR'];
 
   // ── Sheet 0 · Charts Data (inserted first) ────────────────────────────────
-  const ebitdaA = n(a.ebitda);
+  const ebitdaA = n(r2(a.ebitda));
   const netIncA = n(a.netIncome);
   const revenueA = n(a.revenue);
-  const ebitdaP = n(p.ebitda);
+  const ebitdaP = n(r2(p.ebitda));
   const netIncP = n(p.netIncome);
   const revenueP = n(p.revenue);
   const grossMrgA = (revenueA && a.grossProfit != null) ? +((a.grossProfit / revenueA) * 100).toFixed(2) : null;
@@ -4789,15 +4790,15 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
     sh('REVENUE'),
     dr('Total Revenue',                a.revenue,         p.revenue,         true),
     dr('Cost of Goods Sold (COGS)',     a.cogs,            p.cogs,            true),
-    dr('Gross Profit',                 a.grossProfit,     p.grossProfit,     true),
+    dr('Gross Profit',                 r2(a.grossProfit), r2(p.grossProfit), true),
     [''],
     sh('OPERATING EXPENSES'),
     dr('Depreciation & Amortisation',  a.depreciation,    p.depreciation,    true),
     dr('Interest / Finance Costs',     a.interestExpense, p.interestExpense, true),
     [''],
     sh('PROFITABILITY'),
-    dr('EBITDA',                       a.ebitda,          p.ebitda,          true),
-    dr('Operating Profit (EBIT)',      a.operatingProfit, p.operatingProfit, true),
+    dr('EBITDA',                       r2(a.ebitda),      r2(p.ebitda),      true),
+    dr('Operating Profit (EBIT)',      r2(a.operatingProfit), r2(p.operatingProfit), true),
     dr('Profit Before Tax (PBT)',      a.pbt,             p.pbt,             true),
     dr('Tax',                          a.tax,             p.tax,             true),
     dr('Net Income / PAT',             a.netIncome,       p.netIncome,       true),
