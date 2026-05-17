@@ -4202,9 +4202,16 @@ Rules:
     }
 
     const rawText = apiData.content[0].text
+    onDebug('CLAUDE RESPONSE LENGTH: ' + rawText.length)
+    onDebug('CLAUDE RESPONSE START: ' + rawText.substring(0, 100))
+
     const start = rawText.indexOf('{')
     const end = rawText.lastIndexOf('}')
-    if (start === -1 || end === -1) throw new Error('No JSON in Claude response')
+
+    if (start === -1 || end === -1) {
+      onDebug('NO JSON FOUND IN RESPONSE: ' + rawText.substring(0, 200))
+      throw new Error('Claude did not return JSON. Response: ' + rawText.substring(0, 100))
+    }
 
     const claudeResult = JSON.parse(rawText.substring(start, end + 1))
     onDebug('CLAUDE: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue_from_operations?.current)
