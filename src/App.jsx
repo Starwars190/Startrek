@@ -4190,37 +4190,45 @@ function checkBalanceSheet(bs, label) {
 }
 
 async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () => {}) {
+  console.log('[START] processPrivateCompanyDoc called', file?.name)
   try {
     onProgress('reading')
     onDebug('FILE RECEIVED: ' + file.name)
 
-    const arrayBuffer = await file.arrayBuffer()
-    const pdfjsLib = await loadPdfJs()
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-    onDebug('PDF: ' + pdf.numPages + ' pages')
+    let arrayBuffer, pdfjsLib, pdf, pageTexts, fullText, scannedPageCount, scannedRatio, cleanedText, isTextPdf
+    try {
+      arrayBuffer = await file.arrayBuffer()
+      pdfjsLib = await loadPdfJs()
+      pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+      onDebug('PDF: ' + pdf.numPages + ' pages')
 
-    // ── Layer 1: per-page text extraction + quality measurement ─────────────
-    const pageTexts = []
-    for (let i = 1; i <= pdf.numPages; i++) {
-      try {
-        const page = await pdf.getPage(i)
-        const content = await page.getTextContent()
-        pageTexts.push(content.items.map(item => item.str).join(' '))
-      } catch(e) { pageTexts.push('') }
+      // ── Layer 1: per-page text extraction + quality measurement ───────────
+      pageTexts = []
+      for (let i = 1; i <= pdf.numPages; i++) {
+        try {
+          const page = await pdf.getPage(i)
+          const content = await page.getTextContent()
+          pageTexts.push(content.items.map(item => item.str).join(' '))
+        } catch(e) { pageTexts.push('') }
+      }
+
+      fullText = pageTexts.join('\n')
+      scannedPageCount = pageTexts.filter(t => t.trim().length < 50).length
+      scannedRatio = scannedPageCount / pdf.numPages
+      cleanedText = fullText.replace(/\s+/g, ' ').trim()
+      isTextPdf = cleanedText.length > 500 && /\d{3,}/.test(cleanedText) && scannedRatio < 0.3
+
+      onDebug('TEXT: ' + fullText.length + ' chars, scannedRatio=' + scannedRatio.toFixed(2) + ', isTextPdf=' + isTextPdf)
+    } catch(e) {
+      console.error('[PDF EXTRACTION ERROR]', e)
+      throw e
     }
-
-    const fullText = pageTexts.join('\n')
-    const scannedPageCount = pageTexts.filter(t => t.trim().length < 50).length
-    const scannedRatio = scannedPageCount / pdf.numPages
-    const cleanedText = fullText.replace(/\s+/g, ' ').trim()
-    const isTextPdf = cleanedText.length > 500 && /\d{3,}/.test(cleanedText) && scannedRatio < 0.3
-
-    onDebug('TEXT: ' + fullText.length + ' chars, scannedRatio=' + scannedRatio.toFixed(2) + ', isTextPdf=' + isTextPdf)
 
     let rawText
     if (isTextPdf) {
       // ── Text path ──────────────────────────────────────────────────────────
       onProgress('extracting')
+      console.log('[FETCH] About to call /api/claude')
       const apiResp = await fetch('/api/claude', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
