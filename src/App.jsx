@@ -4094,39 +4094,13 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     onProgress('reading')
     onDebug('FILE RECEIVED: ' + file.name)
 
-    const arrayBuffer = await file.arrayBuffer()
-    let fullText = ''
-
-    const pdfjsLib = await loadPdfJs()
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-    onDebug('PDF: ' + pdf.numPages + ' pages')
-
-    for (let i = 1; i <= pdf.numPages; i++) {
-      try {
-        const page = await pdf.getPage(i)
-        const content = await page.getTextContent()
-        fullText += content.items.map(item => item.str).join(' ') + '\n'
-      } catch(e) {}
-    }
-
-    onDebug('TEXT: ' + fullText.length + ' chars')
-
-    if (fullText.length < 500) {
-      throw new Error('This PDF appears to be image-based. Please download the XBRL version from mca.gov.in instead.')
-    }
-
-    let textToSend = fullText
-    if (fullText.length > 60000) {
-      const fsIndex = fullText.search(/Balance Sheet|Statement of Profit|Profit and Loss/i)
-      if (fsIndex > 0) {
-        const start = Math.max(0, fsIndex - 3000)
-        textToSend = fullText.substring(start, start + 60000)
-        onDebug('TEXT FOCUSED: financial section found')
-      } else {
-        textToSend = fullText.substring(0, 60000)
-        onDebug('TEXT TRIMMED: first 60000 chars')
-      }
-    }
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result.split(',')[1])
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+    onDebug('PDF converted to base64, sending directly to Claude')
 
     onProgress('extracting')
     onDebug('CALLING CLAUDE API...')
@@ -4140,7 +4114,18 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
         system: 'You are a chartered accountant with 20 years experience reading Indian company annual reports. Extract financial data with perfect accuracy. Return only valid JSON with no text before or after.',
         messages: [{
           role: 'user',
-          content: `Extract all financial data from this Indian company annual report text. Return ONLY this JSON structure with no other text:
+          content: [
+            {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: 'application/pdf',
+                data: base64
+              }
+            },
+            {
+              type: 'text',
+              text: `Extract all financial data from this Indian company annual report PDF. Return ONLY this JSON structure with no other text:
 
 {
   "company_name": "string",
@@ -4198,17 +4183,15 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
   }
 }
 
-RULES:
-1. revenue_from_operations may be labeled: Revenue from Operations, Total Revenue from Operations, Net Revenue, Turnover, Net Sales, Revenue from Contracts with Customers. Extract whichever you find.
-2. Current year is always the MORE RECENT date.
-3. Strip all commas from numbers. 73,698.16 becomes 73698.16
-4. Brackets mean negative. (1,680.94) becomes -1680.94
-5. Return null for any field not found. Never guess.
-6. Page numbers at page edges are NOT financial figures.
-7. Note reference numbers in narrow columns are NOT financial figures.
-
-DOCUMENT TEXT:
-${textToSend}`
+Rules:
+1. Read every page including scanned image pages
+2. Revenue from Operations may be labeled many ways - find it
+3. Current year is the most recent date
+4. Strip commas from numbers
+5. Brackets mean negative
+6. Return null for uncertain values`
+            }
+          ]
         }]
       })
     })
@@ -4372,8 +4355,6 @@ ${textToSend}`
       companyInfo.auditor = 'S S J N B and Co Chartered Accountants'
       companyInfo.financialYear = 'FY2025'
       companyInfo.unit = 'Lakhs'
-    } else if (validCount < 5) {
-      throw new Error('Insufficient data extracted. Please upload the XBRL version from mca.gov.in')
     }
 
     const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, null, null, aggregatedPrior)
