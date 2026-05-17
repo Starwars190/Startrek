@@ -4216,6 +4216,7 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
       scannedPageCount = pageTexts.filter(t => t.trim().length < 50).length
       scannedRatio = scannedPageCount / pdf.numPages
       cleanedText = fullText.replace(/\s+/g, ' ').trim()
+      console.log('[TEXT]', cleanedText.substring(0, 300))
       isTextPdf = cleanedText.length > 500 && /\d{3,}/.test(cleanedText) && scannedRatio < 0.3
 
       onDebug('TEXT: ' + fullText.length + ' chars, scannedRatio=' + scannedRatio.toFixed(2) + ', isTextPdf=' + isTextPdf)
