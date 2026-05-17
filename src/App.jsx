@@ -4215,6 +4215,16 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     const cleanedText = fullText.replace(/\s+/g, ' ').trim()
     const isTextPdf = cleanedText.length > 500 && /\d{3,}/.test(cleanedText) && scannedRatio < 0.3
 
+    console.log('[FinSight] Text extraction complete:', {
+      totalPages: pdf.numPages,
+      scannedPageCount,
+      scannedRatio,
+      textLength: cleanedText.length,
+      hasNumbers: /\d{3,}/.test(cleanedText),
+      isTextPdf
+    })
+    console.log('[FinSight] Pipeline path:', isTextPdf ? 'TEXT' : 'VISION')
+
     onDebug('TEXT: ' + fullText.length + ' chars, scannedRatio=' + scannedRatio.toFixed(2) + ', isTextPdf=' + isTextPdf)
 
     let rawText
@@ -4415,9 +4425,12 @@ Rules:
 
     onProgress('analysing')
     onDebug('CLAUDE RESPONSE: ' + rawText.substring(0, 100))
+    console.log('[FinSight] Claude raw response length:', rawText?.length)
+    console.log('[FinSight] Claude raw response preview:', rawText?.substring(0, 500))
 
     const claudeResult = safeParseFinancialJSON(rawText)
     onDebug('EXTRACTED: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue?.current)
+    console.log('[FinSight] Parsed JSON:', JSON.stringify(claudeResult, null, 2).substring(0, 1000))
 
     deriveMetrics(claudeResult)
     console.log('After deriveMetrics:', {
@@ -4519,6 +4532,8 @@ Rules:
       reportingType: 'Standalone'
     }
 
+    console.log('[FinSight] aggregated.profit_loss:', aggregated?.profit_loss)
+
     const validCount = Object.values(aggregated).filter(v => v !== null).length
     onDebug('VALID FIELDS: ' + validCount)
 
@@ -4532,16 +4547,20 @@ Rules:
 
     let excelResult = null
     let wordResult = null
+    console.log('[FinSight] Starting Excel generation')
     try {
       excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, null, swot, {}, {})
     } catch(e) {
       console.error('Excel generation failed:', e)
     }
+    console.log('[FinSight] Excel result:', { hasBlob: !!excelResult?.excelBlob, size: excelResult?.excelBlob?.size })
+    console.log('[FinSight] Starting Word generation')
     try {
       wordResult = await generateOrganizedWordDoc([], companyInfo, null, swot, [], file.name, { aggregated, aggregatedPrior })
     } catch(e) {
       console.error('Word generation failed:', e)
     }
+    console.log('[FinSight] Word result:', { hasBlob: !!wordResult?.blob, size: wordResult?.blob?.size })
 
     onProgress('complete')
 
@@ -4572,6 +4591,7 @@ Rules:
     }
 
   } catch(err) {
+    console.error('[FinSight] Pipeline crashed:', err.message, err.stack)
     onDebug('ERROR: ' + err.message)
     throw err
   }
