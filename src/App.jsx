@@ -4213,7 +4213,15 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
       })
     })
 
-    apiData = await apiResponse.json()
+    onDebug('API STATUS: ' + apiResponse.status)
+    const responseText = await apiResponse.text()
+    onDebug('API RAW: ' + responseText.substring(0, 200))
+
+    if (!apiResponse.ok) {
+      throw new Error('API failed with status ' + apiResponse.status + ': ' + responseText.substring(0, 100))
+    }
+
+    apiData = JSON.parse(responseText)
     if (!apiData?.content?.[0]?.text) {
       throw new Error('Claude API returned no content. Status: ' + apiResponse.status)
     }
