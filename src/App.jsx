@@ -4093,6 +4093,87 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
   return { excelBlob: blob, fileName };
 }
 
+function safeParseFinancialJSON(raw) {
+  if (!raw) throw new Error('Empty response from Claude')
+  let cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+  const start = cleaned.indexOf('{')
+  const end = cleaned.lastIndexOf('}')
+  if (start === -1 || end === -1) throw new Error('No JSON object found in response')
+  const jsonStr = cleaned.slice(start, end + 1)
+  try {
+    return JSON.parse(jsonStr)
+  } catch(e) {
+    const fixed = jsonStr
+      .replace(/,\s*([}\]])/g, '$1')
+      .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3')
+    return JSON.parse(fixed)
+  }
+}
+
+function deriveMetrics(a) {
+  const pl = a.profit_loss || {}
+  const bs = a.balance_sheet || {}
+  const cf = a.cash_flow || {}
+
+  if (!pl.gross_profit && pl.revenue && pl.cogs) {
+    pl.gross_profit = {
+      current: (pl.revenue.current || 0) - (pl.cogs.current || 0),
+      prior: (pl.revenue.prior || 0) - (pl.cogs.prior || 0)
+    }
+  }
+
+  if (!pl.ebitda && pl.profit_before_tax) {
+    const pbt_c = pl.profit_before_tax.current || 0
+    const pbt_p = pl.profit_before_tax.prior || 0
+    const dep_c = pl.depreciation?.current || 0
+    const dep_p = pl.depreciation?.prior || 0
+    const fin_c = pl.finance_costs?.current || 0
+    const fin_p = pl.finance_costs?.prior || 0
+    pl.ebitda = { current: pbt_c + dep_c + fin_c, prior: pbt_p + dep_p + fin_p }
+  }
+
+  if (!pl.ebit && pl.ebitda) {
+    const dep_c = pl.depreciation?.current || 0
+    const dep_p = pl.depreciation?.prior || 0
+    pl.ebit = { current: (pl.ebitda.current || 0) - dep_c, prior: (pl.ebitda.prior || 0) - dep_p }
+  }
+
+  if (!bs.total_debt && (bs.long_term_borrowings || bs.short_term_borrowings)) {
+    bs.total_debt = {
+      current: (bs.long_term_borrowings?.current || 0) + (bs.short_term_borrowings?.current || 0),
+      prior: (bs.long_term_borrowings?.prior || 0) + (bs.short_term_borrowings?.prior || 0)
+    }
+  }
+
+  if (!bs.working_capital && bs.current_assets && bs.current_liabilities) {
+    bs.working_capital = {
+      current: (bs.current_assets.current || 0) - (bs.current_liabilities.current || 0),
+      prior: (bs.current_assets.prior || 0) - (bs.current_liabilities.prior || 0)
+    }
+  }
+
+  if (!cf.net_change_in_cash && cf.closing_cash && cf.opening_cash) {
+    cf.net_change_in_cash = {
+      current: (cf.closing_cash.current || 0) - (cf.opening_cash.current || 0),
+      prior: (cf.closing_cash.prior || 0) - (cf.opening_cash.prior || 0)
+    }
+  }
+
+  return a
+}
+
+function checkBalanceSheet(bs, label) {
+  const assets = bs.total_assets?.current || 0
+  const equity = bs.total_equity?.current || 0
+  const debt = bs.total_debt?.current || 0
+  const currentLiab = bs.current_liabilities?.current || 0
+  const liabilities = equity + debt + currentLiab
+  const delta = Math.abs(assets - liabilities)
+  if (assets > 0 && delta > assets * 0.05) {
+    console.warn(`[FinSight] ${label} balance sheet mismatch: assets=${assets}, liabilities=${liabilities}, delta=${delta}`)
+  }
+}
+
 async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () => {}) {
   try {
     onProgress('reading')
@@ -4100,7 +4181,6 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
 
     const arrayBuffer = await file.arrayBuffer()
     let fullText = ''
-
     const pdfjsLib = await loadPdfJs()
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
     onDebug('PDF: ' + pdf.numPages + ' pages')
@@ -4119,8 +4199,8 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     if (fullText.length > 60000) {
       const fsIndex = fullText.search(/Balance Sheet|Statement of Profit|Profit and Loss/i)
       if (fsIndex > 0) {
-        const start = Math.max(0, fsIndex - 3000)
-        textToSend = fullText.substring(start, start + 60000)
+        const s = Math.max(0, fsIndex - 3000)
+        textToSend = fullText.substring(s, s + 60000)
         onDebug('TEXT FOCUSED: financial section found')
       } else {
         textToSend = fullText.substring(0, 60000)
@@ -4131,192 +4211,168 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     onProgress('extracting')
     onDebug('CALLING CLAUDE API...')
 
-    const apiResponse = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 8192,
-        system: 'You are a chartered accountant with 20 years experience reading Indian company annual reports. Extract financial data with perfect accuracy. Return only valid JSON with no text before or after.',
-        messages: [{
-          role: 'user',
-          content: `Extract all financial data from this Indian company annual report text. Return ONLY this JSON with no other text:
+    const systemPrompt = `You are a senior chartered accountant and financial analyst.
+Extract financial data from Indian company filings with perfect accuracy.
+Return ONLY valid JSON. No markdown, no explanation, no text outside the JSON object.`
+
+    const userPrompt = `Extract ALL financial data from this document and return as JSON with this exact structure:
 
 {
-  "company_name": "string",
-  "cin": "string or null",
-  "financial_year": "string",
+  "company_name": "",
+  "financial_year": "",
   "currency": "INR",
-  "unit": "Lakhs or Crores",
-  "sector": "string or null",
-  "auditor": "string or null",
-  "directors": [{"name": "string", "designation": "string"}],
+  "unit": "Lakhs",
   "profit_loss": {
-    "revenue_from_operations": {"current": number, "prior": number},
-    "other_income": {"current": number, "prior": number},
-    "total_income": {"current": number, "prior": number},
-    "cogs": {"current": number, "prior": number},
-    "gross_profit": {"current": number, "prior": number},
-    "changes_in_inventories": {"current": number, "prior": number},
-    "employee_costs": {"current": number, "prior": number},
-    "interest_expense": {"current": number, "prior": number},
-    "depreciation": {"current": number, "prior": number},
-    "other_expenses": {"current": number, "prior": number},
-    "total_expenses": {"current": number, "prior": number},
-    "ebitda": {"current": number, "prior": number},
-    "operating_profit": {"current": number, "prior": number},
-    "pbt": {"current": number, "prior": number},
-    "tax": {"current": number, "prior": number},
-    "net_income": {"current": number, "prior": number},
-    "eps_basic": {"current": number, "prior": number},
-    "eps_diluted": {"current": number, "prior": number}
+    "revenue": { "current": 0, "prior": 0 },
+    "other_income": { "current": 0, "prior": 0 },
+    "total_income": { "current": 0, "prior": 0 },
+    "cogs": { "current": 0, "prior": 0 },
+    "gross_profit": { "current": 0, "prior": 0 },
+    "employee_costs": { "current": 0, "prior": 0 },
+    "other_expenses": { "current": 0, "prior": 0 },
+    "ebitda": { "current": 0, "prior": 0 },
+    "depreciation": { "current": 0, "prior": 0 },
+    "ebit": { "current": 0, "prior": 0 },
+    "finance_costs": { "current": 0, "prior": 0 },
+    "profit_before_tax": { "current": 0, "prior": 0 },
+    "tax_expense": { "current": 0, "prior": 0 },
+    "profit_after_tax": { "current": 0, "prior": 0 }
   },
   "balance_sheet": {
-    "share_capital": {"current": number, "prior": number},
-    "reserves_and_surplus": {"current": number, "prior": number},
-    "total_equity": {"current": number, "prior": number},
-    "long_term_debt": {"current": number, "prior": number},
-    "non_current_liabilities": {"current": number, "prior": number},
-    "short_term_debt": {"current": number, "prior": number},
-    "trade_payables": {"current": number, "prior": number},
-    "current_liabilities": {"current": number, "prior": number},
-    "total_liabilities": {"current": number, "prior": number},
-    "fixed_assets": {"current": number, "prior": number},
-    "non_current_assets": {"current": number, "prior": number},
-    "inventory": {"current": number, "prior": number},
-    "receivables": {"current": number, "prior": number},
-    "cash": {"current": number, "prior": number},
-    "current_assets": {"current": number, "prior": number},
-    "total_assets": {"current": number, "prior": number}
+    "total_assets": { "current": 0, "prior": 0 },
+    "fixed_assets": { "current": 0, "prior": 0 },
+    "current_assets": { "current": 0, "prior": 0 },
+    "cash_and_equivalents": { "current": 0, "prior": 0 },
+    "trade_receivables": { "current": 0, "prior": 0 },
+    "inventory": { "current": 0, "prior": 0 },
+    "non_current_assets": { "current": 0, "prior": 0 },
+    "total_equity": { "current": 0, "prior": 0 },
+    "share_capital": { "current": 0, "prior": 0 },
+    "reserves_and_surplus": { "current": 0, "prior": 0 },
+    "long_term_borrowings": { "current": 0, "prior": 0 },
+    "short_term_borrowings": { "current": 0, "prior": 0 },
+    "total_debt": { "current": 0, "prior": 0 },
+    "current_liabilities": { "current": 0, "prior": 0 },
+    "trade_payables": { "current": 0, "prior": 0 }
   },
   "cash_flow": {
-    "cfo": {"current": number, "prior": number},
-    "investing": {"current": number, "prior": number},
-    "financing": {"current": number, "prior": number},
-    "net_change_in_cash": {"current": number, "prior": number},
-    "closing_cash": {"current": number, "prior": number}
+    "operating_cash_flow": { "current": 0, "prior": 0 },
+    "investing_cash_flow": { "current": 0, "prior": 0 },
+    "financing_cash_flow": { "current": 0, "prior": 0 },
+    "net_change_in_cash": { "current": 0, "prior": 0 },
+    "opening_cash": { "current": 0, "prior": 0 },
+    "closing_cash": { "current": 0, "prior": 0 }
   }
 }
 
 RULES:
-1. revenue_from_operations may be labeled: Revenue from Operations, Total Revenue from Operations, Net Revenue, Turnover, Net Sales. Extract whichever you find.
-2. Current year is always the MORE RECENT date.
-3. Strip all commas from numbers.
-4. Brackets mean negative.
-5. Return null for any field not found. Never guess.
-6. Page numbers at page edges are NOT financial figures.
-7. Note reference numbers in narrow columns are NOT financial figures.
+1. Use null (not 0) for any value genuinely not present in the document
+2. If EBITDA is not stated, calculate it: PBT + Depreciation + Finance Costs
+3. If Gross Profit is not stated, calculate it: Revenue - COGS
+4. All values must be numbers, never strings
+5. Do not invent or estimate values — only extract what is explicitly in the document
+6. prior = previous year comparative figures
+7. current = current reporting year figures
+8. If cash flow statement is absent, set all cash_flow values to null
 
 DOCUMENT TEXT:
 ${textToSend}`
-        }]
-      })
-    })
 
-    const responseText = await apiResponse.text()
-    onDebug('API STATUS: ' + apiResponse.status)
-
-    if (!apiResponse.ok) {
-      throw new Error('API failed: ' + apiResponse.status + ' ' + responseText.substring(0, 100))
-    }
-
-    const apiData = JSON.parse(responseText)
-    const rawText = apiData?.content?.[0]?.text || ''
+    const rawText = await callClaude({ system: systemPrompt, userMsg: userPrompt, maxTokens: 8192 })
     onDebug('CLAUDE RESPONSE: ' + rawText.substring(0, 100))
 
-    const start = rawText.indexOf('{')
-    const end = rawText.lastIndexOf('}')
-    if (start === -1 || end === -1) throw new Error('No JSON in Claude response')
+    const claudeResult = safeParseFinancialJSON(rawText)
+    onDebug('EXTRACTED: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue?.current)
 
-    const claudeResult = JSON.parse(rawText.substring(start, end + 1))
-    onDebug('EXTRACTED: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue_from_operations?.current)
+    deriveMetrics(claudeResult)
+    checkBalanceSheet(claudeResult.balance_sheet || {}, 'Current Year')
 
     const pl = claudeResult.profit_loss || {}
     const bs = claudeResult.balance_sheet || {}
     const cf = claudeResult.cash_flow || {}
 
     const aggregated = {
-      revenue: pl.revenue_from_operations?.current ?? pl.total_income?.current ?? null,
+      revenue: pl.revenue?.current ?? pl.total_income?.current ?? null,
       otherIncome: pl.other_income?.current ?? null,
       totalIncome: pl.total_income?.current ?? null,
       grossProfit: pl.gross_profit?.current ?? null,
       ebitda: pl.ebitda?.current ?? null,
-      operatingProfit: pl.operating_profit?.current ?? null,
-      pbt: pl.pbt?.current ?? null,
-      tax: pl.tax?.current ?? null,
-      netIncome: pl.net_income?.current ?? null,
-      interestExpense: pl.interest_expense?.current ?? null,
+      operatingProfit: pl.ebit?.current ?? null,
+      pbt: pl.profit_before_tax?.current ?? null,
+      tax: pl.tax_expense?.current ?? null,
+      netIncome: pl.profit_after_tax?.current ?? null,
+      interestExpense: pl.finance_costs?.current ?? null,
       depreciation: pl.depreciation?.current ?? null,
       cogs: pl.cogs?.current ?? null,
       employeeCosts: pl.employee_costs?.current ?? null,
       otherExpenses: pl.other_expenses?.current ?? null,
-      totalExpenses: pl.total_expenses?.current ?? null,
-      eps: pl.eps_basic?.current ?? null,
+      totalExpenses: null,
+      eps: null,
       totalAssets: bs.total_assets?.current ?? null,
       currentAssets: bs.current_assets?.current ?? null,
       nonCurrentAssets: bs.non_current_assets?.current ?? null,
-      cash: bs.cash?.current ?? null,
+      cash: bs.cash_and_equivalents?.current ?? null,
       inventory: bs.inventory?.current ?? null,
-      receivables: bs.receivables?.current ?? null,
+      receivables: bs.trade_receivables?.current ?? null,
       fixedAssets: bs.fixed_assets?.current ?? null,
-      totalLiabilities: bs.total_liabilities?.current ?? null,
+      totalLiabilities: null,
       currentLiabilities: bs.current_liabilities?.current ?? null,
-      nonCurrentLiabilities: bs.non_current_liabilities?.current ?? null,
+      nonCurrentLiabilities: null,
       totalEquity: bs.total_equity?.current ?? null,
-      longTermDebt: bs.long_term_debt?.current ?? null,
-      shortTermDebt: bs.short_term_debt?.current ?? null,
+      longTermDebt: bs.long_term_borrowings?.current ?? null,
+      shortTermDebt: bs.short_term_borrowings?.current ?? null,
       tradePayables: bs.trade_payables?.current ?? null,
       shareCapital: bs.share_capital?.current ?? null,
       reserves: bs.reserves_and_surplus?.current ?? null,
-      operatingCashFlow: cf.cfo?.current ?? null,
-      investingCashFlow: cf.investing?.current ?? null,
-      financingCashFlow: cf.financing?.current ?? null,
+      operatingCashFlow: cf.operating_cash_flow?.current ?? null,
+      investingCashFlow: cf.investing_cash_flow?.current ?? null,
+      financingCashFlow: cf.financing_cash_flow?.current ?? null,
     }
 
     const aggregatedPrior = {
-      revenue: pl.revenue_from_operations?.prior ?? pl.total_income?.prior ?? null,
+      revenue: pl.revenue?.prior ?? pl.total_income?.prior ?? null,
       otherIncome: pl.other_income?.prior ?? null,
       totalIncome: pl.total_income?.prior ?? null,
       grossProfit: pl.gross_profit?.prior ?? null,
       ebitda: pl.ebitda?.prior ?? null,
-      operatingProfit: pl.operating_profit?.prior ?? null,
-      pbt: pl.pbt?.prior ?? null,
-      tax: pl.tax?.prior ?? null,
-      netIncome: pl.net_income?.prior ?? null,
-      interestExpense: pl.interest_expense?.prior ?? null,
+      operatingProfit: pl.ebit?.prior ?? null,
+      pbt: pl.profit_before_tax?.prior ?? null,
+      tax: pl.tax_expense?.prior ?? null,
+      netIncome: pl.profit_after_tax?.prior ?? null,
+      interestExpense: pl.finance_costs?.prior ?? null,
       depreciation: pl.depreciation?.prior ?? null,
       cogs: pl.cogs?.prior ?? null,
       employeeCosts: pl.employee_costs?.prior ?? null,
       otherExpenses: pl.other_expenses?.prior ?? null,
-      totalExpenses: pl.total_expenses?.prior ?? null,
-      eps: pl.eps_basic?.prior ?? null,
+      totalExpenses: null,
+      eps: null,
       totalAssets: bs.total_assets?.prior ?? null,
       currentAssets: bs.current_assets?.prior ?? null,
       nonCurrentAssets: bs.non_current_assets?.prior ?? null,
-      cash: bs.cash?.prior ?? null,
+      cash: bs.cash_and_equivalents?.prior ?? null,
       inventory: bs.inventory?.prior ?? null,
-      receivables: bs.receivables?.prior ?? null,
+      receivables: bs.trade_receivables?.prior ?? null,
       fixedAssets: bs.fixed_assets?.prior ?? null,
-      totalLiabilities: bs.total_liabilities?.prior ?? null,
+      totalLiabilities: null,
       currentLiabilities: bs.current_liabilities?.prior ?? null,
-      nonCurrentLiabilities: bs.non_current_liabilities?.prior ?? null,
+      nonCurrentLiabilities: null,
       totalEquity: bs.total_equity?.prior ?? null,
-      longTermDebt: bs.long_term_debt?.prior ?? null,
-      shortTermDebt: bs.short_term_debt?.prior ?? null,
+      longTermDebt: bs.long_term_borrowings?.prior ?? null,
+      shortTermDebt: bs.short_term_borrowings?.prior ?? null,
       tradePayables: bs.trade_payables?.prior ?? null,
       shareCapital: bs.share_capital?.prior ?? null,
       reserves: bs.reserves_and_surplus?.prior ?? null,
-      operatingCashFlow: cf.cfo?.prior ?? null,
-      investingCashFlow: cf.investing?.prior ?? null,
-      financingCashFlow: cf.financing?.prior ?? null,
+      operatingCashFlow: cf.operating_cash_flow?.prior ?? null,
+      investingCashFlow: cf.investing_cash_flow?.prior ?? null,
+      financingCashFlow: cf.financing_cash_flow?.prior ?? null,
     }
 
     const companyInfo = {
-      name: claudeResult.company_name || file.name.replace('.pdf',''),
-      cin: claudeResult.cin || null,
-      sector: claudeResult.sector || null,
-      auditor: claudeResult.auditor || null,
-      directors: claudeResult.directors || [],
+      name: claudeResult.company_name || file.name.replace('.pdf', ''),
+      cin: null,
+      sector: null,
+      auditor: null,
+      directors: [],
       financialYear: claudeResult.financial_year || 'FY2025',
       currency: claudeResult.currency || 'INR',
       unit: claudeResult.unit || 'Lakhs',
@@ -4382,8 +4438,19 @@ ${textToSend}`
     onProgress('generating')
 
     const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, null, null, aggregatedPrior)
-    const excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, null, swot, {}, {})
-    const wordResult = await generateOrganizedWordDoc([], companyInfo, null, swot, [], file.name, { aggregated, aggregatedPrior })
+
+    let excelResult = null
+    let wordResult = null
+    try {
+      excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, null, swot, {}, {})
+    } catch(e) {
+      console.error('Excel generation failed:', e)
+    }
+    try {
+      wordResult = await generateOrganizedWordDoc([], companyInfo, null, swot, [], file.name, { aggregated, aggregatedPrior })
+    } catch(e) {
+      console.error('Word generation failed:', e)
+    }
 
     onProgress('complete')
 
