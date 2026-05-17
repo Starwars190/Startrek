@@ -4536,9 +4536,10 @@ Rules:
 
     const validCount = Object.values(aggregated).filter(v => v !== null).length
     onDebug('VALID FIELDS: ' + validCount)
+    console.log('[FinSight] validCount:', validCount, 'aggregated keys:', Object.keys(aggregated))
 
-    if (validCount < 5) {
-      throw new Error('Insufficient data extracted. Please upload XBRL version from mca.gov.in')
+    if (validCount < 2) {
+      throw new Error('Could not extract enough financial data from this document. Please check the file and try again.')
     }
 
     onProgress('generating')
