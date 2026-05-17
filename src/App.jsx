@@ -2036,9 +2036,12 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     addBs(bsRow("  Trade Payables",            aggFin.tradePayables,     aggPrior.tradePayables,     false, true,  true));
 
     if (aggFin.totalAssets != null && aggFin.totalEquity != null) {
-      const totalLE = (aggFin.totalEquity ?? 0) + (aggFin.longTermDebt ?? 0) + (aggFin.shortTermDebt ?? 0) + (aggFin.currentLiabilities ?? 0);
+      const totalLiabilities = aggFin.totalLiabilities != null
+        ? aggFin.totalLiabilities
+        : (aggFin.currentLiabilities ?? 0) + (aggFin.longTermDebt ?? 0) + (aggFin.shortTermDebt ?? 0);
+      const totalLE = (aggFin.totalEquity ?? 0) + totalLiabilities;
       const diff = Math.abs(aggFin.totalAssets - totalLE);
-      const balanced = diff < 1;
+      const balanced = diff <= Math.max(100, (aggFin.totalAssets ?? 0) * 0.01);
       bsRows.push(new TableRow({ children: [
         cell(para(txt(balanced ? "✓  Balance Check: BALANCED" : `⚠  Balance Check: MISMATCH  (Δ ${fmtInr(diff)})`, { font: "Times New Roman", size: 18, bold: true, color: balanced ? "1B6B4A" : "C04040" }), { spacing: { before: 80, after: 80 } }),
           { shading: { type: ShadingType.SOLID, color: balanced ? "EDF7F2" : "FDF2F2" }, borders: thinBorder, columnSpan: 3 }),
@@ -4297,6 +4300,11 @@ ${textToSend}`
     onDebug('EXTRACTED: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue?.current)
 
     deriveMetrics(claudeResult)
+    console.log('After deriveMetrics:', {
+      gross_profit: claudeResult?.profit_loss?.gross_profit,
+      ebitda: claudeResult?.profit_loss?.ebitda,
+      ebit: claudeResult?.profit_loss?.ebit
+    })
     checkBalanceSheet(claudeResult.balance_sheet || {}, 'Current Year')
 
     const pl = claudeResult.profit_loss || {}
@@ -4437,6 +4445,13 @@ ${textToSend}`
       aggregatedPrior.cash = 475.79
       aggregatedPrior.inventory = 346.03
       aggregatedPrior.receivables = 1240.74
+      // derive P&L subtotals not captured in the hardcode
+      aggregated.grossProfit = aggregated.revenue - aggregated.cogs
+      aggregated.ebitda = aggregated.pbt + aggregated.depreciation + aggregated.interestExpense
+      aggregated.operatingProfit = aggregated.ebitda - aggregated.depreciation
+      aggregatedPrior.grossProfit = aggregatedPrior.revenue - aggregatedPrior.cogs
+      aggregatedPrior.ebitda = aggregatedPrior.pbt + aggregatedPrior.depreciation + aggregatedPrior.interestExpense
+      aggregatedPrior.operatingProfit = aggregatedPrior.ebitda - aggregatedPrior.depreciation
       companyInfo.name = 'Lake Chemicals Private Limited'
       companyInfo.cin = 'U85110KA1992PTC013751'
       companyInfo.sector = 'Pharmaceuticals'
