@@ -6123,7 +6123,7 @@ function FinSightApp() {
       setPrivateDocError(e.message || "Failed to process document.");
       setPrivateDocLoading(false);
       setPrivateDocProgress("");
-      setPrivateDocStage('uploaded');
+      setPrivateDocStage('idle');
     }
   };
 
