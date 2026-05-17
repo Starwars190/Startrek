@@ -4195,36 +4195,46 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     onDebug('FILE RECEIVED: ' + file.name)
 
     const arrayBuffer = await file.arrayBuffer()
-    let fullText = ''
     const pdfjsLib = await loadPdfJs()
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
     onDebug('PDF: ' + pdf.numPages + ' pages')
 
+    // ── Layer 1: per-page text extraction + quality measurement ─────────────
+    const pageTexts = []
     for (let i = 1; i <= pdf.numPages; i++) {
       try {
         const page = await pdf.getPage(i)
         const content = await page.getTextContent()
-        fullText += content.items.map(item => item.str).join(' ') + '\n'
-      } catch(e) {}
+        pageTexts.push(content.items.map(item => item.str).join(' '))
+      } catch(e) { pageTexts.push('') }
     }
 
-    onDebug('TEXT: ' + fullText.length + ' chars')
+    const fullText = pageTexts.join('\n')
+    const scannedPageCount = pageTexts.filter(t => t.trim().length < 50).length
+    const scannedRatio = scannedPageCount / pdf.numPages
+    const cleanedText = fullText.replace(/\s+/g, ' ').trim()
+    const isTextPdf = cleanedText.length > 500 && /\d{3,}/.test(cleanedText) && scannedRatio < 0.3
 
-    let textToSend = fullText
-    if (fullText.length > 60000) {
-      const fsIndex = fullText.search(/Balance Sheet|Statement of Profit|Profit and Loss/i)
-      if (fsIndex > 0) {
-        const s = Math.max(0, fsIndex - 3000)
-        textToSend = fullText.substring(s, s + 60000)
-        onDebug('TEXT FOCUSED: financial section found')
-      } else {
-        textToSend = fullText.substring(0, 60000)
-        onDebug('TEXT TRIMMED: first 60000 chars')
+    onDebug('TEXT: ' + fullText.length + ' chars, scannedRatio=' + scannedRatio.toFixed(2) + ', isTextPdf=' + isTextPdf)
+
+    let rawText
+    if (isTextPdf) {
+      // ── Text path ──────────────────────────────────────────────────────────
+      let textToSend = fullText
+      if (fullText.length > 60000) {
+        const fsIndex = fullText.search(/Balance Sheet|Statement of Profit|Profit and Loss/i)
+        if (fsIndex > 0) {
+          const s = Math.max(0, fsIndex - 3000)
+          textToSend = fullText.substring(s, s + 60000)
+          onDebug('TEXT FOCUSED: financial section found')
+        } else {
+          textToSend = fullText.substring(0, 60000)
+          onDebug('TEXT TRIMMED: first 60000 chars')
+        }
       }
-    }
 
-    onProgress('extracting')
-    onDebug('CALLING CLAUDE API...')
+      onProgress('extracting')
+      onDebug('CALLING CLAUDE API (text)...')
 
     const systemPrompt = `You are a senior chartered accountant and financial analyst.
 Extract financial data from Indian company filings with perfect accuracy.
@@ -4293,7 +4303,117 @@ RULES:
 DOCUMENT TEXT:
 ${textToSend}`
 
-    const rawText = await callClaude({ system: systemPrompt, userMsg: userPrompt, maxTokens: 8192 })
+      rawText = await callClaude({ system: systemPrompt, userMsg: userPrompt, maxTokens: 8192 })
+
+    } else {
+      // ── Layer 2: Vision path (scanned / hybrid PDF) ──────────────────────
+      onProgress('vision')
+      onDebug('CALLING CLAUDE API (vision)...')
+
+      const MAX_PAGES = 8
+      const scale = 1.5
+      const pageImages = []
+
+      for (let i = 1; i <= Math.min(pdf.numPages, MAX_PAGES + 1); i++) {
+        if (pageImages.length >= MAX_PAGES) break
+        try {
+          const page = await pdf.getPage(i)
+          const viewport = page.getViewport({ scale })
+          const canvas = document.createElement('canvas')
+          canvas.width = viewport.width
+          canvas.height = viewport.height
+          const ctx = canvas.getContext('2d')
+          await page.render({ canvasContext: ctx, viewport }).promise
+
+          if (i === 1) {
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+            let sum = 0
+            for (let px = 0; px < imgData.length; px += 4) sum += imgData[px]
+            const mean = sum / (imgData.length / 4)
+            let variance = 0
+            for (let px = 0; px < imgData.length; px += 4) variance += Math.pow(imgData[px] - mean, 2)
+            variance /= (imgData.length / 4)
+            if (variance < 200) { onDebug('SKIP page 1: low variance (cover)'); continue }
+          }
+
+          const b64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1]
+          pageImages.push(b64)
+        } catch(e) { onDebug('Page ' + i + ' render error: ' + e.message) }
+      }
+
+      onDebug('VISION: ' + pageImages.length + ' pages rendered')
+
+      const visionContent = [
+        ...pageImages.map(b64 => ({
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/jpeg', data: b64 }
+        })),
+        {
+          type: 'text',
+          text: `You are a senior chartered accountant. Extract ALL financial data from these document images with 100% accuracy.
+Return ONLY valid JSON — no markdown, no explanation outside JSON:
+{
+  "company_name": "",
+  "financial_year": "",
+  "currency": "INR",
+  "unit": "Lakhs",
+  "profit_loss": {
+    "revenue": { "current": null, "prior": null },
+    "other_income": { "current": null, "prior": null },
+    "total_income": { "current": null, "prior": null },
+    "cogs": { "current": null, "prior": null },
+    "gross_profit": { "current": null, "prior": null },
+    "employee_costs": { "current": null, "prior": null },
+    "other_expenses": { "current": null, "prior": null },
+    "ebitda": { "current": null, "prior": null },
+    "depreciation": { "current": null, "prior": null },
+    "ebit": { "current": null, "prior": null },
+    "finance_costs": { "current": null, "prior": null },
+    "profit_before_tax": { "current": null, "prior": null },
+    "tax_expense": { "current": null, "prior": null },
+    "profit_after_tax": { "current": null, "prior": null }
+  },
+  "balance_sheet": {
+    "total_assets": { "current": null, "prior": null },
+    "fixed_assets": { "current": null, "prior": null },
+    "current_assets": { "current": null, "prior": null },
+    "cash_and_equivalents": { "current": null, "prior": null },
+    "trade_receivables": { "current": null, "prior": null },
+    "inventory": { "current": null, "prior": null },
+    "non_current_assets": { "current": null, "prior": null },
+    "total_equity": { "current": null, "prior": null },
+    "share_capital": { "current": null, "prior": null },
+    "reserves_and_surplus": { "current": null, "prior": null },
+    "long_term_borrowings": { "current": null, "prior": null },
+    "short_term_borrowings": { "current": null, "prior": null },
+    "total_debt": { "current": null, "prior": null },
+    "current_liabilities": { "current": null, "prior": null },
+    "trade_payables": { "current": null, "prior": null }
+  },
+  "cash_flow": {
+    "operating_cash_flow": { "current": null, "prior": null },
+    "investing_cash_flow": { "current": null, "prior": null },
+    "financing_cash_flow": { "current": null, "prior": null },
+    "net_change_in_cash": { "current": null, "prior": null },
+    "opening_cash": { "current": null, "prior": null },
+    "closing_cash": { "current": null, "prior": null }
+  }
+}
+Rules:
+1. null for any value not found — never guess or hallucinate
+2. All values must be numbers, never strings
+3. current = this reporting year, prior = previous year comparative
+4. If EBITDA missing: PBT + Depreciation + Finance Costs
+5. If Gross Profit missing: Revenue - COGS
+6. Detect unit automatically — Lakhs, Crores, Millions, Thousands
+7. If document is in Crores, convert all values to Lakhs (×100)`
+        }
+      ]
+
+      rawText = await callClaude({ userMsg: visionContent, maxTokens: 4000 })
+    }
+
+    onProgress('analysing')
     onDebug('CLAUDE RESPONSE: ' + rawText.substring(0, 100))
 
     const claudeResult = safeParseFinancialJSON(rawText)
@@ -4402,63 +4522,7 @@ ${textToSend}`
     const validCount = Object.values(aggregated).filter(v => v !== null).length
     onDebug('VALID FIELDS: ' + validCount)
 
-    if (validCount < 5 && file.name.toLowerCase().includes('lake')) {
-      onDebug('HARDCODE: Lake Chemicals verified data')
-      aggregated.revenue = 9234.29
-      aggregated.otherIncome = 824.31
-      aggregated.totalIncome = 10058.60
-      aggregated.cogs = 2524.08
-      aggregated.employeeCosts = 698.56
-      aggregated.interestExpense = 55.42
-      aggregated.depreciation = 93.96
-      aggregated.otherExpenses = 1513.24
-      aggregated.totalExpenses = 4795.12
-      aggregated.pbt = 5263.48
-      aggregated.tax = 1322.32
-      aggregated.netIncome = 3941.16
-      aggregated.eps = 513.23
-      aggregated.totalAssets = 13204.68
-      aggregated.currentAssets = 5254.80
-      aggregated.nonCurrentAssets = 7949.88
-      aggregated.cash = 131.62
-      aggregated.inventory = 422.67
-      aggregated.receivables = 1379.45
-      aggregated.fixedAssets = 1044.65
-      aggregated.totalLiabilities = 1642.90
-      aggregated.currentLiabilities = 1520.76
-      aggregated.nonCurrentLiabilities = 122.14
-      aggregated.totalEquity = 11561.78
-      aggregated.longTermDebt = 21.16
-      aggregated.shortTermDebt = 13.76
-      aggregated.tradePayables = 1050.35
-      aggregatedPrior.revenue = 9641.79
-      aggregatedPrior.netIncome = 4483.74
-      aggregatedPrior.totalAssets = 11711.48
-      aggregatedPrior.totalEquity = 9871.00
-      aggregatedPrior.pbt = 5909.04
-      aggregatedPrior.tax = 1425.30
-      aggregatedPrior.cogs = 2720.04
-      aggregatedPrior.depreciation = 91.64
-      aggregatedPrior.interestExpense = 11.56
-      aggregatedPrior.currentAssets = 5640.14
-      aggregatedPrior.currentLiabilities = 1719.90
-      aggregatedPrior.cash = 475.79
-      aggregatedPrior.inventory = 346.03
-      aggregatedPrior.receivables = 1240.74
-      // derive P&L subtotals not captured in the hardcode
-      aggregated.grossProfit = aggregated.revenue - aggregated.cogs
-      aggregated.ebitda = aggregated.pbt + aggregated.depreciation + aggregated.interestExpense
-      aggregated.operatingProfit = aggregated.ebitda - aggregated.depreciation
-      aggregatedPrior.grossProfit = aggregatedPrior.revenue - aggregatedPrior.cogs
-      aggregatedPrior.ebitda = aggregatedPrior.pbt + aggregatedPrior.depreciation + aggregatedPrior.interestExpense
-      aggregatedPrior.operatingProfit = aggregatedPrior.ebitda - aggregatedPrior.depreciation
-      companyInfo.name = 'Lake Chemicals Private Limited'
-      companyInfo.cin = 'U85110KA1992PTC013751'
-      companyInfo.sector = 'Pharmaceuticals'
-      companyInfo.auditor = 'S S J N B and Co Chartered Accountants'
-      companyInfo.financialYear = 'FY2025'
-      companyInfo.unit = 'Lakhs'
-    } else if (validCount < 5) {
+    if (validCount < 5) {
       throw new Error('Insufficient data extracted. Please upload XBRL version from mca.gov.in')
     }
 
