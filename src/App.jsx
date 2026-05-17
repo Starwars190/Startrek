@@ -4114,6 +4114,8 @@ function safeParseFinancialJSON(raw) {
     .replace(/```json/gi, '')
     .replace(/```/g, '')
     .trim()
+  console.log('[PARSE] cleaned start:', cleaned.substring(0, 100))
+  console.log('[PARSE] first char code:', cleaned.charCodeAt(0))
   const start = cleaned.indexOf('{')
   const end = cleaned.lastIndexOf('}')
   if (start === -1 || end === -1) throw new Error('No JSON object found in response')
