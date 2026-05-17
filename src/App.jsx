@@ -6102,13 +6102,6 @@ function FinSightApp() {
   };
 
   const handlePrivateDocProcess = async (file, outputs) => {
-    try {
-      const textCheck = await checkPdfHasText(file);
-      if (!textCheck.hasText) {
-        setScannedPdfWarn({ file, outputs, charsPerPage: textCheck.charsPerPage, totalPages: textCheck.totalPages });
-        return;
-      }
-    } catch { /* if check fails, proceed anyway */ }
     await runPrivateDocProcess(file, outputs);
   };
 
