@@ -4094,40 +4094,10 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     onProgress('reading')
     onDebug('FILE RECEIVED: ' + file.name)
 
-    const base64 = await new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result.split(',')[1])
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
-    onDebug('PDF converted to base64, sending directly to Claude')
+    const isLargePdf = file.size > 5 * 1024 * 1024
+    onDebug('FILE SIZE: ' + (file.size / 1024 / 1024).toFixed(2) + 'MB, using ' + (isLargePdf ? 'pdfjs fallback' : 'native PDF reading'))
 
-    onProgress('extracting')
-    onDebug('CALLING CLAUDE API...')
-
-    const apiResponse = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 8192,
-        system: 'You are a chartered accountant with 20 years experience reading Indian company annual reports. Extract financial data with perfect accuracy. Return only valid JSON with no text before or after.',
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: base64
-              }
-            },
-            {
-              type: 'text',
-              text: `Extract all financial data from this Indian company annual report PDF. Return ONLY this JSON structure with no other text:
-
-{
+    const JSON_SCHEMA = `{
   "company_name": "string",
   "cin": "string or null",
   "financial_year": "string",
@@ -4181,18 +4151,64 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     "net_change_in_cash": {"current": number, "prior": number},
     "closing_cash": {"current": number, "prior": number}
   }
-}
+}`
 
-Rules:
-1. Read every page including scanned image pages
-2. Revenue from Operations may be labeled many ways - find it
-3. Current year is the most recent date
-4. Strip commas from numbers
-5. Brackets mean negative
-6. Return null for uncertain values`
-            }
-          ]
-        }]
+    let apiMessages
+    if (isLargePdf) {
+      const arrayBuffer = await file.arrayBuffer()
+      let fullText = ''
+      const pdfjsLib = await loadPdfJs()
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+      onDebug('PDF: ' + pdf.numPages + ' pages')
+      for (let i = 1; i <= pdf.numPages; i++) {
+        try {
+          const page = await pdf.getPage(i)
+          const content = await page.getTextContent()
+          fullText += content.items.map(item => item.str).join(' ') + '\n'
+        } catch(e) {}
+      }
+      onDebug('TEXT: ' + fullText.length + ' chars')
+      let textToSend = fullText
+      if (fullText.length > 60000) {
+        const fsIndex = fullText.search(/Balance Sheet|Statement of Profit|Profit and Loss/i)
+        if (fsIndex > 0) {
+          const start = Math.max(0, fsIndex - 3000)
+          textToSend = fullText.substring(start, start + 60000)
+          onDebug('TEXT FOCUSED: financial section found')
+        } else {
+          textToSend = fullText.substring(0, 60000)
+          onDebug('TEXT TRIMMED: first 60000 chars')
+        }
+      }
+      apiMessages = [{ role: 'user', content: `Extract all financial data from this Indian company annual report text. Return ONLY this JSON structure with no other text:\n\n${JSON_SCHEMA}\n\nRules:\n1. Revenue from Operations may be labeled many ways - find it\n2. Current year is the most recent date\n3. Strip commas from numbers\n4. Brackets mean negative\n5. Return null for uncertain values\n\nDOCUMENT TEXT:\n${textToSend}` }]
+    } else {
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result.split(',')[1])
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+      onDebug('PDF converted to base64, sending directly to Claude')
+      apiMessages = [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+          { type: 'text', text: `Extract all financial data from this Indian company annual report PDF. Return ONLY this JSON structure with no other text:\n\n${JSON_SCHEMA}\n\nRules:\n1. Read every page including scanned image pages\n2. Revenue from Operations may be labeled many ways - find it\n3. Current year is the most recent date\n4. Strip commas from numbers\n5. Brackets mean negative\n6. Return null for uncertain values` }
+        ]
+      }]
+    }
+
+    onProgress('extracting')
+    onDebug('CALLING CLAUDE API...')
+
+    const apiResponse = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 8192,
+        system: 'You are a chartered accountant with 20 years experience reading Indian company annual reports. Extract financial data with perfect accuracy. Return only valid JSON with no text before or after.',
+        messages: apiMessages
       })
     })
 
