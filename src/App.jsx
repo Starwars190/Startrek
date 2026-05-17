@@ -4221,66 +4221,25 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     if (isTextPdf) {
       // ── Text path ──────────────────────────────────────────────────────────
       onProgress('extracting')
-      rawText = await callClaude({
-        system: `You are a senior chartered accountant. Extract financial data from Indian company filings. Return ONLY valid JSON. No markdown, no text outside the JSON object.`,
-        userMsg: `Extract ALL financial data and return as JSON:
-{
-  "company_name": "",
-  "financial_year": "",
-  "unit": "Lakhs",
-  "profit_loss": {
-    "revenue": { "current": null, "prior": null },
-    "other_income": { "current": null, "prior": null },
-    "total_income": { "current": null, "prior": null },
-    "cogs": { "current": null, "prior": null },
-    "gross_profit": { "current": null, "prior": null },
-    "employee_costs": { "current": null, "prior": null },
-    "other_expenses": { "current": null, "prior": null },
-    "ebitda": { "current": null, "prior": null },
-    "depreciation": { "current": null, "prior": null },
-    "ebit": { "current": null, "prior": null },
-    "finance_costs": { "current": null, "prior": null },
-    "profit_before_tax": { "current": null, "prior": null },
-    "tax_expense": { "current": null, "prior": null },
-    "profit_after_tax": { "current": null, "prior": null }
-  },
-  "balance_sheet": {
-    "total_assets": { "current": null, "prior": null },
-    "fixed_assets": { "current": null, "prior": null },
-    "current_assets": { "current": null, "prior": null },
-    "cash_and_equivalents": { "current": null, "prior": null },
-    "trade_receivables": { "current": null, "prior": null },
-    "inventory": { "current": null, "prior": null },
-    "non_current_assets": { "current": null, "prior": null },
-    "total_equity": { "current": null, "prior": null },
-    "share_capital": { "current": null, "prior": null },
-    "reserves_and_surplus": { "current": null, "prior": null },
-    "long_term_borrowings": { "current": null, "prior": null },
-    "short_term_borrowings": { "current": null, "prior": null },
-    "total_debt": { "current": null, "prior": null },
-    "current_liabilities": { "current": null, "prior": null },
-    "trade_payables": { "current": null, "prior": null }
-  },
-  "cash_flow": {
-    "operating_cash_flow": { "current": null, "prior": null },
-    "investing_cash_flow": { "current": null, "prior": null },
-    "financing_cash_flow": { "current": null, "prior": null },
-    "net_change_in_cash": { "current": null, "prior": null },
-    "opening_cash": { "current": null, "prior": null },
-    "closing_cash": { "current": null, "prior": null }
-  }
-}
-Rules:
-1. null for any value not found
-2. All values must be numbers never strings
-3. current = this year prior = previous year
-4. Calculate EBITDA if missing: PBT + Depreciation + Finance Costs
-5. Calculate Gross Profit if missing: Revenue - COGS
+      const apiResp = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 4000,
+          system: 'You are a senior chartered accountant. Extract financial data from Indian company filings. Return ONLY valid JSON. No markdown, no text outside the JSON object.',
+          messages: [{
+            role: 'user',
+            content: `Extract ALL financial data and return ONLY this JSON structure with real numbers from the document. Use null for missing values:
+{"company_name":"","financial_year":"","unit":"Lakhs","profit_loss":{"revenue":{"current":null,"prior":null},"other_income":{"current":null,"prior":null},"cogs":{"current":null,"prior":null},"gross_profit":{"current":null,"prior":null},"employee_costs":{"current":null,"prior":null},"other_expenses":{"current":null,"prior":null},"depreciation":{"current":null,"prior":null},"finance_costs":{"current":null,"prior":null},"profit_before_tax":{"current":null,"prior":null},"tax_expense":{"current":null,"prior":null},"profit_after_tax":{"current":null,"prior":null}},"balance_sheet":{"total_assets":{"current":null,"prior":null},"fixed_assets":{"current":null,"prior":null},"current_assets":{"current":null,"prior":null},"cash_and_equivalents":{"current":null,"prior":null},"trade_receivables":{"current":null,"prior":null},"inventory":{"current":null,"prior":null},"non_current_assets":{"current":null,"prior":null},"total_equity":{"current":null,"prior":null},"long_term_borrowings":{"current":null,"prior":null},"short_term_borrowings":{"current":null,"prior":null},"current_liabilities":{"current":null,"prior":null},"trade_payables":{"current":null,"prior":null}},"cash_flow":{"operating_cash_flow":{"current":null,"prior":null},"investing_cash_flow":{"current":null,"prior":null},"financing_cash_flow":{"current":null,"prior":null},"closing_cash":{"current":null,"prior":null}}}
 
 DOCUMENT TEXT:
-` + cleanedText.substring(0, 15000),
-        maxTokens: 4000
+${cleanedText.substring(0, 8000)}`
+          }]
+        })
       })
+      const apiData = await apiResp.json()
+      rawText = apiData?.content?.[0]?.text || ''
 
     } else {
       // ── Layer 2: Vision path (scanned / hybrid PDF) ──────────────────────
