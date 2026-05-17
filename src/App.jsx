@@ -4111,9 +4111,8 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
 function safeParseFinancialJSON(raw) {
   if (!raw) throw new Error('Empty response from Claude')
   let cleaned = raw
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
     .trim()
   const start = cleaned.indexOf('{')
   const end = cleaned.lastIndexOf('}')
