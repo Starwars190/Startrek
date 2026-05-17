@@ -4110,20 +4110,10 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
 
 function safeParseFinancialJSON(raw) {
   if (!raw) throw new Error('Empty response from Claude')
-  const raw2 = raw || ''
-  const cleaned = raw2.substring(raw2.indexOf('{'), raw2.lastIndexOf('}') + 1)
-  const start = cleaned.indexOf('{')
-  const end = cleaned.lastIndexOf('}')
-  if (start === -1 || end === -1) throw new Error('No JSON object found in response')
-  const jsonStr = cleaned.slice(start, end + 1)
-  try {
-    return JSON.parse(jsonStr)
-  } catch(e) {
-    const fixed = jsonStr
-      .replace(/,\s*([}\]])/g, '$1')
-      .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3')
-    return JSON.parse(fixed)
-  }
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start === -1 || end === -1) throw new Error('No JSON found')
+  return JSON.parse(raw.slice(start, end + 1))
 }
 
 function deriveMetrics(a) {
