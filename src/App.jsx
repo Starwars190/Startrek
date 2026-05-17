@@ -1267,7 +1267,7 @@ function calculateRatios(fd, sectorHint = "general", fdPrior = null) {
 
 async function generateSWOTAndInterpretation(companyInfo, aggregated, ratios, onProgress, aggregatedPrior = null) {
   onProgress?.("Generating SWOT analysis and ratio interpretations...");
-  const ratiosFlat = ratios.flatMap(r => r.items.map(i => `${i.name}: ${i.value} (${r.category})`)).join('\n');
+  const ratiosFlat = (ratios || []).flatMap(r => r.items.map(i => `${i.name}: ${i.value} (${r.category})`)).join('\n');
   const systemPrompt = `You are a senior financial analyst for an Indian private company. Generate SPECIFIC SWOT and ratio interpretations - no generic advice.
 
 Output ONLY JSON:
@@ -2883,7 +2883,7 @@ function removePendingAnalysis(id) {
 }
 
 async function generateBriefNarrative(companyInfo, aggregated, aggregatedPrior, ratios, swot, chunkResults) {
-  const contextSnippets = chunkResults.slice(0, 3)
+  const contextSnippets = (chunkResults || []).slice(0, 3)
     .flatMap(c => (c.blocks || []).filter(b => b.type === 'paragraph_block').map(b => (b.paragraphs || []).join(' ')))
     .filter(Boolean).join('\n\n').slice(0, 4000);
 
