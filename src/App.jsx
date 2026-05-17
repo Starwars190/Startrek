@@ -1413,14 +1413,18 @@ function dataURLToUint8Array(dataURL) {
 }
 
 function triggerBlobDownload(blob, fileName) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  try {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch(err) {
+    console.error('Download failed:', err);
+  }
 }
 
 function generateSmartFilename(companyInfo, extension) {
@@ -4384,10 +4388,25 @@ ${textToSend}`
     onProgress('complete')
 
     return {
-      excelBlob: excelResult?.blob || excelResult,
-      excelFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Financials.xlsx',
-      wordBlob: wordResult?.blob || wordResult,
-      wordFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Report.docx',
+      excelBlob: excelResult?.excelBlob || null,
+      excelFileName: excelResult?.fileName || 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Financials.xlsx',
+      docxBlob: wordResult?.docxBlob || null,
+      docxFileName: wordResult?.fileName || 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Report.docx',
+      pdfBlob: null,
+      pdfFileName: null,
+      briefWordBlob: null,
+      briefWordFileName: null,
+      briefWordError: null,
+      noFinancialData: false,
+      apiUnavailable: false,
+      extractionMethod: 'text',
+      extractionWarnings: [],
+      sectionCount: 0,
+      ratioCount: 0,
+      hasSWOT: !!swot,
+      hasCharts: false,
+      pdfFileSizeKB: 0,
+      failedChunks: 0,
       companyInfo,
       aggregated,
       aggregatedPrior,
@@ -5384,7 +5403,12 @@ function DocumentReadyScreen({ docReady, onReset }) {
           : null
         }
         {excelBlob ? (
-          <button style={btn("excel")} onClick={() => triggerBlobDownload(excelBlob, excelFileName)}>
+          <button style={btn("excel")} onClick={() => {
+            console.log('Excel blob:', excelBlob)
+            console.log('Excel blob size:', excelBlob?.size)
+            console.log('Excel blob type:', excelBlob?.type)
+            triggerBlobDownload(excelBlob, excelFileName)
+          }}>
             <span>📊</span><span>Download Excel Workbook</span>
           </button>
         ) : selectedOutputs.excel && !excelBlob
