@@ -4278,7 +4278,7 @@ Rules:
 5. Calculate Gross Profit if missing: Revenue - COGS
 
 DOCUMENT TEXT:
-` + cleanedText,
+` + cleanedText.substring(0, 15000),
         maxTokens: 4000
       })
 
