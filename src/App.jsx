@@ -243,13 +243,16 @@ function splitNarrativeIntoParagraphs(text) {
   const result = [];
   for (const para of paras) {
     if (para.length <= 800) { result.push(para); continue; }
-    const sentences = para.match(/[^.!?]+[.!?]+(\s|$)/g) || [para];
+    // Split only at sentence-final punctuation + whitespace + capital letter.
+    // This avoids false splits on decimal numbers like (1.003x) or abbreviations.
+    const sentences = para.split(/(?<=[.!?])\s+(?=[A-Z])/).filter(Boolean);
     let current = "";
     for (const s of sentences) {
-      if ((current + s).length > 600 && current.length > 100) {
+      const joined = current ? current + ' ' + s : s;
+      if (joined.length > 600 && current.length > 100) {
         result.push(current.trim());
         current = s;
-      } else current += s;
+      } else current = joined;
     }
     if (current.trim()) result.push(current.trim());
   }
@@ -4115,14 +4118,14 @@ function deriveMetrics(a) {
   const bs = a.balance_sheet || {}
   const cf = a.cash_flow || {}
 
-  if (!pl.gross_profit && pl.revenue && pl.cogs) {
+  if ((pl.gross_profit?.current == null) && pl.revenue?.current != null && pl.cogs?.current != null) {
     pl.gross_profit = {
       current: (pl.revenue.current || 0) - (pl.cogs.current || 0),
       prior: (pl.revenue.prior || 0) - (pl.cogs.prior || 0)
     }
   }
 
-  if (!pl.ebitda && pl.profit_before_tax) {
+  if ((pl.ebitda?.current == null) && pl.profit_before_tax?.current != null) {
     const pbt_c = pl.profit_before_tax.current || 0
     const pbt_p = pl.profit_before_tax.prior || 0
     const dep_c = pl.depreciation?.current || 0
@@ -4132,7 +4135,7 @@ function deriveMetrics(a) {
     pl.ebitda = { current: pbt_c + dep_c + fin_c, prior: pbt_p + dep_p + fin_p }
   }
 
-  if (!pl.ebit && pl.ebitda) {
+  if ((pl.ebit?.current == null) && pl.ebitda?.current != null) {
     const dep_c = pl.depreciation?.current || 0
     const dep_p = pl.depreciation?.prior || 0
     pl.ebit = { current: (pl.ebitda.current || 0) - dep_c, prior: (pl.ebitda.prior || 0) - dep_p }
@@ -5471,10 +5474,11 @@ function DocumentReadyScreen({ docReady, onReset }) {
         }
         {excelBlob ? (
           <button style={btn("excel")} onClick={() => {
-            console.log('Excel blob:', excelBlob)
-            console.log('Excel blob size:', excelBlob?.size)
-            console.log('Excel blob type:', excelBlob?.type)
-            triggerBlobDownload(excelBlob, excelFileName)
+            try {
+              triggerBlobDownload(excelBlob, excelFileName)
+            } catch(err) {
+              console.error('Excel download error:', err)
+            }
           }}>
             <span>📊</span><span>Download Excel Workbook</span>
           </button>
