@@ -4090,6 +4090,7 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
 }
 
 async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () => {}) {
+  let apiResponse, apiData
   try {
     onProgress('reading')
     onDebug('FILE RECEIVED: ' + file.name)
@@ -4201,7 +4202,7 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     onProgress('extracting')
     onDebug('CALLING CLAUDE API...')
 
-    const apiResponse = await fetch(API_URL, {
+    apiResponse = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -4212,7 +4213,7 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
       })
     })
 
-    const apiData = await apiResponse.json()
+    apiData = await apiResponse.json()
     if (!apiData?.content?.[0]?.text) {
       throw new Error('Claude API returned no content. Status: ' + apiResponse.status)
     }
@@ -4399,6 +4400,9 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
 
   } catch(err) {
     onDebug('ERROR: ' + err.message)
+    console.error('API STATUS:', apiResponse?.status)
+    console.error('API DATA:', JSON.stringify(apiData).substring(0, 200))
+    console.error('RAW RESPONSE:', apiData?.content?.[0]?.text?.substring(0, 500))
     throw err
   }
 }
