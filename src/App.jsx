@@ -5840,8 +5840,8 @@ function FinSightApp() {
 
   const handlePrivateFileSelected = (file) => {
     setPrivateDocFile(file);
-    setPrivateDocStage('uploaded');
     setPrivateDocError("");
+    handlePrivateDocProcess(file, selectedOutputs);
   };
 
   const runPrivateDocProcess = async (file, outputs) => {
@@ -5963,15 +5963,7 @@ function FinSightApp() {
           ))}
         </div>
 
-        <div style={{ width: "100%", maxWidth: 720, margin: "8px auto", display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ flex: 1, height: 1, background: C.border }}></div>
-          <div style={{ fontSize: 11, color: C.brown, fontWeight: 700, letterSpacing: "0.08em", padding: "4px 12px", background: C.brownLight, border: `1px solid ${C.border}`, borderRadius: 20 }}>
-            OR ORGANIZE PRIVATE COMPANY DOCS
-          </div>
-          <div style={{ flex: 1, height: 1, background: C.border }}></div>
-        </div>
-
-        <PendingAnalysisBanner />
+<PendingAnalysisBanner />
         {docReady
           ? <DocumentReadyScreen docReady={docReady} onReset={() => { setDocReady(null); setPrivateDocStage('idle'); setPrivateDocFile(null); setScannedPdfWarn(null); }} />
           : scannedPdfWarn
@@ -5997,15 +5989,7 @@ function FinSightApp() {
                 </div>
               </div>
             )
-            : (privateDocStage === 'uploaded' && !privateDocLoading)
-              ? <DeliverableSelectionScreen
-                  file={privateDocFile}
-                  selectedOutputs={selectedOutputs}
-                  onToggle={(key) => setSelectedOutputs(prev => ({ ...prev, [key]: !prev[key] }))}
-                  onCancel={() => { setPrivateDocStage('idle'); setPrivateDocFile(null); setPrivateDocError(""); }}
-                  onGenerate={() => handlePrivateDocProcess(privateDocFile, selectedOutputs)}
-                />
-              : <PrivateDocUploadZone
+            : <PrivateDocUploadZone
                   onFileSelected={handlePrivateFileSelected}
                   isProcessing={privateDocLoading}
                   progress={privateDocProgress}
