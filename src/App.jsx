@@ -4479,6 +4479,13 @@ Rules:
       aggregated.totalAssets, aggregated.totalEquity,
       aggregated.currentAssets, aggregated.currentLiabilities
     ]
+    console.log('[MAP]', JSON.stringify({
+      revenue: aggregated.revenue,
+      pat: aggregated.pat,
+      pbt: aggregated.pbt,
+      totalAssets: aggregated.totalAssets,
+      rawSnippet: rawText?.substring(0, 100)
+    }))
     const validCount = financialFields.filter(v => v !== null && v !== undefined).length
     onDebug('VALID FIELDS: ' + validCount)
 
