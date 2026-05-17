@@ -1416,7 +1416,16 @@ function dataURLToUint8Array(dataURL) {
 }
 
 function triggerBlobDownload(blob, fileName) {
+  console.log('triggerBlobDownload called:', {
+    blob,
+    type: typeof blob,
+    constructor: blob?.constructor?.name,
+    size: blob?.size,
+    fileName,
+  });
   try {
+    if (!blob) throw new Error('blob is null or undefined');
+    if (!(blob instanceof Blob)) throw new Error('not a Blob: ' + typeof blob);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -1426,7 +1435,7 @@ function triggerBlobDownload(blob, fileName) {
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch(err) {
-    console.error('Download failed:', err);
+    console.error('triggerBlobDownload failed:', err);
   }
 }
 
@@ -5034,7 +5043,13 @@ async function generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, 
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
   const fileName = generateSmartFilename(companyInfo, 'xlsx');
-  return { excelBlob, fileName };
+  const result = { excelBlob, fileName };
+  console.log('generateFinancialExcel result:', {
+    keys: Object.keys(result),
+    excelBlob: result.excelBlob,
+    size: result.excelBlob?.size,
+  });
+  return result;
 }
 
 async function generatePPTFull(data, periodLabel) {
@@ -5986,7 +6001,7 @@ function FinSightApp() {
   const handlePrivateFileSelected = (file) => {
     setPrivateDocFile(file);
     setPrivateDocError("");
-    handlePrivateDocProcess(file, selectedOutputs);
+    setPrivateDocStage('uploaded');
   };
 
   const runPrivateDocProcess = async (file, outputs) => {
@@ -6111,6 +6126,14 @@ function FinSightApp() {
 <PendingAnalysisBanner />
         {docReady
           ? <DocumentReadyScreen docReady={docReady} onReset={() => { setDocReady(null); setPrivateDocStage('idle'); setPrivateDocFile(null); setScannedPdfWarn(null); }} />
+          : privateDocStage === 'uploaded'
+            ? <DeliverableSelectionScreen
+                file={privateDocFile}
+                selectedOutputs={selectedOutputs}
+                onToggle={(key) => setSelectedOutputs(prev => ({ ...prev, [key]: !prev[key] }))}
+                onCancel={() => { setPrivateDocStage('idle'); setPrivateDocFile(null); setPrivateDocError(""); }}
+                onGenerate={() => handlePrivateDocProcess(privateDocFile, selectedOutputs)}
+              />
           : scannedPdfWarn
             ? (
               <div style={{ width: "100%", maxWidth: 480, margin: "16px auto 0", background: C.bgCard, border: `1.5px solid #FCD34D`, borderRadius: 14, padding: "24px 24px 20px", boxShadow: C.shadowMd }}>
