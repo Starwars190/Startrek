@@ -4245,6 +4245,7 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
 
       onProgress('extracting')
       onDebug('CALLING CLAUDE API (text)...')
+      console.log('[FinSight] Calling Claude via TEXT path...')
 
     const systemPrompt = `You are a senior chartered accountant and financial analyst.
 Extract financial data from Indian company filings with perfect accuracy.
@@ -4314,11 +4315,14 @@ DOCUMENT TEXT:
 ${textToSend}`
 
       rawText = await callClaude({ system: systemPrompt, userMsg: userPrompt, maxTokens: 8192 })
+      console.log('[FinSight] Claude returned, rawText length:', rawText?.length)
+      console.log('[FinSight] rawText preview:', rawText?.substring(0, 300))
 
     } else {
       // ── Layer 2: Vision path (scanned / hybrid PDF) ──────────────────────
       onProgress('vision')
       onDebug('CALLING CLAUDE API (vision)...')
+      console.log('[FinSight] Calling Claude via VISION path...')
 
       const MAX_PAGES = 8
       const scale = 1.5
@@ -4420,16 +4424,30 @@ Rules:
         }
       ]
 
-      rawText = await callClaude({ userMsg: visionContent, maxTokens: 4000 })
+      const apiResponse = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 4000,
+          messages: [{ role: 'user', content: visionContent }]
+        })
+      })
+      const apiData = await apiResponse.json()
+      rawText = apiData.content?.[0]?.text || ''
+      console.log('[FinSight] Claude returned, rawText length:', rawText?.length)
+      console.log('[FinSight] rawText preview:', rawText?.substring(0, 300))
     }
 
     onProgress('analysing')
-    onDebug('CLAUDE RESPONSE: ' + rawText.substring(0, 100))
+    onDebug('CLAUDE RESPONSE: ' + (rawText || '').substring(0, 100))
     console.log('[FinSight] Claude raw response length:', rawText?.length)
     console.log('[FinSight] Claude raw response preview:', rawText?.substring(0, 500))
+    console.log('[FinSight] About to parse JSON...')
 
     const claudeResult = safeParseFinancialJSON(rawText)
     onDebug('EXTRACTED: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue?.current)
+    console.log('[FinSight] JSON parsed OK:', Object.keys(claudeResult || {}))
     console.log('[FinSight] Parsed JSON:', JSON.stringify(claudeResult, null, 2).substring(0, 1000))
 
     deriveMetrics(claudeResult)
@@ -4440,6 +4458,7 @@ Rules:
     })
     checkBalanceSheet(claudeResult.balance_sheet || {}, 'Current Year')
 
+    console.log('[FinSight] Building aggregated object...')
     const pl = claudeResult.profit_loss || {}
     const bs = claudeResult.balance_sheet || {}
     const cf = claudeResult.cash_flow || {}
@@ -4532,6 +4551,7 @@ Rules:
       reportingType: 'Standalone'
     }
 
+    console.log('[FinSight] aggregated built:', JSON.stringify(aggregated).substring(0, 200))
     console.log('[FinSight] aggregated.profit_loss:', aggregated?.profit_loss)
 
     const validCount = Object.values(aggregated).filter(v => v !== null).length
