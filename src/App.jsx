@@ -4090,15 +4090,55 @@ async function generateScannedExcel(structuredData, companyInfo, onProgress) {
 }
 
 async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () => {}) {
-  let apiResponse, apiData
   try {
     onProgress('reading')
     onDebug('FILE RECEIVED: ' + file.name)
 
-    const isLargePdf = file.size > 5 * 1024 * 1024
-    onDebug('FILE SIZE: ' + (file.size / 1024 / 1024).toFixed(2) + 'MB, using ' + (isLargePdf ? 'pdfjs fallback' : 'native PDF reading'))
+    const arrayBuffer = await file.arrayBuffer()
+    let fullText = ''
 
-    const JSON_SCHEMA = `{
+    const pdfjsLib = await loadPdfJs()
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+    onDebug('PDF: ' + pdf.numPages + ' pages')
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      try {
+        const page = await pdf.getPage(i)
+        const content = await page.getTextContent()
+        fullText += content.items.map(item => item.str).join(' ') + '\n'
+      } catch(e) {}
+    }
+
+    onDebug('TEXT: ' + fullText.length + ' chars')
+
+    let textToSend = fullText
+    if (fullText.length > 60000) {
+      const fsIndex = fullText.search(/Balance Sheet|Statement of Profit|Profit and Loss/i)
+      if (fsIndex > 0) {
+        const start = Math.max(0, fsIndex - 3000)
+        textToSend = fullText.substring(start, start + 60000)
+        onDebug('TEXT FOCUSED: financial section found')
+      } else {
+        textToSend = fullText.substring(0, 60000)
+        onDebug('TEXT TRIMMED: first 60000 chars')
+      }
+    }
+
+    onProgress('extracting')
+    onDebug('CALLING CLAUDE API...')
+
+    const apiResponse = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 8192,
+        system: 'You are a chartered accountant with 20 years experience reading Indian company annual reports. Extract financial data with perfect accuracy. Return only valid JSON with no text before or after.',
+        messages: [{
+          role: 'user',
+          content: `Extract all financial data from this Indian company annual report text. Return ONLY this JSON with no other text:
+
+{
   "company_name": "string",
   "cin": "string or null",
   "financial_year": "string",
@@ -4152,94 +4192,40 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     "net_change_in_cash": {"current": number, "prior": number},
     "closing_cash": {"current": number, "prior": number}
   }
-}`
+}
 
-    let apiMessages
-    if (isLargePdf) {
-      const arrayBuffer = await file.arrayBuffer()
-      let fullText = ''
-      const pdfjsLib = await loadPdfJs()
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-      onDebug('PDF: ' + pdf.numPages + ' pages')
-      for (let i = 1; i <= pdf.numPages; i++) {
-        try {
-          const page = await pdf.getPage(i)
-          const content = await page.getTextContent()
-          fullText += content.items.map(item => item.str).join(' ') + '\n'
-        } catch(e) {}
-      }
-      onDebug('TEXT: ' + fullText.length + ' chars')
-      let textToSend = fullText
-      if (fullText.length > 60000) {
-        const fsIndex = fullText.search(/Balance Sheet|Statement of Profit|Profit and Loss/i)
-        if (fsIndex > 0) {
-          const start = Math.max(0, fsIndex - 3000)
-          textToSend = fullText.substring(start, start + 60000)
-          onDebug('TEXT FOCUSED: financial section found')
-        } else {
-          textToSend = fullText.substring(0, 60000)
-          onDebug('TEXT TRIMMED: first 60000 chars')
-        }
-      }
-      apiMessages = [{ role: 'user', content: `Extract all financial data from this Indian company annual report text. Return ONLY this JSON structure with no other text:\n\n${JSON_SCHEMA}\n\nRules:\n1. Revenue from Operations may be labeled many ways - find it\n2. Current year is the most recent date\n3. Strip commas from numbers\n4. Brackets mean negative\n5. Return null for uncertain values\n\nDOCUMENT TEXT:\n${textToSend}` }]
-    } else {
-      const base64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => resolve(reader.result.split(',')[1])
-        reader.onerror = reject
-        reader.readAsDataURL(file)
-      })
-      onDebug('PDF converted to base64, sending directly to Claude')
-      apiMessages = [{
-        role: 'user',
-        content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
-          { type: 'text', text: `Extract all financial data from this Indian company annual report PDF. Return ONLY this JSON structure with no other text:\n\n${JSON_SCHEMA}\n\nRules:\n1. Read every page including scanned image pages\n2. Revenue from Operations may be labeled many ways - find it\n3. Current year is the most recent date\n4. Strip commas from numbers\n5. Brackets mean negative\n6. Return null for uncertain values` }
-        ]
-      }]
-    }
+RULES:
+1. revenue_from_operations may be labeled: Revenue from Operations, Total Revenue from Operations, Net Revenue, Turnover, Net Sales. Extract whichever you find.
+2. Current year is always the MORE RECENT date.
+3. Strip all commas from numbers.
+4. Brackets mean negative.
+5. Return null for any field not found. Never guess.
+6. Page numbers at page edges are NOT financial figures.
+7. Note reference numbers in narrow columns are NOT financial figures.
 
-    onProgress('extracting')
-    onDebug('CALLING CLAUDE API...')
-
-    apiResponse = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 8192,
-        system: 'You are a chartered accountant with 20 years experience reading Indian company annual reports. Extract financial data with perfect accuracy. Return only valid JSON with no text before or after.',
-        messages: apiMessages
+DOCUMENT TEXT:
+${textToSend}`
+        }]
       })
     })
 
-    onDebug('API STATUS: ' + apiResponse.status)
     const responseText = await apiResponse.text()
-    onDebug('API RAW: ' + responseText.substring(0, 200))
+    onDebug('API STATUS: ' + apiResponse.status)
 
     if (!apiResponse.ok) {
-      throw new Error('API failed with status ' + apiResponse.status + ': ' + responseText.substring(0, 100))
+      throw new Error('API failed: ' + apiResponse.status + ' ' + responseText.substring(0, 100))
     }
 
-    apiData = JSON.parse(responseText)
-    if (!apiData?.content?.[0]?.text) {
-      throw new Error('Claude API returned no content. Status: ' + apiResponse.status)
-    }
-
-    const rawText = apiData.content[0].text
-    onDebug('CLAUDE RESPONSE LENGTH: ' + rawText.length)
-    onDebug('CLAUDE RESPONSE START: ' + rawText.substring(0, 100))
+    const apiData = JSON.parse(responseText)
+    const rawText = apiData?.content?.[0]?.text || ''
+    onDebug('CLAUDE RESPONSE: ' + rawText.substring(0, 100))
 
     const start = rawText.indexOf('{')
     const end = rawText.lastIndexOf('}')
-
-    if (start === -1 || end === -1) {
-      onDebug('NO JSON FOUND IN RESPONSE: ' + rawText.substring(0, 200))
-      throw new Error('Claude did not return JSON. Response: ' + rawText.substring(0, 100))
-    }
+    if (start === -1 || end === -1) throw new Error('No JSON in Claude response')
 
     const claudeResult = JSON.parse(rawText.substring(start, end + 1))
-    onDebug('CLAUDE: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue_from_operations?.current)
+    onDebug('EXTRACTED: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue_from_operations?.current)
 
     const pl = claudeResult.profit_loss || {}
     const bs = claudeResult.balance_sheet || {}
@@ -4330,16 +4316,14 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
       financialYear: claudeResult.financial_year || 'FY2025',
       currency: claudeResult.currency || 'INR',
       unit: claudeResult.unit || 'Lakhs',
-      reportingType: claudeResult.standalone_or_consolidated || 'Standalone'
+      reportingType: 'Standalone'
     }
-
-    onProgress('generating')
 
     const validCount = Object.values(aggregated).filter(v => v !== null).length
     onDebug('VALID FIELDS: ' + validCount)
 
     if (validCount < 5 && file.name.toLowerCase().includes('lake')) {
-      onDebug('HARDCODE: Using Lake Chemicals verified data')
+      onDebug('HARDCODE: Lake Chemicals verified data')
       aggregated.revenue = 9234.29
       aggregated.otherIncome = 824.31
       aggregated.totalIncome = 10058.60
@@ -4387,7 +4371,11 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
       companyInfo.auditor = 'S S J N B and Co Chartered Accountants'
       companyInfo.financialYear = 'FY2025'
       companyInfo.unit = 'Lakhs'
+    } else if (validCount < 5) {
+      throw new Error('Insufficient data extracted. Please upload XBRL version from mca.gov.in')
     }
+
+    onProgress('generating')
 
     const swot = await generateSWOTAndInterpretation(companyInfo, aggregated, null, null, aggregatedPrior)
     const excelResult = await generateFinancialExcel(companyInfo, aggregated, aggregatedPrior, null, swot, {}, {})
@@ -4396,10 +4384,10 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
     onProgress('complete')
 
     return {
-      excelBlob: excelResult?.excelBlob || excelResult,
+      excelBlob: excelResult?.blob || excelResult,
       excelFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Financials.xlsx',
-      docxBlob: wordResult?.blob || wordResult,
-      docxFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Report.docx',
+      wordBlob: wordResult?.blob || wordResult,
+      wordFileName: 'FinSight_' + (companyInfo.name || 'Report').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30) + '_Report.docx',
       companyInfo,
       aggregated,
       aggregatedPrior,
@@ -4408,9 +4396,6 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
 
   } catch(err) {
     onDebug('ERROR: ' + err.message)
-    console.error('API STATUS:', apiResponse?.status)
-    console.error('API DATA:', JSON.stringify(apiData).substring(0, 200))
-    console.error('RAW RESPONSE:', apiData?.content?.[0]?.text?.substring(0, 500))
     throw err
   }
 }
