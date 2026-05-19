@@ -901,62 +901,10 @@ export default function PrivateAnalyzer() {
         const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
         const totalPages = pdf.numPages;
 
-        const financialKeywords = [
-          'profit and loss', 'profit & loss', 'statement of profit',
-          'income statement', 'statement of income', 'revenue from operations',
-          'balance sheet', 'assets and liabilities', 'statement of assets',
-          'cash flow', 'cash flows', 'statement of cash',
-          'financial statements', 'standalone financial', 'consolidated financial',
-          'total revenue', 'total income', 'gross profit', 'net profit',
-          'net income', 'total assets', 'total liabilities', 'shareholders equity',
-          'shareholders funds', 'share capital', 'retained earnings',
-          'operating activities', 'investing activities', 'financing activities',
-          'depreciation', 'amortisation', 'amortization', 'ebitda',
-          'trade receivables', 'trade payables', 'inventories',
-          'fixed assets', 'property plant', 'deferred tax',
-          'current assets', 'current liabilities', 'non-current',
-          'revenue', 'turnover', 'expenditure', 'expenses'
-        ];
-
-        const financialPages = [];
-        const scannedPages = [];
-
-        for (let i = 1; i <= totalPages; i++) {
-          const page = await pdf.getPage(i);
-          const content = await page.getTextContent();
-          const pageText = content.items.map(item => item.str).join(' ').toLowerCase();
-          const cleanText = pageText.replace(/\s/g, '');
-
-          if (cleanText.length < 30) {
-            scannedPages.push(i);
-          } else {
-            const hasFinancialContent = financialKeywords.some(kw => pageText.includes(kw));
-            if (hasFinancialContent) financialPages.push(i);
-          }
-        }
-
-        const expandedSet = new Set();
-        financialPages.forEach(p => {
-          if (p - 1 >= 1) expandedSet.add(p - 1);
-          expandedSet.add(p);
-          if (p + 1 <= totalPages) expandedSet.add(p + 1);
-        });
-
-        scannedPages.forEach(p => {
-          if (expandedSet.has(p - 1) || expandedSet.has(p + 1)) {
-            expandedSet.add(p);
-          }
-        });
-
-        if (expandedSet.size === 0 && scannedPages.length > 0) {
-          scannedPages.forEach(p => expandedSet.add(p));
-        }
-
-        let pagesToRender = [...expandedSet].sort((a, b) => a - b);
-
-        if (pagesToRender.length > 20) {
-          const step = (pagesToRender.length - 1) / 19;
-          pagesToRender = Array.from({ length: 20 }, (_, i) =>
+        let pagesToRender = Array.from({ length: totalPages }, (_, i) => i + 1);
+        if (pagesToRender.length > 40) {
+          const step = (pagesToRender.length - 1) / 39;
+          pagesToRender = Array.from({ length: 40 }, (_, i) =>
             pagesToRender[Math.round(i * step)]
           );
         }

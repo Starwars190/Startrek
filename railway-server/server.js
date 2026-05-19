@@ -161,7 +161,7 @@ app.post('/analyze', async (req, res) => {
 
     // ── VISION MODE ────────────────────────────────────────────
     } else if (mode === 'vision') {
-      const safeImages = (pageImages || []).slice(0, 20)
+      const safeImages = (pageImages || []).slice(0, 40)
       const BATCH_SIZE = 20
       const batches = []
       for (let i = 0; i < safeImages.length; i += BATCH_SIZE) {
