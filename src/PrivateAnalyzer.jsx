@@ -21,20 +21,57 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-const MAX_UPLOAD_BYTES = 3 * 1024 * 1024; // 3MB raw → ~4MB base64, within 10MB Vercel limit
+const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs';
+const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
 
-async function fileToBase64(file) {
+async function loadPdfJs() {
+  if (window._papdfjsLib) return window._papdfjsLib;
+  const mod = await import(/* @vite-ignore */ PDFJS_CDN);
+  const lib = mod.default ?? mod;
+  lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+  window._papdfjsLib = lib;
+  return lib;
+}
+
+// Extract selectable text from a PDF using pdfjs (browser-side, no size limits)
+async function extractTextFromPDF(file) {
+  const pdfjsLib = await loadPdfJs();
   const arrayBuffer = await file.arrayBuffer();
-  const sliced = arrayBuffer.byteLength > MAX_UPLOAD_BYTES
-    ? arrayBuffer.slice(0, MAX_UPLOAD_BYTES)
-    : arrayBuffer;
-  const bytes = new Uint8Array(sliced);
-  let binary = '';
-  const chunkSize = 8192;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+  let fullText = '';
+  const maxPages = Math.min(pdf.numPages, 60);
+  for (let i = 1; i <= maxPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items.map(item => item.str).join(' ');
+    fullText += `\n--- PAGE ${i} ---\n` + pageText;
   }
-  return btoa(binary);
+
+  const charCount = fullText.replace(/\s/g, '').length;
+  return { text: fullText, numPages: pdf.numPages, isScanned: charCount < 500 };
+}
+
+// Render pages to JPEG images via canvas for scanned PDFs
+async function extractTextViaVision(file, maxPages = 8) {
+  const pdfjsLib = await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pagesToProcess = Math.min(pdf.numPages, maxPages);
+
+  const pageImages = [];
+  for (let i = 1; i <= pagesToProcess; i++) {
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 1.5 });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    pageImages.push(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+  }
+
+  return pageImages;
 }
 
 function fmtNum(v) {
@@ -564,8 +601,8 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 const STEPS = [
-  'Reading file...',
-  'Extracting text via AI...',
+  'Extracting text from PDF...',
+  'Sending to Claude AI...',
   'Analysing financials...',
   'Building Word brief...',
   'Building Excel workbook...',
@@ -612,16 +649,36 @@ export default function PrivateAnalyzer() {
     setError('');
     setStepIdx(0);
     try {
-      const fileBase64 = await fileToBase64(file);
+      // Step 0: Extract text in browser via pdfjs — no file sent to server
+      const { text, isScanned } = await extractTextFromPDF(file);
       setStepIdx(1);
 
+      let payload;
+      if (!isScanned && text.length > 500) {
+        payload = {
+          mode: 'text',
+          extractedText: text.slice(0, 120000),
+          fileName: file.name,
+          companyName: companyName.trim() || null,
+        };
+      } else {
+        // Scanned PDF — render pages to JPEG and send for vision OCR
+        const pageImages = await extractTextViaVision(file, 8);
+        payload = {
+          mode: 'vision',
+          pageImages,
+          fileName: file.name,
+          companyName: companyName.trim() || null,
+        };
+      }
+
+      setStepIdx(2);
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileBase64, fileName: file.name, fileType: 'application/pdf', companyName: companyName.trim() || undefined }),
+        body: JSON.stringify(payload),
       });
 
-      setStepIdx(2);
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || `Server error: ${res.status}`);
@@ -726,11 +783,6 @@ export default function PrivateAnalyzer() {
             <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
             <div style={{ fontSize: 15, fontWeight: 600, color: NAVY, marginBottom: 4 }}>{file.name}</div>
             <div style={{ fontSize: 12, color: '#6B7280' }}>{(file.size / 1024).toFixed(0)} KB · Click to change</div>
-            {file.size > MAX_UPLOAD_BYTES && (
-              <div style={{ marginTop: 8, fontSize: 12, color: '#92400E', background: '#FEF3C7', borderRadius: 6, padding: '4px 10px', display: 'inline-block' }}>
-                Large PDF — first 15 pages will be processed automatically
-              </div>
-            )}
           </>
         ) : (
           <>

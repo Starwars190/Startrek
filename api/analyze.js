@@ -16,49 +16,57 @@ export default async function handler(req, res) {
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-    const { fileBase64, fileName, fileType, companyName } = body;
+    const { mode, extractedText, pageImages, fileName, companyName } = body;
 
-    if (!fileBase64) return res.status(400).json({ error: 'No file provided' });
+    let documentText = '';
 
-    // Step 1: Extract text via Claude document API
-    const extractResponse = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-5-20250514',
-        max_tokens: 8192,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: fileType || 'application/pdf',
-                data: fileBase64
-              }
-            },
-            {
-              type: 'text',
-              text: 'Extract ALL text from this financial document exactly as it appears. Include every number, table, heading, footnote and label. Preserve table structure using | as separator. Output raw extracted text only, no commentary.'
-            }
-          ]
-        }]
-      })
-    });
+    if (mode === 'text') {
+      // Text PDF — use the pre-extracted text from pdfjs in the browser
+      documentText = extractedText || '';
 
-    const extractData = await extractResponse.json();
-    const extractedText = extractData?.content?.[0]?.text || '';
+    } else if (mode === 'vision') {
+      // Scanned PDF — send page images to Claude vision for OCR
+      const visionContent = [];
+      for (let i = 0; i < pageImages.length; i++) {
+        visionContent.push({ type: 'text', text: `Page ${i + 1}:` });
+        visionContent.push({
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/jpeg', data: pageImages[i] }
+        });
+      }
+      visionContent.push({
+        type: 'text',
+        text: 'Extract ALL text from these financial document pages exactly as it appears. Include every number, table, label, and footnote. Preserve table structure using | as column separator. Output raw extracted text only.'
+      });
 
-    if (!extractedText || extractedText.length < 100) {
-      return res.status(422).json({ error: 'Could not extract text from document. Please ensure it is a readable PDF.' });
+      const ocrResponse = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-5-20250514',
+          max_tokens: 8192,
+          messages: [{ role: 'user', content: visionContent }]
+        })
+      });
+
+      const ocrData = await ocrResponse.json();
+      documentText = ocrData?.content?.[0]?.text || '';
+
+    } else {
+      return res.status(400).json({ error: 'Invalid mode. Expected "text" or "vision".' });
     }
 
-    // Step 2: Analyse financials
+    if (!documentText || documentText.replace(/\s/g, '').length < 200) {
+      return res.status(422).json({
+        error: 'Could not extract text from document. If this is a scanned PDF, please ensure it is not password-protected.'
+      });
+    }
+
+    // Analyse the extracted text
     const analysisResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -69,83 +77,79 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-5-20250514',
         max_tokens: 8192,
-        system: `You are a senior financial analyst. Extract structured financial data from private company documents.
+        system: `You are a senior financial analyst at a top-tier investment bank.
+Extract and structure ALL financial data from private company documents.
 RULES:
-1. Extract EVERY number you find. Never invent figures.
+1. Extract EVERY number you find. Never invent or estimate.
 2. If a value is missing use null — NEVER fabricate.
-3. Return ONLY valid JSON. No markdown, no explanation.
-4. Use actual fiscal years found in the document.`,
+3. Return ONLY valid JSON. No markdown, no explanation, no preamble.
+4. Use actual fiscal years found in the document (e.g. FY2024, FY2023).
+5. Indian companies: amounts may be in Lakhs or Crores — state which in reporting_unit.`,
         messages: [{
           role: 'user',
-          content: `Analyze this private company financial document. Return ONLY this JSON with actual year keys (e.g. FY2023, FY2022) found in the document:
+          content: `Analyze this private company financial document. Return ONLY valid JSON.
+Replace FY2024/FY2023 keys with the actual fiscal years found in the document.
 
 {
   "company_profile": {
-    "name": "string or null",
-    "industry": "string or null",
-    "sub_industry": "string or null",
-    "headquarters": "string or null",
-    "year_founded": "string or null",
-    "legal_structure": "string or null",
-    "reporting_currency": "string",
-    "reporting_unit": "e.g. INR Lakhs or USD Thousands",
-    "fiscal_year_end": "string or null",
-    "auditor": "string or null",
-    "description": "2-3 sentence description from document only",
-    "key_products_services": ["max 5"],
-    "number_of_employees": "string or null",
-    "geographic_presence": ["list or empty"]
+    "name": null, "industry": null, "sub_industry": null,
+    "headquarters": null, "year_founded": null, "legal_structure": null,
+    "reporting_currency": "INR", "reporting_unit": "INR Lakhs",
+    "fiscal_year_end": null, "auditor": null,
+    "description": "2-3 sentences from document only",
+    "key_products_services": [], "number_of_employees": null,
+    "geographic_presence": []
   },
-  "financial_years": ["FY2023", "FY2022"],
+  "financial_years": ["FY2024", "FY2023"],
   "income_statement": {
-    "revenue":                   {"FY2023": null, "FY2022": null},
-    "cost_of_goods_sold":        {"FY2023": null, "FY2022": null},
-    "gross_profit":              {"FY2023": null, "FY2022": null},
-    "operating_expenses":        {"FY2023": null, "FY2022": null},
-    "ebitda":                    {"FY2023": null, "FY2022": null},
-    "depreciation_amortization": {"FY2023": null, "FY2022": null},
-    "ebit":                      {"FY2023": null, "FY2022": null},
-    "interest_expense":          {"FY2023": null, "FY2022": null},
-    "pbt":                       {"FY2023": null, "FY2022": null},
-    "tax":                       {"FY2023": null, "FY2022": null},
-    "net_income":                {"FY2023": null, "FY2022": null}
+    "revenue":                   {"FY2024": null, "FY2023": null},
+    "cost_of_goods_sold":        {"FY2024": null, "FY2023": null},
+    "gross_profit":              {"FY2024": null, "FY2023": null},
+    "operating_expenses":        {"FY2024": null, "FY2023": null},
+    "ebitda":                    {"FY2024": null, "FY2023": null},
+    "depreciation_amortization": {"FY2024": null, "FY2023": null},
+    "ebit":                      {"FY2024": null, "FY2023": null},
+    "interest_expense":          {"FY2024": null, "FY2023": null},
+    "pbt":                       {"FY2024": null, "FY2023": null},
+    "tax":                       {"FY2024": null, "FY2023": null},
+    "net_income":                {"FY2024": null, "FY2023": null}
   },
   "balance_sheet": {
-    "cash_equivalents":          {"FY2023": null, "FY2022": null},
-    "accounts_receivable":       {"FY2023": null, "FY2022": null},
-    "inventory":                 {"FY2023": null, "FY2022": null},
-    "total_current_assets":      {"FY2023": null, "FY2022": null},
-    "fixed_assets_net":          {"FY2023": null, "FY2022": null},
-    "intangibles_goodwill":      {"FY2023": null, "FY2022": null},
-    "total_assets":              {"FY2023": null, "FY2022": null},
-    "accounts_payable":          {"FY2023": null, "FY2022": null},
-    "short_term_debt":           {"FY2023": null, "FY2022": null},
-    "total_current_liabilities": {"FY2023": null, "FY2022": null},
-    "long_term_debt":            {"FY2023": null, "FY2022": null},
-    "total_liabilities":         {"FY2023": null, "FY2022": null},
-    "share_capital":             {"FY2023": null, "FY2022": null},
-    "retained_earnings":         {"FY2023": null, "FY2022": null},
-    "total_equity":              {"FY2023": null, "FY2022": null}
+    "cash_equivalents":          {"FY2024": null, "FY2023": null},
+    "accounts_receivable":       {"FY2024": null, "FY2023": null},
+    "inventory":                 {"FY2024": null, "FY2023": null},
+    "total_current_assets":      {"FY2024": null, "FY2023": null},
+    "fixed_assets_net":          {"FY2024": null, "FY2023": null},
+    "intangibles_goodwill":      {"FY2024": null, "FY2023": null},
+    "total_assets":              {"FY2024": null, "FY2023": null},
+    "accounts_payable":          {"FY2024": null, "FY2023": null},
+    "short_term_debt":           {"FY2024": null, "FY2023": null},
+    "total_current_liabilities": {"FY2024": null, "FY2023": null},
+    "long_term_debt":            {"FY2024": null, "FY2023": null},
+    "total_liabilities":         {"FY2024": null, "FY2023": null},
+    "share_capital":             {"FY2024": null, "FY2023": null},
+    "retained_earnings":         {"FY2024": null, "FY2023": null},
+    "total_equity":              {"FY2024": null, "FY2023": null}
   },
   "cash_flow": {
-    "cfo":            {"FY2023": null, "FY2022": null},
-    "cfi":            {"FY2023": null, "FY2022": null},
-    "cff":            {"FY2023": null, "FY2022": null},
-    "capex":          {"FY2023": null, "FY2022": null},
-    "free_cash_flow": {"FY2023": null, "FY2022": null}
+    "cfo":            {"FY2024": null, "FY2023": null},
+    "cfi":            {"FY2024": null, "FY2023": null},
+    "cff":            {"FY2024": null, "FY2023": null},
+    "capex":          {"FY2024": null, "FY2023": null},
+    "free_cash_flow": {"FY2024": null, "FY2023": null}
   },
   "swot": {
-    "strengths":     ["4-6 evidence-based points from document only"],
-    "weaknesses":    ["4-6 evidence-based points from document only"],
-    "opportunities": ["4-6 evidence-based points from document only"],
-    "threats":       ["4-6 evidence-based points from document only"]
+    "strengths":     ["4-6 evidence-based points"],
+    "weaknesses":    ["4-6 evidence-based points"],
+    "opportunities": ["4-6 evidence-based points"],
+    "threats":       ["4-6 evidence-based points"]
   },
-  "key_observations": ["5-8 data-driven analyst observations"],
+  "key_observations": ["5-8 data-driven observations"],
   "data_quality_notes": ["any gaps or assumptions"]
 }
 
 DOCUMENT TEXT:
-${extractedText}`
+${documentText}`
         }]
       })
     });
@@ -160,7 +164,7 @@ ${extractedText}`
     } catch (e) {
       const match = rawJson.match(/\{[\s\S]*\}/);
       if (match) analysis = JSON.parse(match[0]);
-      else throw new Error('Could not parse analysis response');
+      else throw new Error('Could not parse analysis response as JSON');
     }
 
     if (companyName && analysis.company_profile) {
@@ -173,11 +177,12 @@ ${extractedText}`
       success: true,
       analysis,
       ratiosByYear,
-      extractedTextLength: extractedText.length
+      textLength: documentText.length,
+      mode
     });
 
   } catch (err) {
-    console.error('[analyze]', err);
+    console.error('[analyze]', err.message);
     return res.status(500).json({ error: err.message });
   }
 }
