@@ -691,8 +691,55 @@ export default function PrivateAnalyzer() {
         throw new Error(errData.error || `Server error: ${res.status}`);
       }
 
-      const { analysis, ratiosByYear } = await res.json();
+      let { analysis, ratiosByYear } = await res.json();
       setStepIdx(2);
+
+      const hasFinancialData = (a) => {
+        const is_ = a.income_statement || {};
+        return Object.values(is_).some(yr =>
+          Object.values(yr || {}).some(v => v !== null)
+        );
+      };
+
+      if (!hasFinancialData(analysis)) {
+        // Document mode got no numbers — retry with vision on pages 10-35
+        setStepIdx(1);
+        const pdfjsLib = await loadPdfJs();
+        const ab = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
+        const startPage = Math.max(1, Math.floor(pdf.numPages * 0.3));
+        const endPage = Math.min(pdf.numPages, startPage + 25);
+        const pageImages = [];
+        for (let i = startPage; i <= endPage; i++) {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 1.5 });
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+          pageImages.push(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+        }
+        const res2 = await fetch(
+          'https://startrek-production-3ad9.up.railway.app/analyze',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'vision',
+              pageImages,
+              fileName: file.name,
+              companyName: companyName.trim() || null,
+            }),
+          }
+        );
+        if (!res2.ok) {
+          const e2 = await res2.json().catch(() => ({}));
+          throw new Error(e2.error || 'Vision fallback failed');
+        }
+        const data2 = await res2.json();
+        analysis = data2.analysis;
+        ratiosByYear = data2.ratiosByYear;
+      }
 
       setStepIdx(3);
       const wordBlob = await generateWordDoc(analysis, ratiosByYear);

@@ -30,12 +30,13 @@ app.post('/analyze', async (req, res) => {
       documentText = extractedText || ''
 
     } else if (mode === 'vision') {
+      const safeImages = pageImages.slice(0, 20)
       const visionContent = []
-      for (let i = 0; i < pageImages.length; i++) {
+      for (let i = 0; i < safeImages.length; i++) {
         visionContent.push({ type: 'text', text: `Page ${i + 1}:` })
         visionContent.push({
           type: 'image',
-          source: { type: 'base64', media_type: 'image/jpeg', data: pageImages[i] }
+          source: { type: 'base64', media_type: 'image/jpeg', data: safeImages[i] }
         })
       }
       visionContent.push({
@@ -105,7 +106,7 @@ app.post('/analyze', async (req, res) => {
           'anthropic-beta': 'pdfs-2024-09-25'
         },
         body: JSON.stringify({
-          model: 'claude-opus-4-5',
+          model: 'claude-sonnet-4-5-20250514',
           max_tokens: 8000,
           system: `You are a financial data extraction API. You output ONLY raw JSON.
 No prose. No markdown. No code fences. No explanation before or after.
@@ -191,6 +192,8 @@ Replace FY2024/FY2023 keys with the actual fiscal years found in the document.
       })
 
       const docData = await docResponse.json()
+      console.log('[document mode] HTTP status:', docResponse.status)
+      console.log('[document mode] raw response first 500 chars:', JSON.stringify(docData).substring(0, 500))
       if (docData.error) throw new Error('Document API error: ' + docData.error.message)
       let rawJson = docData?.content?.[0]?.text || ''
       console.log('[analyze] document mode response length:', rawJson.length)
