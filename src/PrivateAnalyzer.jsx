@@ -692,6 +692,19 @@ export default function PrivateAnalyzer() {
       }
 
       let { analysis, ratiosByYear } = await res.json();
+      if ((analysis.financial_years || []).length > 1) {
+        analysis.financial_years = [...analysis.financial_years].sort();
+      }
+      const is_ = analysis.income_statement || {};
+      (analysis.financial_years || []).forEach(yr => {
+        const ebit = is_.ebit?.[yr];
+        const ie = is_.interest_expense?.[yr];
+        if (ebit != null && ie != null && is_.pbt?.[yr] != null) {
+          if (Math.abs(is_.pbt[yr] - ebit) < 0.1) {
+            is_.pbt[yr] = parseFloat((ebit - ie).toFixed(2));
+          }
+        }
+      });
       setStepIdx(2);
 
       const hasFinancialData = (a) => {
