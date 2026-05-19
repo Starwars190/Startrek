@@ -854,6 +854,7 @@ export default function PrivateAnalyzer() {
         years: analysis.financial_years || [],
         wordFile: `${safeName}_Financial_Brief.docx`,
         excelFile: `${safeName}_Financial_Model.xlsx`,
+        _analysis: analysis,
       });
       setStepIdx(5);
       setStage('done');
@@ -875,6 +876,18 @@ export default function PrivateAnalyzer() {
         <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#F0FAF5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, margin: '0 auto 20px' }}>✓</div>
         <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 22, fontWeight: 800, color: NAVY, marginBottom: 8 }}>Downloads Ready</h2>
         <p style={{ color: '#6B7280', fontSize: 14, marginBottom: 24 }}>{resultMeta.company} · {resultMeta.years.join(', ')}</p>
+        <div style={{ background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: 10, padding: '14px 18px', marginBottom: 20, textAlign: 'left' }}>
+          {[
+            ['Income Statement', Object.values(resultMeta._analysis?.income_statement || {}).some(f => Object.values(f||{}).some(v => v != null))],
+            ['Balance Sheet',    Object.values(resultMeta._analysis?.balance_sheet    || {}).some(f => Object.values(f||{}).some(v => v != null))],
+            ['Cash Flow',        Object.values(resultMeta._analysis?.cash_flow        || {}).some(f => Object.values(f||{}).some(v => v != null))],
+          ].map(([label, ok]) => (
+            <div key={label} style={{ display: 'flex', gap: 8, fontSize: 13, marginBottom: 6 }}>
+              <span style={{ color: ok ? '#0D7A3E' : '#DC2626', fontWeight: 700 }}>{ok ? '✓' : '⚠'}</span>
+              <span style={{ color: ok ? '#374151' : '#DC2626' }}>{label}{!ok ? ' — not extracted' : ''}</span>
+            </div>
+          ))}
+        </div>
         <div style={{ background: '#F9FAFB', borderRadius: 10, padding: '16px 20px', marginBottom: 24, textAlign: 'left' }}>
           <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}><span style={{ marginRight: 8 }}>📄</span><strong>{resultMeta.wordFile}</strong></div>
           <div style={{ fontSize: 13, color: '#374151' }}><span style={{ marginRight: 8 }}>📊</span><strong>{resultMeta.excelFile}</strong></div>
