@@ -58,7 +58,9 @@ app.post('/analyze', async (req, res) => {
         }
         visionContent.push({
           type: 'text',
-          text: `Extract ALL text from these financial document pages exactly as it appears. Include every number, table, label, and footnote. Preserve table structure using | as separator. This is a company financial document — extract ALL financial statement data including Balance Sheet, Profit & Loss, Income Statement, and Cash Flow Statement. Output raw text only.`
+          text: `Extract ALL text from these financial document pages exactly as it appears. Include every number, table, label, and footnote. Preserve table structure using | as separator.
+${req.body.missingHint ? 'FOCUS ON FINDING: ' + req.body.missingHint + '. These sections are missing and must be found.' : ''}
+Output raw text only.`
         })
 
         const ocrResponse = await fetch('https://api.anthropic.com/v1/messages', {
@@ -77,12 +79,15 @@ app.post('/analyze', async (req, res) => {
 
         const ocrData = await ocrResponse.json()
         if (ocrData.error) {
-          const errMsg = ocrData.error.message || ''
-          if (errMsg.includes('content filtering') || errMsg.includes('Output blocked')) {
+          const msg = ocrData.error.message || ''
+          if (
+            msg.includes('content filtering') ||
+            msg.includes('Output blocked') ||
+            msg.includes('content_policy')
+          ) {
             continue
-          } else {
-            throw new Error('OCR batch error: ' + errMsg)
           }
+          throw new Error('OCR batch error: ' + msg)
         }
         const batchText = ocrData?.content?.[0]?.text || ''
         if (batchText) allExtractedText.push(batchText)
