@@ -68,9 +68,9 @@ FISCAL YEARS: Use the actual year-end dates found in the document.
 Format as FY2025, FY2024 etc based on the year the period ends.
 Indian companies end fiscal year on 31 March — period ending 31/03/2025 = FY2025.
 
-KEY OBSERVATIONS: You MUST always generate 6-8 specific bullet points with exact INR figures and percentages from the document. Never leave this empty under any circumstances. Each point must cite an actual figure, ratio, or trend found in the document.
+KEY OBSERVATIONS: You MUST always generate exactly 6-8 specific bullet points. Each bullet must contain exact INR figures, exact percentages, and year references pulled directly from the document. Examples: revenue grew 12.6% from INR 65,426 lakhs to INR 73,698 lakhs, net loss of INR 1,680 lakhs vs profit of INR 1,469 lakhs prior year. Never leave this empty. This is mandatory.
 
-DATA QUALITY NOTES: You MUST always generate at least 3 data quality notes explaining how figures were calculated, any limitations, and sources used. Never leave this empty.`
+DATA QUALITY NOTES: You MUST always generate at least 3 specific notes explaining exactly how key figures were calculated, what was included or excluded in COGS, how EBITDA was derived, any limitations in the data, and which pages or notes were used as sources. Never leave this empty. This is mandatory.`
 
 const JSON_TEMPLATE = `Analyze this financial document. Return ONLY valid JSON.
 Replace FY2025/FY2024 keys with the actual fiscal years found in the document.
