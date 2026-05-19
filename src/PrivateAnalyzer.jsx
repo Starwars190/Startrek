@@ -800,9 +800,14 @@ export default function PrivateAnalyzer() {
 
       const hasFinancialData = (a) => {
         const is_ = a.income_statement || {};
-        return Object.values(is_).some(yr =>
+        const cf_ = a.cash_flow || {};
+        const hasIncome = Object.values(is_).some(yr =>
           Object.values(yr || {}).some(v => v !== null)
         );
+        const hasCashFlow = Object.values(cf_).some(yr =>
+          Object.values(yr || {}).some(v => v !== null)
+        );
+        return hasIncome && hasCashFlow;
       };
 
       if (!hasFinancialData(analysis)) {
