@@ -187,7 +187,7 @@ Output raw extracted text only. Do not summarise.`
             'anthropic-version': '2023-06-01'
           },
           body: JSON.stringify({
-            model: 'claude-opus-4-5',
+            model: 'claude-opus-4-7',
             max_tokens: 8192,
             messages: [{ role: 'user', content }]
           })
@@ -216,7 +216,7 @@ Output raw extracted text only. Do not summarise.`
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: 'claude-opus-4-5',
+          model: 'claude-opus-4-7',
           max_tokens: 8192,
           messages: [{
             role: 'user',
@@ -244,7 +244,7 @@ Output raw extracted text only. Do not summarise.`
           'anthropic-beta': 'pdfs-2024-09-25'
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-5',
+          model: 'claude-opus-4-7',
           max_tokens: 8000,
           system: SYSTEM_PROMPT,
           messages: [{
@@ -302,7 +302,7 @@ Output raw extracted text only. Do not summarise.`
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-opus-4-5',
+        model: 'claude-opus-4-7',
         max_tokens: 8000,
         system: SYSTEM_PROMPT,
         messages: [{
