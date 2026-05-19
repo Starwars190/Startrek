@@ -105,16 +105,7 @@ app.post('/analyze', async (req, res) => {
       })
     }
 
-    // Indian annual reports: financial statements are always in the second half.
-    // Take the last 80000 chars to capture Balance Sheet, P&L, Cash Flow, and Notes.
-    let textToAnalyze = documentText
-
-    if (documentText.length > 80000) {
-      textToAnalyze = documentText.substring(Math.max(0, documentText.length - 80000))
-      console.log('[analyze] Trimmed to last 80000 chars of', documentText.length, 'total chars')
-    } else {
-      console.log('[analyze] Using full text:', documentText.length, 'chars')
-    }
+    const textToAnalyze = documentText
 
     console.log('[analyze] Text length:', textToAnalyze.length, '| Mode:', mode)
 
@@ -127,7 +118,7 @@ app.post('/analyze', async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-opus-4-5',
-        max_tokens: 4096,
+        max_tokens: 8000,
         system: `You are a financial data extraction API. You output ONLY raw JSON.
 No prose. No markdown. No code fences. No explanation before or after.
 Start your response with { and end with }
