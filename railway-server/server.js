@@ -133,8 +133,8 @@ Replace FY2025/FY2024 keys with the actual fiscal years found in the document.
     "opportunities": ["4-6 evidence-based points"],
     "threats":       ["4-6 evidence-based points"]
   },
-  "key_observations": ["MANDATORY - Generate 6 to 8 specific observations with exact INR figures and percentages from the document. Example format: Revenue grew 12.6% from INR 65426 lakhs to INR 73698 lakhs in FY2025. Never return empty string or null here."],
-  "data_quality_notes": ["MANDATORY - Generate at least 3 notes explaining how COGS was calculated, how EBITDA was derived, any data limitations, and source pages used. Never return empty string or null here."]
+  "key_observations": ["MANDATORY: write 6-8 observations here with exact INR figures and % from the document - e.g. Revenue declined 4.23% from INR 9641 lakhs in FY2024 to INR 9234 lakhs in FY2025", "add more observations here", "add more observations here"],
+  "data_quality_notes": ["MANDATORY: explain here how COGS was calculated with exact components", "MANDATORY: explain how EBITDA was derived", "MANDATORY: note any data limitations or assumptions"]
 }`
 
 const parseJSON = (text) => {
@@ -276,7 +276,7 @@ Output raw extracted text only. Do not summarise.`
                   data: fileBase64
                 }
               },
-              { type: 'text', text: `CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE WITHOUT EXCEPTION:\n1. key_observations array MUST contain exactly 6-8 specific bullet point strings with exact INR figures and percentages from the document. Example: "Revenue declined 4.23% from INR 9,641.79 lakhs in FY2024 to INR 9,234.29 lakhs in FY2025". Never return an empty array.\n2. data_quality_notes array MUST contain at least 3 strings explaining how COGS was calculated, how EBITDA was derived, and any data limitations. Never return an empty array.\n\n` + JSON_TEMPLATE }
+              { type: 'text', text: JSON_TEMPLATE }
             ]
           }]
         })
@@ -330,7 +330,7 @@ Output raw extracted text only. Do not summarise.`
         system: SYSTEM_PROMPT,
         messages: [{
           role: 'user',
-          content: 'DOCUMENT TEXT:\n' + documentText + '\n\n' + `CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE WITHOUT EXCEPTION:\n1. key_observations array MUST contain exactly 6-8 specific bullet point strings with exact INR figures and percentages from the document. Example: "Revenue declined 4.23% from INR 9,641.79 lakhs in FY2024 to INR 9,234.29 lakhs in FY2025". Never return an empty array.\n2. data_quality_notes array MUST contain at least 3 strings explaining how COGS was calculated, how EBITDA was derived, and any data limitations. Never return an empty array.\n\n` + JSON_TEMPLATE
+          content: 'DOCUMENT TEXT:\n' + documentText + '\n\n' + JSON_TEMPLATE
         }]
       })
     })
