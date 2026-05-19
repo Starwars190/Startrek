@@ -72,7 +72,9 @@ KEY OBSERVATIONS: You MUST always generate exactly 6-8 specific bullet points. E
 
 DATA QUALITY NOTES: You MUST always generate at least 3 specific notes explaining exactly how key figures were calculated, what was included or excluded in COGS, how EBITDA was derived, any limitations in the data, and which pages or notes were used as sources. Never leave this empty. This is mandatory.
 
-CRITICAL MANDATORY REQUIREMENT: You must always populate key_observations with exactly 6 to 8 strings. Each string must contain specific numbers, percentages, and INR figures extracted directly from the document. Do not return an empty array. Do not return placeholder text. Return real observations like: Revenue grew 12.64% from INR 65426 lakhs in FY2024 to INR 73698 lakhs in FY2025. You must also always populate data_quality_notes with at least 3 strings explaining how COGS was calculated, how EBITDA was derived, and any data limitations. Returning empty arrays for these fields is a critical failure.`
+CRITICAL MANDATORY REQUIREMENT: You must always populate key_observations with exactly 6 to 8 strings. Each string must contain specific numbers, percentages, and INR figures extracted directly from the document. Do not return an empty array. Do not return placeholder text. Return real observations like: Revenue grew 12.64% from INR 65426 lakhs in FY2024 to INR 73698 lakhs in FY2025. You must also always populate data_quality_notes with at least 3 strings explaining how COGS was calculated, how EBITDA was derived, and any data limitations. Returning empty arrays for these fields is a critical failure.
+
+The key_observations array is SEPARATE from the SWOT analysis. Do not put observations only in SWOT. The key_observations array must contain 6-8 standalone bullet point strings that summarize the most important financial findings - revenue trends, profit changes, margin movements, debt levels, cash flow highlights. These must appear in key_observations regardless of what is in the SWOT section.`
 
 const JSON_TEMPLATE = `Analyze this financial document. Return ONLY valid JSON.
 Replace FY2025/FY2024 keys with the actual fiscal years found in the document.
@@ -294,6 +296,7 @@ Output raw extracted text only. Do not summarise.`
       }
 
       if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
+      console.log('[document] key_observations count:', analysis.key_observations?.length)
       const ratiosByYear = calculateRatios(analysis)
       return res.status(200).json({ success: true, analysis, ratiosByYear, mode })
 
