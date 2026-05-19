@@ -305,5 +305,5 @@ function calculateRatios(data) {
 }
 
 app.listen(process.env.PORT || 3001, '0.0.0.0', () => {
-  console.log(`FinSight AI Analyzer running on port ${process.env.PORT || 3001}`)
+  console.log(`Server running on port ${process.env.PORT || 3001}`)
 })
