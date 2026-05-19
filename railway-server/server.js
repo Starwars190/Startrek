@@ -4,7 +4,14 @@ import cors from 'cors'
 const app = express()
 const PORT = process.env.PORT || 3001
 
-app.use(cors({ origin: '*' }))
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}))
+
+app.options('*', cors())
+
 app.use(express.json({ limit: '50mb' }))
 
 // Health check
@@ -297,6 +304,6 @@ function calculateRatios(data) {
   return result
 }
 
-app.listen(PORT, () => {
-  console.log(`FinSight AI Analyzer running on port ${PORT}`)
+app.listen(process.env.PORT || 3001, '0.0.0.0', () => {
+  console.log(`FinSight AI Analyzer running on port ${process.env.PORT || 3001}`)
 })
