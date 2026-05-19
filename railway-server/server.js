@@ -129,8 +129,8 @@ Replace FY2025/FY2024 keys with the actual fiscal years found in the document.
     "opportunities": ["4-6 evidence-based points"],
     "threats":       ["4-6 evidence-based points"]
   },
-  "key_observations": ["5-8 data-driven observations"],
-  "data_quality_notes": ["any gaps or assumptions"]
+  "key_observations": ["MANDATORY - Generate 6 to 8 specific observations with exact INR figures and percentages from the document. Example format: Revenue grew 12.6% from INR 65426 lakhs to INR 73698 lakhs in FY2025. Never return empty string or null here."],
+  "data_quality_notes": ["MANDATORY - Generate at least 3 notes explaining how COGS was calculated, how EBITDA was derived, any data limitations, and source pages used. Never return empty string or null here."]
 }`
 
 const parseJSON = (text) => {
