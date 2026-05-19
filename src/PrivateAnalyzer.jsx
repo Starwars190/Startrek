@@ -661,65 +661,30 @@ export default function PrivateAnalyzer() {
     setStepIdx(0);
 
     try {
-      const name = file.name.toLowerCase();
-      let payload;
-
-      if (name.endsWith('.pdf')) {
-        setStepIdx(0);
-        const { text, isScanned } = await extractTextFromPDF(file);
-
-        if (!isScanned && text.replace(/\s/g, '').length > 500) {
-          payload = {
-            mode: 'text',
-            extractedText: text,
-            fileName: file.name,
-            companyName: companyName.trim() || null,
-          };
-        } else {
-          setStepIdx(0);
-          const pageImages = await extractTextViaVision(file, 10);
-          payload = {
-            mode: 'vision',
-            pageImages,
-            fileName: file.name,
-            companyName: companyName.trim() || null,
-          };
-        }
-      } else if (['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp'].some(ext => name.endsWith(ext))) {
-        const arrayBuffer = await file.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i += 8192) {
-          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-        }
-        const base64 = btoa(binary);
-        payload = {
-          mode: 'image',
-          imageBase64: base64,
-          imageMimeType: file.type || 'image/jpeg',
-          fileName: file.name,
-          companyName: companyName.trim() || null,
-        };
-      } else if (name.endsWith('.docx') || name.endsWith('.doc')) {
-        const mammoth = await import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js');
-        const arrayBuffer = await file.arrayBuffer();
-        const result = await mammoth.extractRawText({ arrayBuffer });
-        payload = {
-          mode: 'text',
-          extractedText: result.value,
-          fileName: file.name,
-          companyName: companyName.trim() || null,
-        };
-      } else {
-        throw new Error('Unsupported file format');
+      const arrayBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 8192) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
       }
+      const fileBase64 = btoa(binary);
 
       setStepIdx(1);
-      const res = await fetch('https://startrek-production-3ad9.up.railway.app/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+
+      const res = await fetch(
+        'https://startrek-production-3ad9.up.railway.app/analyze',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'document',
+            fileBase64,
+            mimeType: file.type || 'application/pdf',
+            fileName: file.name,
+            companyName: companyName.trim() || null,
+          }),
+        }
+      );
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -731,11 +696,9 @@ export default function PrivateAnalyzer() {
 
       setStepIdx(3);
       const wordBlob = await generateWordDoc(analysis, ratiosByYear);
-      const safeName = (
-        analysis.company_profile?.name ||
-        companyName ||
-        'PrivateCompany'
-      ).replace(/[^a-zA-Z0-9 ]/g, '').trim().replace(/\s+/g, '_');
+      const safeName = (analysis.company_profile?.name ||
+        companyName || 'PrivateCompany')
+        .replace(/[^a-zA-Z0-9 ]/g, '').trim().replace(/\s+/g, '_');
 
       triggerDownload(wordBlob, `${safeName}_Financial_Brief.docx`);
       await new Promise(resolve => setTimeout(resolve, 1500));
@@ -745,7 +708,8 @@ export default function PrivateAnalyzer() {
       triggerDownload(excelBlob, `${safeName}_Financial_Model.xlsx`);
 
       setResultMeta({
-        company: analysis.company_profile?.name || companyName || 'Private Company',
+        company: analysis.company_profile?.name ||
+                 companyName || 'Private Company',
         years: analysis.financial_years || [],
         wordFile: `${safeName}_Financial_Brief.docx`,
         excelFile: `${safeName}_Financial_Model.xlsx`,
@@ -754,8 +718,7 @@ export default function PrivateAnalyzer() {
       setStage('done');
 
     } catch (e) {
-      console.error('Process error:', e);
-      setError(e.message || 'Processing failed. Please try again.');
+      setError(e.message || 'Processing failed.');
       setStage('error');
     }
   };

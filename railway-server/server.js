@@ -22,7 +22,7 @@ app.get('/', (req, res) => {
 // Main analyze endpoint
 app.post('/analyze', async (req, res) => {
   try {
-    const { mode, extractedText, pageImages, imageBase64, imageMimeType, fileName, companyName } = req.body
+    const { mode, extractedText, pageImages, imageBase64, imageMimeType, fileBase64, mimeType, fileName, companyName } = req.body
 
     let documentText = ''
 
@@ -94,6 +94,137 @@ app.post('/analyze', async (req, res) => {
 
       const imgData = await imgResponse.json()
       documentText = imgData?.content?.[0]?.text || ''
+
+    } else if (mode === 'document') {
+      const docResponse = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'pdfs-2024-09-25'
+        },
+        body: JSON.stringify({
+          model: 'claude-opus-4-5',
+          max_tokens: 8000,
+          system: `You are a financial data extraction API. You output ONLY raw JSON.
+No prose. No markdown. No code fences. No explanation before or after.
+Start your response with { and end with }
+If you cannot find a value output null. Never guess or fabricate numbers.`,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: mimeType || 'application/pdf',
+                  data: fileBase64
+                }
+              },
+              {
+                type: 'text',
+                text: `Analyze this private company financial document. Return ONLY valid JSON.
+Replace FY2024/FY2023 keys with the actual fiscal years found in the document.
+
+{
+  "company_profile": {
+    "name": null, "industry": null, "sub_industry": null,
+    "headquarters": null, "year_founded": null, "legal_structure": null,
+    "reporting_currency": "INR", "reporting_unit": "INR Lakhs",
+    "fiscal_year_end": null, "auditor": null,
+    "description": "2-3 sentences from document only",
+    "key_products_services": [], "number_of_employees": null,
+    "geographic_presence": []
+  },
+  "financial_years": ["FY2024", "FY2023"],
+  "income_statement": {
+    "revenue":                   {"FY2024": null, "FY2023": null},
+    "cost_of_goods_sold":        {"FY2024": null, "FY2023": null},
+    "gross_profit":              {"FY2024": null, "FY2023": null},
+    "operating_expenses":        {"FY2024": null, "FY2023": null},
+    "ebitda":                    {"FY2024": null, "FY2023": null},
+    "depreciation_amortization": {"FY2024": null, "FY2023": null},
+    "ebit":                      {"FY2024": null, "FY2023": null},
+    "interest_expense":          {"FY2024": null, "FY2023": null},
+    "pbt":                       {"FY2024": null, "FY2023": null},
+    "tax":                       {"FY2024": null, "FY2023": null},
+    "net_income":                {"FY2024": null, "FY2023": null}
+  },
+  "balance_sheet": {
+    "cash_equivalents":          {"FY2024": null, "FY2023": null},
+    "accounts_receivable":       {"FY2024": null, "FY2023": null},
+    "inventory":                 {"FY2024": null, "FY2023": null},
+    "total_current_assets":      {"FY2024": null, "FY2023": null},
+    "fixed_assets_net":          {"FY2024": null, "FY2023": null},
+    "intangibles_goodwill":      {"FY2024": null, "FY2023": null},
+    "total_assets":              {"FY2024": null, "FY2023": null},
+    "accounts_payable":          {"FY2024": null, "FY2023": null},
+    "short_term_debt":           {"FY2024": null, "FY2023": null},
+    "total_current_liabilities": {"FY2024": null, "FY2023": null},
+    "long_term_debt":            {"FY2024": null, "FY2023": null},
+    "total_liabilities":         {"FY2024": null, "FY2023": null},
+    "share_capital":             {"FY2024": null, "FY2023": null},
+    "retained_earnings":         {"FY2024": null, "FY2023": null},
+    "total_equity":              {"FY2024": null, "FY2023": null}
+  },
+  "cash_flow": {
+    "cfo":            {"FY2024": null, "FY2023": null},
+    "cfi":            {"FY2024": null, "FY2023": null},
+    "cff":            {"FY2024": null, "FY2023": null},
+    "capex":          {"FY2024": null, "FY2023": null},
+    "free_cash_flow": {"FY2024": null, "FY2023": null}
+  },
+  "swot": {
+    "strengths":     ["4-6 evidence-based points"],
+    "weaknesses":    ["4-6 evidence-based points"],
+    "opportunities": ["4-6 evidence-based points"],
+    "threats":       ["4-6 evidence-based points"]
+  },
+  "key_observations": ["5-8 data-driven observations"],
+  "data_quality_notes": ["any gaps or assumptions"]
+}`
+              }
+            ]
+          }]
+        })
+      })
+
+      const docData = await docResponse.json()
+      if (docData.error) throw new Error('Document API error: ' + docData.error.message)
+      let rawJson = docData?.content?.[0]?.text || ''
+      console.log('[analyze] document mode response length:', rawJson.length)
+      console.log('[analyze] Preview:', rawJson.substring(0, 200))
+
+      if (!rawJson || rawJson.length < 50) throw new Error('Claude returned empty response.')
+
+      const parseJSON = (text) => {
+        let cleaned = text.replace(/^```(?:json)?\s*/gm, '').replace(/```\s*$/gm, '').trim()
+        try { return JSON.parse(cleaned) } catch (e1) {}
+        const firstBrace = cleaned.indexOf('{')
+        const lastBrace = cleaned.lastIndexOf('}')
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const jsonStr = cleaned.substring(firstBrace, lastBrace + 1)
+          try { return JSON.parse(jsonStr) } catch (e2) {}
+          const truncated = jsonStr.replace(/,\s*"[^"]*"\s*:\s*[^,}\]]*$/, '}')
+          try { return JSON.parse(truncated) } catch (e3) {}
+          let fixed = jsonStr
+          fixed += ']'.repeat(Math.max(0, (fixed.match(/\[/g) || []).length - (fixed.match(/\]/g) || []).length))
+          fixed += '}'.repeat(Math.max(0, (fixed.match(/\{/g) || []).length - (fixed.match(/\}/g) || []).length))
+          try { return JSON.parse(fixed) } catch (e4) {}
+        }
+        throw new Error('Could not parse response as JSON. Preview: ' + text.substring(0, 200))
+      }
+
+      let analysis
+      try { analysis = parseJSON(rawJson) } catch (parseErr) {
+        console.error('[analyze] Parse error:', parseErr.message)
+        return res.status(500).json({ error: 'Analysis failed — document may be too complex.', debug: rawJson.substring(0, 300) })
+      }
+
+      if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
+      const ratiosByYear = calculateRatios(analysis)
+      return res.status(200).json({ success: true, analysis, ratiosByYear, mode })
 
     } else {
       return res.status(400).json({ error: 'Invalid mode.' })
