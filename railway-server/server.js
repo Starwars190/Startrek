@@ -66,7 +66,9 @@ Include employee costs, other expenses, CSR. Exclude depreciation and finance co
 
 FISCAL YEARS: Use the actual year-end dates found in the document.
 Format as FY2025, FY2024 etc based on the year the period ends.
-Indian companies end fiscal year on 31 March — period ending 31/03/2025 = FY2025.`
+Indian companies end fiscal year on 31 March — period ending 31/03/2025 = FY2025.
+
+KEY OBSERVATIONS: Always generate 6-8 specific analyst observations with exact numbers from the document. This is mandatory and must never be empty. Each observation must cite an actual figure, ratio, or trend found in the document.`
 
 const JSON_TEMPLATE = `Analyze this financial document. Return ONLY valid JSON.
 Replace FY2025/FY2024 keys with the actual fiscal years found in the document.
