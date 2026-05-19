@@ -70,7 +70,9 @@ Indian companies end fiscal year on 31 March — period ending 31/03/2025 = FY20
 
 KEY OBSERVATIONS: You MUST always generate exactly 6-8 specific bullet points. Each bullet must contain exact INR figures, exact percentages, and year references pulled directly from the document. Examples: revenue grew 12.6% from INR 65,426 lakhs to INR 73,698 lakhs, net loss of INR 1,680 lakhs vs profit of INR 1,469 lakhs prior year. Never leave this empty. This is mandatory.
 
-DATA QUALITY NOTES: You MUST always generate at least 3 specific notes explaining exactly how key figures were calculated, what was included or excluded in COGS, how EBITDA was derived, any limitations in the data, and which pages or notes were used as sources. Never leave this empty. This is mandatory.`
+DATA QUALITY NOTES: You MUST always generate at least 3 specific notes explaining exactly how key figures were calculated, what was included or excluded in COGS, how EBITDA was derived, any limitations in the data, and which pages or notes were used as sources. Never leave this empty. This is mandatory.
+
+CRITICAL MANDATORY REQUIREMENT: You must always populate key_observations with exactly 6 to 8 strings. Each string must contain specific numbers, percentages, and INR figures extracted directly from the document. Do not return an empty array. Do not return placeholder text. Return real observations like: Revenue grew 12.64% from INR 65426 lakhs in FY2024 to INR 73698 lakhs in FY2025. You must also always populate data_quality_notes with at least 3 strings explaining how COGS was calculated, how EBITDA was derived, and any data limitations. Returning empty arrays for these fields is a critical failure.`
 
 const JSON_TEMPLATE = `Analyze this financial document. Return ONLY valid JSON.
 Replace FY2025/FY2024 keys with the actual fiscal years found in the document.
