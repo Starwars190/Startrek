@@ -748,13 +748,15 @@ export default function PrivateAnalyzer() {
 
     try {
       const arrayBuffer = await file.arrayBuffer();
+      // Clone the buffer because pdfjs detaches the original
+      const arrayBufferCopy = arrayBuffer.slice(0);
 
       // Check page count before sending — Claude document API max is 100 pages
       let requestBody;
       const fileName = file.name.toLowerCase();
       if (fileName.endsWith('.pdf')) {
         const pdfjsLib = await loadPdfJs();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const pdf = await pdfjsLib.getDocument({ data: arrayBufferCopy }).promise;
         const totalPages = pdf.numPages;
 
         if (totalPages <= 100) {
