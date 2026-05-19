@@ -66,6 +66,27 @@ export default async function handler(req, res) {
       });
     }
 
+    // Smart trim — find financial section and focus on it (Change 1)
+    let textToAnalyze = documentText;
+    const MARKERS = [
+      'balance sheet', 'profit and loss', 'statement of profit',
+      'income statement', 'financial statement', 'standalone financial',
+      'consolidated financial', 'profit & loss'
+    ];
+    const lowerText = documentText.toLowerCase();
+    let financialStart = -1;
+    for (const marker of MARKERS) {
+      const idx = lowerText.indexOf(marker);
+      if (idx !== -1 && (financialStart === -1 || idx < financialStart)) {
+        financialStart = idx;
+      }
+    }
+    if (financialStart > 2000) {
+      textToAnalyze = documentText.substring(Math.max(0, financialStart - 2000), financialStart + 80000);
+    } else {
+      textToAnalyze = documentText.substring(0, 80000);
+    }
+
     // Analyse the extracted text
     const analysisResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -76,15 +97,11 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-5-20250514',
-        max_tokens: 8192,
-        system: `You are a senior financial analyst at a top-tier investment bank.
-Extract and structure ALL financial data from private company documents.
-RULES:
-1. Extract EVERY number you find. Never invent or estimate.
-2. If a value is missing use null — NEVER fabricate.
-3. Return ONLY valid JSON. No markdown, no explanation, no preamble.
-4. Use actual fiscal years found in the document (e.g. FY2024, FY2023).
-5. Indian companies: amounts may be in Lakhs or Crores — state which in reporting_unit.`,
+        max_tokens: 4096,
+        system: `You are a financial data extraction API. You output ONLY raw JSON.
+No prose. No markdown. No code fences. No explanation before or after.
+Start your response with { and end with }
+If you cannot find a value output null. Never guess or fabricate numbers.`,
         messages: [{
           role: 'user',
           content: `Analyze this private company financial document. Return ONLY valid JSON.
@@ -149,22 +166,71 @@ Replace FY2024/FY2023 keys with the actual fiscal years found in the document.
 }
 
 DOCUMENT TEXT:
-${documentText}`
+${textToAnalyze}`
         }]
       })
     });
 
     const analysisData = await analysisResponse.json();
+
+    // Change 5 — check for Claude API errors before parsing
+    if (analysisData?.error) {
+      throw new Error('Claude API error: ' + (analysisData.error.message || JSON.stringify(analysisData.error)));
+    }
+
     let rawJson = analysisData?.content?.[0]?.text || '';
-    rawJson = rawJson.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim();
+
+    // Change 4 — log what Claude returned for debugging
+    console.log('[analyze] Claude response length:', rawJson.length);
+    console.log('[analyze] Claude response preview:', rawJson.substring(0, 300));
+
+    if (!rawJson || rawJson.length < 50) {
+      throw new Error('Claude returned empty response. The document may be too large or unreadable.');
+    }
+
+    // Change 3 — resilient JSON parser
+    const parseJSON = (text) => {
+      let cleaned = text
+        .replace(/^```(?:json)?\s*/gm, '')
+        .replace(/```\s*$/gm, '')
+        .trim();
+
+      try { return JSON.parse(cleaned); } catch (e1) {}
+
+      const firstBrace = cleaned.indexOf('{');
+      const lastBrace = cleaned.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        const jsonStr = cleaned.substring(firstBrace, lastBrace + 1);
+        try { return JSON.parse(jsonStr); } catch (e2) {}
+
+        // Try to fix truncated JSON — remove everything after the last complete field
+        const truncated = jsonStr.replace(/,\s*"[^"]*"\s*:\s*[^,}\]]*$/, '}');
+        try { return JSON.parse(truncated); } catch (e3) {}
+
+        // Last resort — close unclosed brackets/braces
+        let fixed = jsonStr;
+        const openBraces    = (fixed.match(/\{/g) || []).length;
+        const closeBraces   = (fixed.match(/\}/g) || []).length;
+        const openBrackets  = (fixed.match(/\[/g) || []).length;
+        const closeBrackets = (fixed.match(/\]/g) || []).length;
+        fixed += ']'.repeat(Math.max(0, openBrackets - closeBrackets));
+        fixed += '}'.repeat(Math.max(0, openBraces - closeBraces));
+        try { return JSON.parse(fixed); } catch (e4) {}
+      }
+
+      throw new Error('Could not parse Claude response as JSON. Response preview: ' + text.substring(0, 200));
+    };
 
     let analysis;
     try {
-      analysis = JSON.parse(rawJson);
-    } catch (e) {
-      const match = rawJson.match(/\{[\s\S]*\}/);
-      if (match) analysis = JSON.parse(match[0]);
-      else throw new Error('Could not parse analysis response as JSON');
+      analysis = parseJSON(rawJson);
+    } catch (parseErr) {
+      console.error('[analyze] Parse error:', parseErr.message);
+      console.error('[analyze] Raw response preview:', rawJson.substring(0, 500));
+      return res.status(500).json({
+        error: 'Analysis failed — the document may be too complex. Try uploading just the financial statements pages.',
+        debug: rawJson.substring(0, 300)
+      });
     }
 
     if (companyName && analysis.company_profile) {
