@@ -30,37 +30,59 @@ app.post('/analyze', async (req, res) => {
       documentText = extractedText || ''
 
     } else if (mode === 'vision') {
-      const safeImages = pageImages.slice(0, 20)
-      const visionContent = []
-      for (let i = 0; i < safeImages.length; i++) {
-        visionContent.push({ type: 'text', text: `Page ${i + 1}:` })
-        visionContent.push({
-          type: 'image',
-          source: { type: 'base64', media_type: 'image/jpeg', data: safeImages[i] }
-        })
+      // Split pageImages into batches of 20 (Claude API hard limit)
+      const BATCH_SIZE = 20
+      const batches = []
+      for (let i = 0; i < pageImages.length; i += BATCH_SIZE) {
+        batches.push(pageImages.slice(i, i + BATCH_SIZE))
       }
-      visionContent.push({
-        type: 'text',
-        text: `Extract ALL text from these financial document pages exactly as it appears. Include every number, table, label, and footnote. Preserve table structure using | as separator. This is an Indian company annual report — extract ALL financial statement data including Balance Sheet, Profit & Loss, and Cash Flow Statement. Output raw text only.`
-      })
 
-      const ocrResponse = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify({
-          model: 'claude-opus-4-5',
-          max_tokens: 8192,
-          messages: [{ role: 'user', content: visionContent }]
+      console.log(`[vision] Total pages: ${pageImages.length} | Batches: ${batches.length}`)
+
+      const allExtractedText = []
+
+      for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+        const batch = batches[batchIdx]
+        console.log(`[vision] Processing batch ${batchIdx + 1} of ${batches.length} (${batch.length} pages)`)
+
+        const visionContent = []
+        for (let i = 0; i < batch.length; i++) {
+          visionContent.push({
+            type: 'text',
+            text: `Page ${batchIdx * BATCH_SIZE + i + 1}:`
+          })
+          visionContent.push({
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/jpeg', data: batch[i] }
+          })
+        }
+        visionContent.push({
+          type: 'text',
+          text: `Extract ALL text from these financial document pages exactly as it appears. Include every number, table, label, and footnote. Preserve table structure using | as separator. This is a company financial document — extract ALL financial statement data including Balance Sheet, Profit & Loss, Income Statement, and Cash Flow Statement. Output raw text only.`
         })
-      })
 
-      const ocrData = await ocrResponse.json()
-      if (ocrData.error) throw new Error('OCR error: ' + ocrData.error.message)
-      documentText = ocrData?.content?.[0]?.text || ''
+        const ocrResponse = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01'
+          },
+          body: JSON.stringify({
+            model: 'claude-opus-4-5',
+            max_tokens: 8192,
+            messages: [{ role: 'user', content: visionContent }]
+          })
+        })
+
+        const ocrData = await ocrResponse.json()
+        if (ocrData.error) throw new Error('OCR batch error: ' + ocrData.error.message)
+        const batchText = ocrData?.content?.[0]?.text || ''
+        if (batchText) allExtractedText.push(batchText)
+      }
+
+      documentText = allExtractedText.join('\n\n')
+      console.log(`[vision] Total extracted text length: ${documentText.length}`)
 
     } else if (mode === 'image') {
       const imgResponse = await fetch('https://api.anthropic.com/v1/messages', {
