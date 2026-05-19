@@ -76,7 +76,14 @@ app.post('/analyze', async (req, res) => {
         })
 
         const ocrData = await ocrResponse.json()
-        if (ocrData.error) throw new Error('OCR batch error: ' + ocrData.error.message)
+        if (ocrData.error) {
+          const errMsg = ocrData.error.message || ''
+          if (errMsg.includes('content filtering') || errMsg.includes('Output blocked')) {
+            continue
+          } else {
+            throw new Error('OCR batch error: ' + errMsg)
+          }
+        }
         const batchText = ocrData?.content?.[0]?.text || ''
         if (batchText) allExtractedText.push(batchText)
       }
