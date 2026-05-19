@@ -10,7 +10,17 @@ app.use(cors({
 }))
 
 app.options('*', cors())
-app.use(express.json({ limit: '50mb' }))
+
+// No artificial limits — production-grade payload handling
+app.use(express.json({ limit: '500mb' }))
+app.use(express.urlencoded({ limit: '500mb', extended: true }))
+
+// Generous timeouts for large documents on slow networks
+app.use((req, res, next) => {
+  req.setTimeout(600000)  // 10 minutes
+  res.setTimeout(600000)
+  next()
+})
 
 app.get('/', (req, res) => {
   res.json({ status: 'FinSight AI Analyzer — online' })
@@ -395,6 +405,11 @@ function calculateRatios(data) {
   return result
 }
 
-app.listen(process.env.PORT || 3001, '0.0.0.0', () => {
+const server = app.listen(process.env.PORT || 3001, '0.0.0.0', () => {
   console.log(`Server running on port ${process.env.PORT || 3001}`)
 })
+
+// Production-grade server timeouts
+server.timeout = 600000           // 10 minutes
+server.keepAliveTimeout = 600000  // 10 minutes
+server.headersTimeout = 605000    // 10 minutes 5 seconds
