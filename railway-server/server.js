@@ -276,7 +276,7 @@ Output raw extracted text only. Do not summarise.`
                   data: fileBase64
                 }
               },
-              { type: 'text', text: JSON_TEMPLATE }
+              { type: 'text', text: `CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE WITHOUT EXCEPTION:\n1. key_observations array MUST contain exactly 6-8 specific bullet point strings with exact INR figures and percentages from the document. Example: "Revenue declined 4.23% from INR 9,641.79 lakhs in FY2024 to INR 9,234.29 lakhs in FY2025". Never return an empty array.\n2. data_quality_notes array MUST contain at least 3 strings explaining how COGS was calculated, how EBITDA was derived, and any data limitations. Never return an empty array.\n\n` + JSON_TEMPLATE }
             ]
           }]
         })
@@ -330,7 +330,7 @@ Output raw extracted text only. Do not summarise.`
         system: SYSTEM_PROMPT,
         messages: [{
           role: 'user',
-          content: 'DOCUMENT TEXT:\n' + documentText + '\n\n' + JSON_TEMPLATE
+          content: 'DOCUMENT TEXT:\n' + documentText + '\n\n' + `CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE WITHOUT EXCEPTION:\n1. key_observations array MUST contain exactly 6-8 specific bullet point strings with exact INR figures and percentages from the document. Example: "Revenue declined 4.23% from INR 9,641.79 lakhs in FY2024 to INR 9,234.29 lakhs in FY2025". Never return an empty array.\n2. data_quality_notes array MUST contain at least 3 strings explaining how COGS was calculated, how EBITDA was derived, and any data limitations. Never return an empty array.\n\n` + JSON_TEMPLATE
         }]
       })
     })
