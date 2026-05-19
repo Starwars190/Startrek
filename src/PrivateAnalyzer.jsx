@@ -801,7 +801,7 @@ export default function PrivateAnalyzer() {
 
           requestBody = {
             mode: 'text',
-            extractedText: extractedText.slice(0, 150000),
+            extractedText: extractedText,
             fileName: file.name,
             companyName: companyName.trim() || null,
           };
