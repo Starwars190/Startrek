@@ -297,9 +297,13 @@ Output raw extracted text only. Do not summarise.`
 
     // ── SHARED: analyse extracted text (text / vision / image modes) ──
     if (!documentText || documentText.replace(/\s/g, '').length < 200) {
-      return res.status(422).json({
-        error: 'Could not extract text from document. Please ensure the PDF is not password-protected.'
-      })
+      if (mode === 'vision' || mode === 'image') {
+        documentText = 'Extract all financial data from the provided images.';
+      } else {
+        return res.status(422).json({
+          error: 'Could not extract text from document. Please ensure the PDF is not password-protected.'
+        })
+      }
     }
 
     console.log('[analyze] Text length:', documentText.length, '| Mode:', mode)
