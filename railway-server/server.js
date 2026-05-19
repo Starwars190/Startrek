@@ -106,7 +106,7 @@ app.post('/analyze', async (req, res) => {
           'anthropic-beta': 'pdfs-2024-09-25'
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-5-20250514',
+          model: 'claude-sonnet-4-5',
           max_tokens: 8000,
           system: `You are a financial data extraction API. You output ONLY raw JSON.
 No prose. No markdown. No code fences. No explanation before or after.
