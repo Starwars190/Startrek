@@ -4,8 +4,7 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node /app/server.js",
-    "build": "echo 'no build needed'"
+    "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
