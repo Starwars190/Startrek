@@ -693,7 +693,11 @@ export default function PrivateAnalyzer() {
 
       let { analysis, ratiosByYear } = await res.json();
       if ((analysis.financial_years || []).length > 1) {
-        analysis.financial_years = [...analysis.financial_years].sort();
+        analysis.financial_years = [...analysis.financial_years].sort((a, b) => {
+          const numA = parseInt(String(a).match(/\d{4}/)?.[0] || '0');
+          const numB = parseInt(String(b).match(/\d{4}/)?.[0] || '0');
+          return numA - numB;
+        });
       }
       const is_ = analysis.income_statement || {};
       (analysis.financial_years || []).forEach(yr => {
