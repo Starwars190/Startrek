@@ -719,25 +719,92 @@ export default function PrivateAnalyzer() {
       };
 
       if (!hasFinancialData(analysis)) {
-        // Document mode got no numbers — retry with vision on pages 10-35
         setStepIdx(1);
         const pdfjsLib = await loadPdfJs();
         const ab = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
-        const startPage = Math.max(1, Math.floor(pdf.numPages * 0.3));
-        const endPage = Math.min(pdf.numPages, startPage + 25);
-        const pageImages = [];
-        for (let i = startPage; i <= endPage; i++) {
+        const totalPages = pdf.numPages;
+
+        const financialKeywords = [
+          'profit and loss', 'profit & loss', 'statement of profit',
+          'income statement', 'statement of income', 'revenue from operations',
+          'balance sheet', 'assets and liabilities', 'statement of assets',
+          'cash flow', 'cash flows', 'statement of cash',
+          'financial statements', 'standalone financial', 'consolidated financial',
+          'total revenue', 'total income', 'gross profit', 'net profit',
+          'net income', 'total assets', 'total liabilities', 'shareholders equity',
+          'shareholders funds', 'share capital', 'retained earnings',
+          'operating activities', 'investing activities', 'financing activities',
+          'depreciation', 'amortisation', 'amortization', 'ebitda',
+          'trade receivables', 'trade payables', 'inventories',
+          'fixed assets', 'property plant', 'deferred tax',
+          'current assets', 'current liabilities', 'non-current',
+          'revenue', 'turnover', 'expenditure', 'expenses'
+        ];
+
+        const financialPages = [];
+        const scannedPages = [];
+
+        for (let i = 1; i <= totalPages; i++) {
           const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          const pageText = content.items.map(item => item.str).join(' ').toLowerCase();
+          const cleanText = pageText.replace(/\s/g, '');
+
+          if (cleanText.length < 30) {
+            scannedPages.push(i);
+          } else {
+            const hasFinancialContent = financialKeywords.some(kw => pageText.includes(kw));
+            if (hasFinancialContent) {
+              financialPages.push(i);
+            }
+          }
+        }
+
+        const expandedSet = new Set();
+        financialPages.forEach(p => {
+          if (p - 1 >= 1) expandedSet.add(p - 1);
+          expandedSet.add(p);
+          if (p + 1 <= totalPages) expandedSet.add(p + 1);
+        });
+
+        scannedPages.forEach(p => {
+          if (expandedSet.has(p - 1) || expandedSet.has(p + 1)) {
+            expandedSet.add(p);
+          }
+        });
+
+        if (expandedSet.size === 0 && scannedPages.length > 0) {
+          scannedPages.forEach(p => expandedSet.add(p));
+        }
+
+        let pagesToRender = [...expandedSet].sort((a, b) => a - b);
+
+        if (pagesToRender.length > 20) {
+          const step = (pagesToRender.length - 1) / 19;
+          pagesToRender = Array.from({ length: 20 }, (_, i) =>
+            pagesToRender[Math.round(i * step)]
+          );
+        }
+
+        const renderPage = async (pageNum) => {
+          const page = await pdf.getPage(pageNum);
           const viewport = page.getViewport({ scale: 1.5 });
           const canvas = document.createElement('canvas');
           canvas.width = viewport.width;
           canvas.height = viewport.height;
           await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-          pageImages.push(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+          return canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+        };
+
+        const pageImages = [];
+        for (const pageNum of pagesToRender) {
+          pageImages.push(await renderPage(pageNum));
         }
+
+        const existingUrl = 'https://startrek-production-3ad9.up.railway.app/analyze';
         const res2 = await fetch(
-          'https://startrek-production-3ad9.up.railway.app/analyze',
+          existingUrl,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
