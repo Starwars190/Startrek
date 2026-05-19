@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect, useRef } from "react";
+import PrivateAnalyzer from './PrivateAnalyzer.jsx';
 import {
   AreaChart, Area, LineChart, Line, BarChart, Bar, ComposedChart, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList
@@ -24,8 +25,8 @@ const C = {
 };
 
 const API_URL = "/api/claude";
-const MODEL = "claude-sonnet-4-6";
-const VISION_MODEL = "claude-sonnet-4-6";
+const MODEL = "claude-sonnet-4-5-20250514";
+const VISION_MODEL = "claude-sonnet-4-5-20250514";
 const AUTHOR_NAME = "Aashni Shah and Hitansh Jhaveri";
 
 const PERIODS = [
@@ -6163,51 +6164,7 @@ function FinSightApp() {
           ))}
         </div>
 
-<PendingAnalysisBanner />
-        {docReady
-          ? <DocumentReadyScreen docReady={docReady} onReset={() => { setDocReady(null); setPrivateDocStage('idle'); setPrivateDocFile(null); setScannedPdfWarn(null); }} />
-          : privateDocStage === 'uploaded'
-            ? <DeliverableSelectionScreen
-                file={privateDocFile}
-                selectedOutputs={selectedOutputs}
-                onToggle={(key) => setSelectedOutputs(prev => ({ ...prev, [key]: !prev[key] }))}
-                onCancel={() => { setPrivateDocStage('idle'); setPrivateDocFile(null); setPrivateDocError(""); }}
-                onGenerate={() => handlePrivateDocProcess(privateDocFile, selectedOutputs)}
-              />
-          : scannedPdfWarn
-            ? (
-              <div style={{ width: "100%", maxWidth: 480, margin: "16px auto 0", background: C.bgCard, border: `1.5px solid #FCD34D`, borderRadius: 14, padding: "24px 24px 20px", boxShadow: C.shadowMd }}>
-                <div style={{ fontSize: 16, fontWeight: 700, color: '#92400E', marginBottom: 10 }}>⚠ PDF Appears to Be Scanned</div>
-                <div style={{ fontSize: 13, color: C.textSec, lineHeight: 1.7, marginBottom: 16 }}>
-                  Only ~{scannedPdfWarn.charsPerPage} characters per page detected across the first 3 pages — this suggests the PDF contains scanned images rather than searchable text.
-                  <br /><br />
-                  Extraction may return limited or no financial data. For best results, use an MCA portal XBRL/text-based PDF.
-                  <br /><br />
-                  You can still proceed — structured sections will be organised, but financial tables may be empty.
-                </div>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <button onClick={() => { setScannedPdfWarn(null); setPrivateDocStage('idle'); setPrivateDocFile(null); }}
-                    style={{ flex: 1, height: 42, borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.bgSidebar, color: C.textPrimary, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                    Cancel
-                  </button>
-                  <button onClick={() => runPrivateDocProcess(scannedPdfWarn.file, scannedPdfWarn.outputs)}
-                    style={{ flex: 2, height: 42, borderRadius: 10, border: 'none', background: '#D97706', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                    Proceed Anyway →
-                  </button>
-                </div>
-              </div>
-            )
-            : <PrivateDocUploadZone
-                  onFileSelected={handlePrivateFileSelected}
-                  isProcessing={privateDocLoading}
-                  progress={privateDocProgress}
-                  error={privateDocError}
-                />
-        }
-
-        <div style={{ marginTop: 16, fontSize: 11.5, color: C.textMuted, textAlign: "center", maxWidth: 640, lineHeight: 1.6 }}>
-          <strong style={{ color: C.textSec }}>What you get:</strong> Full preservation · No XBRL tags · Times New Roman · Page borders · Bar charts · SWOT · Company-specific ratio interpretations · Corporate-ready output.
-        </div>
+<PrivateAnalyzer />
       </main>
 
       <footer style={{ padding: "18px 20px", textAlign: "center", borderTop: `1px solid ${C.border}`, background: C.bgCard }}>

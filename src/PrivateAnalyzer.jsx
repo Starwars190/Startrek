@@ -1,0 +1,766 @@
+import { useState, useRef, useCallback } from 'react';
+import {
+  Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+  Header, Footer, AlignmentType, BorderStyle, WidthType,
+  ShadingType, VerticalAlign, PageNumber
+} from 'docx';
+import ExcelJS from 'exceljs';
+
+const NAVY = '#0A1628';
+const GREEN = '#0D7A3E';
+const ORANGE = '#FF6600';
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function fmtNum(v) {
+  if (v === null || v === undefined) return '-';
+  const n = parseFloat(String(v).replace(/,/g, ''));
+  if (isNaN(n)) return '-';
+  return n.toLocaleString('en-IN', { maximumFractionDigits: 1 });
+}
+
+// ── Word document ──────────────────────────────────────────────────────────────
+
+function makeShading(fill) {
+  return { type: ShadingType.CLEAR, color: 'auto', fill };
+}
+
+function hCell(text, fillHex, opts = {}) {
+  return new TableCell({
+    children: [new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({ text: String(text ?? ''), bold: true, color: 'FFFFFF', size: 18, font: 'Arial' })]
+    })],
+    shading: makeShading(fillHex),
+    verticalAlign: VerticalAlign.CENTER,
+    ...opts
+  });
+}
+
+function dCell(text, fillHex, bold = false, center = true) {
+  return new TableCell({
+    children: [new Paragraph({
+      alignment: center ? AlignmentType.CENTER : AlignmentType.LEFT,
+      children: [new TextRun({ text: String(text ?? '-'), bold, size: 18, font: 'Arial' })]
+    })],
+    shading: makeShading(fillHex),
+    verticalAlign: VerticalAlign.CENTER,
+  });
+}
+
+const thinBorderSpec = { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' };
+const tableBorders = {
+  top: thinBorderSpec, bottom: thinBorderSpec,
+  left: thinBorderSpec, right: thinBorderSpec,
+  insideH: thinBorderSpec, insideV: thinBorderSpec,
+};
+
+function sectionHeading(num, title) {
+  return new Paragraph({
+    children: [new TextRun({ text: `${num}. ${title}`, bold: true, size: 28, color: '0A1628', font: 'Arial' })],
+    spacing: { before: 320, after: 160 },
+    border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: 'FF6600' } }
+  });
+}
+
+function makeFinTable(analysis, rows, sectionKey, caption, years) {
+  const sectionData = analysis[sectionKey] || {};
+  const PALE = 'EBF0F7';
+  const WHITE = 'FFFFFF';
+  const LG = 'F5F7FA';
+
+  const totalLabels = new Set(['Revenue', 'Gross Profit', 'EBITDA', 'EBIT', 'PBT', 'Net Income',
+    'Total Current Assets', 'Total Assets', 'Total Current Liabilities', 'Total Liabilities', 'Total Equity',
+    'Cash Flow from Operations (CFO)', 'Free Cash Flow']);
+
+  const headerRow = new TableRow({
+    children: [
+      hCell(caption, '0A1628', { width: { size: 4500, type: WidthType.DXA } }),
+      ...years.map(yr => hCell(yr, '1A3A5C', { width: { size: 2000, type: WidthType.DXA } }))
+    ]
+  });
+
+  const dataRows = rows.map(([label, key], idx) => {
+    const isTotal = totalLabels.has(label);
+    const fill = isTotal ? PALE : (idx % 2 === 0 ? WHITE : LG);
+    return new TableRow({
+      children: [
+        dCell(label, fill, isTotal, false),
+        ...years.map(yr => dCell(fmtNum(sectionData[key]?.[yr]), fill, isTotal, true))
+      ]
+    });
+  });
+
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows], borders: tableBorders });
+}
+
+async function generateWordDoc(analysis, ratiosByYear) {
+  const co = analysis.company_profile || {};
+  const years = analysis.financial_years || [];
+  const companyName = co.name || 'Private Company';
+  const unit = co.reporting_unit || '';
+  const PALE = 'EBF0F7';
+  const WHITE = 'FFFFFF';
+  const LG = 'F5F7FA';
+
+  // KPI strip
+  const kpiYear = years[years.length - 1] || '';
+  const is_ = analysis.income_statement || {};
+  const ratioLast = ratiosByYear?.[kpiYear] || {};
+  const kpis = [
+    ['Revenue', fmtNum(is_.revenue?.[kpiYear])],
+    ['EBITDA', fmtNum(is_.ebitda?.[kpiYear])],
+    ['Net Income', fmtNum(is_.net_income?.[kpiYear])],
+    ['Net Debt/EBITDA', ratioLast['Net Debt to EBITDA'] != null ? String(ratioLast['Net Debt to EBITDA']) : '-'],
+    ['Unit', unit || '-'],
+  ];
+  const kpiTable = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({ children: kpis.map(([label]) => hCell(label, '1A3A5C')) }),
+      new TableRow({ children: kpis.map(([, val]) => new TableCell({
+        children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: val, bold: true, size: 22, color: '0A1628', font: 'Arial' })] })],
+        shading: makeShading(PALE), verticalAlign: VerticalAlign.CENTER,
+      })) }),
+    ],
+    borders: tableBorders
+  });
+
+  // Profile table
+  const profileFields = [
+    ['Industry', co.industry], ['Sub-Industry', co.sub_industry],
+    ['Headquarters', co.headquarters], ['Year Founded', co.year_founded],
+    ['Legal Structure', co.legal_structure], ['Reporting Currency', co.reporting_currency],
+    ['Reporting Unit', co.reporting_unit], ['Fiscal Year End', co.fiscal_year_end],
+    ['Auditor', co.auditor], ['Employees', co.number_of_employees],
+  ].filter(([, v]) => v != null && v !== '');
+
+  const profileTable = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: tableBorders,
+    rows: profileFields.map(([label, value], idx) => new TableRow({
+      children: [
+        dCell(label, PALE, true, false),
+        dCell(String(value), idx % 2 === 0 ? WHITE : LG, false, false),
+      ]
+    }))
+  });
+
+  // SWOT table
+  const swot = analysis.swot || {};
+  const swotColors = { strengths: '1A6B3C', weaknesses: '8B1A1A', opportunities: 'A87C1A', threats: '0A1628' };
+
+  function swotCell(title, items, color) {
+    return new TableCell({
+      shading: makeShading(color),
+      children: [
+        new Paragraph({ children: [new TextRun({ text: title, bold: true, color: WHITE, size: 20, font: 'Arial' })], spacing: { after: 80 } }),
+        ...(items || []).map(s => new Paragraph({ children: [new TextRun({ text: '• ' + s, color: WHITE, size: 17, font: 'Arial' })], spacing: { after: 40 } }))
+      ]
+    });
+  }
+
+  const swotTable = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: tableBorders,
+    rows: [
+      new TableRow({ children: [swotCell('STRENGTHS', swot.strengths, swotColors.strengths), swotCell('WEAKNESSES', swot.weaknesses, swotColors.weaknesses)] }),
+      new TableRow({ children: [swotCell('OPPORTUNITIES', swot.opportunities, swotColors.opportunities), swotCell('THREATS', swot.threats, swotColors.threats)] }),
+    ]
+  });
+
+  // Ratio tables
+  const ratioSections = [
+    { title: 'Profitability', keys: ['Gross Margin %', 'EBITDA Margin %', 'EBIT Margin %', 'Net Profit Margin %', 'Return on Assets %', 'Return on Equity %', 'Return on Capital Employed %'] },
+    { title: 'Liquidity', keys: ['Current Ratio', 'Quick Ratio', 'Cash Ratio', 'Operating CF Ratio'] },
+    { title: 'Leverage', keys: ['Debt to Equity', 'Total Debt to Assets %', 'Equity Ratio %', 'Debt to EBITDA', 'Net Debt to EBITDA', 'Interest Cover (EBIT)', 'Interest Cover (EBITDA)'] },
+    { title: 'Efficiency', keys: ['Asset Turnover', 'Fixed Asset Turnover', 'Inventory Days', 'Receivables Days (DSO)', 'Payables Days (DPO)'] },
+    { title: 'Cash Flow', keys: ['FCF Margin %', 'Capex to Revenue %', 'CFO to Net Income'] },
+    { title: 'Growth', keys: ['Revenue Growth %', 'Net Income Growth %', 'EBITDA Growth %'] },
+  ];
+
+  const ratioElements = ratioSections.flatMap(section => [
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      borders: tableBorders,
+      rows: [
+        new TableRow({ children: [hCell(section.title, '1A3A5C'), ...years.map(yr => hCell(yr, '0A1628'))] }),
+        ...section.keys.map((key, idx) => new TableRow({
+          children: [
+            dCell(key, idx % 2 === 0 ? WHITE : LG, false, false),
+            ...years.map(yr => dCell(ratiosByYear?.[yr]?.[key] != null ? String(ratiosByYear[yr][key]) : '-', idx % 2 === 0 ? WHITE : LG, false, true))
+          ]
+        }))
+      ]
+    }),
+    new Paragraph({ text: '', spacing: { after: 120 } })
+  ]);
+
+  const pageBreak = () => new Paragraph({ text: '', pageBreakBefore: true });
+
+  const doc = new Document({
+    sections: [{
+      headers: {
+        default: new Header({
+          children: [new Paragraph({
+            border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '0A1628' } },
+            children: [
+              new TextRun({ text: companyName + '   |   ', bold: true, size: 18, font: 'Arial', color: '0A1628' }),
+              new TextRun({ text: 'CONFIDENTIAL', bold: true, size: 18, font: 'Arial', color: 'FF6600' }),
+            ]
+          })]
+        })
+      },
+      footers: {
+        default: new Footer({
+          children: [new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [
+              new TextRun({ text: 'STRICTLY PRIVATE & CONFIDENTIAL  |  Page ', size: 16, font: 'Arial', color: '6B7280' }),
+              new TextRun({ children: [PageNumber.CURRENT], size: 16, font: 'Arial', color: '6B7280' }),
+              new TextRun({ text: ' of ', size: 16, font: 'Arial', color: '6B7280' }),
+              new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 16, font: 'Arial', color: '6B7280' }),
+            ]
+          })]
+        })
+      },
+      children: [
+        // Cover
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 1440, after: 240 }, children: [new TextRun({ text: companyName, bold: true, size: 72, color: '0A1628', font: 'Arial' })] }),
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [new TextRun({ text: co.industry || '', size: 28, color: '1A3A5C', font: 'Arial' })] }),
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 480 }, children: [new TextRun({ text: 'PRIVATE COMPANY FINANCIAL ANALYSIS', bold: true, size: 24, color: 'FF6600', font: 'Arial' })] }),
+        kpiTable,
+        pageBreak(),
+
+        // 1. Company Profile
+        sectionHeading('1', 'Company Profile'),
+        new Paragraph({ spacing: { after: 200 }, children: [new TextRun({ text: co.description || '', size: 18, font: 'Arial', color: '374151' })] }),
+        profileTable,
+        ...(co.key_products_services?.length ? [new Paragraph({ spacing: { before: 200, after: 80 }, children: [new TextRun({ text: 'Key Products/Services: ', bold: true, size: 18, font: 'Arial' }), new TextRun({ text: co.key_products_services.join(', '), size: 18, font: 'Arial' })] })] : []),
+        ...(co.geographic_presence?.length ? [new Paragraph({ spacing: { after: 80 }, children: [new TextRun({ text: 'Geographic Presence: ', bold: true, size: 18, font: 'Arial' }), new TextRun({ text: co.geographic_presence.join(', '), size: 18, font: 'Arial' })] })] : []),
+        pageBreak(),
+
+        // 2. Key Observations
+        sectionHeading('2', 'Key Analyst Observations'),
+        ...(analysis.key_observations || []).map(obs => new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: '• ' + obs, size: 18, font: 'Arial' })] })),
+        pageBreak(),
+
+        // 3. SWOT
+        sectionHeading('3', 'SWOT Analysis'),
+        swotTable,
+        pageBreak(),
+
+        // 4. Income Statement
+        sectionHeading('4', 'Income Statement'),
+        makeFinTable(analysis, [
+          ['Revenue', 'revenue'], ['Cost of Goods Sold', 'cost_of_goods_sold'],
+          ['Gross Profit', 'gross_profit'], ['Operating Expenses', 'operating_expenses'],
+          ['EBITDA', 'ebitda'], ['Depreciation & Amortisation', 'depreciation_amortization'],
+          ['EBIT', 'ebit'], ['Interest Expense', 'interest_expense'],
+          ['PBT', 'pbt'], ['Tax', 'tax'], ['Net Income', 'net_income'],
+        ], 'income_statement', `Income Statement (${unit})`, years),
+        pageBreak(),
+
+        // 5. Balance Sheet
+        sectionHeading('5', 'Balance Sheet'),
+        makeFinTable(analysis, [
+          ['Cash & Equivalents', 'cash_equivalents'], ['Accounts Receivable', 'accounts_receivable'],
+          ['Inventory', 'inventory'], ['Total Current Assets', 'total_current_assets'],
+          ['Fixed Assets (Net)', 'fixed_assets_net'], ['Intangibles & Goodwill', 'intangibles_goodwill'],
+          ['Total Assets', 'total_assets'], ['Accounts Payable', 'accounts_payable'],
+          ['Short-Term Debt', 'short_term_debt'], ['Total Current Liabilities', 'total_current_liabilities'],
+          ['Long-Term Debt', 'long_term_debt'], ['Total Liabilities', 'total_liabilities'],
+          ['Share Capital', 'share_capital'], ['Retained Earnings', 'retained_earnings'],
+          ['Total Equity', 'total_equity'],
+        ], 'balance_sheet', `Balance Sheet (${unit})`, years),
+        pageBreak(),
+
+        // 6. Cash Flow
+        sectionHeading('6', 'Cash Flow Statement'),
+        makeFinTable(analysis, [
+          ['Cash Flow from Operations (CFO)', 'cfo'], ['Cash Flow from Investing (CFI)', 'cfi'],
+          ['Cash Flow from Financing (CFF)', 'cff'], ['Capital Expenditure (Capex)', 'capex'],
+          ['Free Cash Flow', 'free_cash_flow'],
+        ], 'cash_flow', `Cash Flow Statement (${unit})`, years),
+        pageBreak(),
+
+        // 7. Financial Ratios
+        sectionHeading('7', 'Financial Ratios'),
+        ...ratioElements,
+        pageBreak(),
+
+        // 8. Data Quality Notes
+        sectionHeading('8', 'Data Quality Notes'),
+        ...(analysis.data_quality_notes || []).map(note => new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: '• ' + note, size: 18, font: 'Arial' })] })),
+      ]
+    }]
+  });
+
+  return Packer.toBlob(doc);
+}
+
+// ── Excel workbook ─────────────────────────────────────────────────────────────
+
+async function generateExcelWorkbook(analysis, ratiosByYear) {
+  const co = analysis.company_profile || {};
+  const years = analysis.financial_years || [];
+  const companyName = co.name || 'Private Company';
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'FinSight AI';
+
+  const navyFill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0A1628' } };
+  const midFill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1A3A5C' } };
+  const orangeFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF6600' } };
+  const paleFill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF0F7' } };
+  const lgFill    = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F7FA' } };
+  const whiteFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+
+  const hFont  = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+  const bFont  = { name: 'Arial', size: 10 };
+  const bbFont = { name: 'Arial', size: 10, bold: true };
+
+  const thin = { style: 'thin', color: { argb: 'FFD1D5DB' } };
+  const border4 = { top: thin, left: thin, bottom: thin, right: thin };
+
+  function applyCell(ws, r, c, value, font, fill, align) {
+    const cell = ws.getCell(r, c);
+    cell.value = value;
+    if (font) cell.font = font;
+    if (fill) cell.fill = fill;
+    if (align) cell.alignment = align;
+    cell.border = border4;
+  }
+
+  // ── Sheet 1: Dashboard ──────────────────────────────────────────────────────
+  const dash = wb.addWorksheet('Dashboard');
+  dash.showGridLines = false;
+  ['A', 'B', 'C', 'D', 'E', 'F'].forEach((col, i) => {
+    dash.getColumn(col).width = i === 0 ? 32 : 18;
+  });
+
+  // Banner
+  dash.mergeCells('A1:F1');
+  applyCell(dash, 1, 1, companyName + '  —  Private Company Financial Analysis',
+    { name: 'Arial', size: 16, bold: true, color: { argb: 'FFFFFFFF' } }, navyFill,
+    { horizontal: 'center', vertical: 'middle' });
+  dash.getRow(1).height = 36;
+
+  // KPI cards
+  const kpiYear = years[years.length - 1] || '';
+  const is_ = analysis.income_statement || {};
+  const bs_ = analysis.balance_sheet || {};
+  const ratioLast = ratiosByYear?.[kpiYear] || {};
+  const kpis = [
+    ['Revenue', fmtNum(is_.revenue?.[kpiYear])],
+    ['EBITDA', fmtNum(is_.ebitda?.[kpiYear])],
+    ['Net Income', fmtNum(is_.net_income?.[kpiYear])],
+    ['Total Assets', fmtNum(bs_.total_assets?.[kpiYear])],
+    ['Net Debt/EBITDA', ratioLast['Net Debt to EBITDA'] ?? '-'],
+    ['EBITDA Margin %', ratioLast['EBITDA Margin %'] ?? '-'],
+  ];
+  const kpiCols = ['A', 'B', 'C', 'D', 'E', 'F'];
+  kpis.forEach(([label, value], i) => {
+    const col = i + 1;
+    applyCell(dash, 3, col, null, null, orangeFill, null); // orange top bar
+    applyCell(dash, 4, col, label, { name: 'Arial', size: 9, bold: true, color: { argb: 'FF6B7280' } }, paleFill, { horizontal: 'center', vertical: 'middle' });
+    applyCell(dash, 5, col, value, { name: 'Arial', size: 13, bold: true, color: { argb: 'FF0A1628' } }, paleFill, { horizontal: 'center', vertical: 'middle' });
+    applyCell(dash, 6, col, co.reporting_unit || '', { name: 'Arial', size: 8, color: { argb: 'FF9CA3AF' } }, paleFill, { horizontal: 'center', vertical: 'middle' });
+  });
+  dash.getRow(3).height = 5;
+  dash.getRow(5).height = 28;
+
+  // SWOT
+  dash.getRow(8).height = 20;
+  dash.mergeCells('A8:F8');
+  applyCell(dash, 8, 1, 'SWOT Analysis', { name: 'Arial', size: 13, bold: true, color: { argb: 'FF0A1628' } }, null, null);
+
+  const swot = analysis.swot || {};
+  const swotData = [
+    { title: 'STRENGTHS',     items: swot.strengths     || [], fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1A6B3C' } }, startCol: 1, colSpan: 3 },
+    { title: 'WEAKNESSES',    items: swot.weaknesses    || [], fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF8B1A1A' } }, startCol: 4, colSpan: 3 },
+    { title: 'OPPORTUNITIES', items: swot.opportunities || [], fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFA87C1A' } }, startCol: 1, colSpan: 3 },
+    { title: 'THREATS',       items: swot.threats       || [], fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0A1628' } }, startCol: 4, colSpan: 3 },
+  ];
+
+  const maxTopItems = Math.max((swot.strengths || []).length, (swot.weaknesses || []).length, 1);
+  let swotStartRow = 9;
+
+  swotData.forEach((q, qi) => {
+    if (qi === 2) swotStartRow += maxTopItems + 2;
+    const r = swotStartRow;
+    // Header
+    try { dash.mergeCells(r, q.startCol, r, q.startCol + q.colSpan - 1); } catch (e) {}
+    const hc = dash.getCell(r, q.startCol);
+    hc.value = q.title;
+    hc.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+    hc.fill = q.fill;
+    hc.border = border4;
+    dash.getRow(r).height = 20;
+
+    q.items.forEach((item, itemIdx) => {
+      const ir = r + 1 + itemIdx;
+      try { dash.mergeCells(ir, q.startCol, ir, q.startCol + q.colSpan - 1); } catch (e) {}
+      const ic = dash.getCell(ir, q.startCol);
+      ic.value = '• ' + item;
+      ic.font = { name: 'Arial', size: 9 };
+      ic.fill = itemIdx % 2 === 0 ? whiteFill : lgFill;
+      ic.border = border4;
+      ic.alignment = { wrapText: true, vertical: 'middle' };
+      dash.getRow(ir).height = 16;
+    });
+  });
+
+  // Key Observations
+  const obsStartRow = swotStartRow + Math.max((swot.opportunities || []).length, (swot.threats || []).length) + 4;
+  dash.mergeCells(obsStartRow, 1, obsStartRow, 6);
+  applyCell(dash, obsStartRow, 1, 'Key Analyst Observations',
+    { name: 'Arial', size: 13, bold: true, color: { argb: 'FF0A1628' } }, null, null);
+  dash.getRow(obsStartRow).height = 20;
+  (analysis.key_observations || []).forEach((obs, i) => {
+    const r = obsStartRow + 1 + i;
+    try { dash.mergeCells(r, 1, r, 6); } catch (e) {}
+    const c = dash.getCell(r, 1);
+    c.value = '• ' + obs;
+    c.font = { name: 'Arial', size: 9 };
+    c.fill = i % 2 === 0 ? whiteFill : lgFill;
+    c.border = border4;
+    c.alignment = { wrapText: true, vertical: 'middle' };
+    dash.getRow(r).height = 16;
+  });
+
+  // ── Helper: financial sheets ────────────────────────────────────────────────
+  function makeFinSheet(name, rows, sectionKey) {
+    const ws = wb.addWorksheet(name);
+    ws.showGridLines = false;
+    ws.views = [{ state: 'frozen', xSplit: 1, ySplit: 1 }];
+    ws.getColumn(1).width = 36;
+    years.forEach((_, i) => { ws.getColumn(i + 2).width = 17; });
+
+    // Header row
+    applyCell(ws, 1, 1, `${name}${co.reporting_unit ? ` (${co.reporting_unit})` : ''}`, hFont, navyFill, { vertical: 'middle' });
+    years.forEach((yr, i) => applyCell(ws, 1, i + 2, yr, hFont, navyFill, { horizontal: 'center', vertical: 'middle' }));
+    ws.getRow(1).height = 24;
+
+    const sectionData = analysis[sectionKey] || {};
+    const totalKeys = new Set(['revenue', 'gross_profit', 'ebitda', 'ebit', 'pbt', 'net_income',
+      'total_current_assets', 'total_assets', 'total_current_liabilities', 'total_liabilities', 'total_equity',
+      'cfo', 'free_cash_flow']);
+
+    rows.forEach(([label, key], idx) => {
+      const rowNum = idx + 2;
+      const isTotal = totalKeys.has(key);
+      const rowFill = isTotal ? paleFill : (idx % 2 === 0 ? whiteFill : lgFill);
+      ws.getRow(rowNum).height = 18;
+
+      applyCell(ws, rowNum, 1, label, isTotal ? bbFont : bFont, rowFill, { vertical: 'middle' });
+      years.forEach((yr, yIdx) => {
+        const raw = sectionData[key]?.[yr];
+        const num = raw != null ? parseFloat(String(raw).replace(/,/g, '')) : null;
+        const val = (num != null && !isNaN(num)) ? num : null;
+        const cell = ws.getCell(rowNum, yIdx + 2);
+        cell.value = val;
+        cell.font = isTotal ? bbFont : bFont;
+        cell.fill = rowFill;
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        cell.border = border4;
+        if (val != null) cell.numFmt = '#,##0.0';
+      });
+    });
+    return ws;
+  }
+
+  makeFinSheet('Income Statement', [
+    ['Revenue', 'revenue'], ['Cost of Goods Sold', 'cost_of_goods_sold'],
+    ['Gross Profit', 'gross_profit'], ['Operating Expenses', 'operating_expenses'],
+    ['EBITDA', 'ebitda'], ['Depreciation & Amortisation', 'depreciation_amortization'],
+    ['EBIT', 'ebit'], ['Interest Expense', 'interest_expense'],
+    ['PBT', 'pbt'], ['Tax', 'tax'], ['Net Income', 'net_income'],
+  ], 'income_statement');
+
+  makeFinSheet('Balance Sheet', [
+    ['Cash & Equivalents', 'cash_equivalents'], ['Accounts Receivable', 'accounts_receivable'],
+    ['Inventory', 'inventory'], ['Total Current Assets', 'total_current_assets'],
+    ['Fixed Assets (Net)', 'fixed_assets_net'], ['Intangibles & Goodwill', 'intangibles_goodwill'],
+    ['Total Assets', 'total_assets'], ['Accounts Payable', 'accounts_payable'],
+    ['Short-Term Debt', 'short_term_debt'], ['Total Current Liabilities', 'total_current_liabilities'],
+    ['Long-Term Debt', 'long_term_debt'], ['Total Liabilities', 'total_liabilities'],
+    ['Share Capital', 'share_capital'], ['Retained Earnings', 'retained_earnings'],
+    ['Total Equity', 'total_equity'],
+  ], 'balance_sheet');
+
+  makeFinSheet('Cash Flow', [
+    ['Cash Flow from Operations (CFO)', 'cfo'], ['Cash Flow from Investing (CFI)', 'cfi'],
+    ['Cash Flow from Financing (CFF)', 'cff'], ['Capital Expenditure (Capex)', 'capex'],
+    ['Free Cash Flow', 'free_cash_flow'],
+  ], 'cash_flow');
+
+  // ── Sheet 5: Financial Ratios ───────────────────────────────────────────────
+  const ratioWs = wb.addWorksheet('Financial Ratios');
+  ratioWs.showGridLines = false;
+  ratioWs.views = [{ state: 'frozen', xSplit: 1, ySplit: 0 }];
+  ratioWs.getColumn(1).width = 36;
+  years.forEach((_, i) => { ratioWs.getColumn(i + 2).width = 17; });
+
+  const ratioSections = [
+    { title: 'Profitability', color: '1A6B3C', keys: ['Gross Margin %', 'EBITDA Margin %', 'EBIT Margin %', 'Net Profit Margin %', 'Return on Assets %', 'Return on Equity %', 'Return on Capital Employed %'] },
+    { title: 'Liquidity',     color: '1A3A5C', keys: ['Current Ratio', 'Quick Ratio', 'Cash Ratio', 'Operating CF Ratio'] },
+    { title: 'Leverage',      color: '8B1A1A', keys: ['Debt to Equity', 'Total Debt to Assets %', 'Equity Ratio %', 'Debt to EBITDA', 'Net Debt to EBITDA', 'Interest Cover (EBIT)', 'Interest Cover (EBITDA)'] },
+    { title: 'Efficiency',    color: 'A87C1A', keys: ['Asset Turnover', 'Fixed Asset Turnover', 'Inventory Days', 'Receivables Days (DSO)', 'Payables Days (DPO)'] },
+    { title: 'Cash Flow',     color: '1A5C4A', keys: ['FCF Margin %', 'Capex to Revenue %', 'CFO to Net Income'] },
+    { title: 'Growth',        color: '0A1628', keys: ['Revenue Growth %', 'Net Income Growth %', 'EBITDA Growth %'] },
+  ];
+
+  let rRow = 1;
+  ratioSections.forEach(section => {
+    const secFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + section.color } };
+    applyCell(ratioWs, rRow, 1, section.title, hFont, secFill, { vertical: 'middle' });
+    years.forEach((yr, i) => applyCell(ratioWs, rRow, i + 2, yr, hFont, secFill, { horizontal: 'center', vertical: 'middle' }));
+    ratioWs.getRow(rRow).height = 22;
+    rRow++;
+
+    section.keys.forEach((key, kIdx) => {
+      const rf = kIdx % 2 === 0 ? whiteFill : lgFill;
+      applyCell(ratioWs, rRow, 1, key, bFont, rf, { vertical: 'middle' });
+      years.forEach((yr, yIdx) => {
+        const val = ratiosByYear?.[yr]?.[key];
+        applyCell(ratioWs, rRow, yIdx + 2, val ?? null, bFont, rf, { horizontal: 'center', vertical: 'middle' });
+      });
+      ratioWs.getRow(rRow).height = 18;
+      rRow++;
+    });
+    rRow++; // spacer
+  });
+
+  const buffer = await wb.xlsx.writeBuffer();
+  return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
+// ── Component ──────────────────────────────────────────────────────────────────
+
+const STEPS = [
+  'Reading file...',
+  'Extracting text via AI...',
+  'Analysing financials...',
+  'Building Word brief...',
+  'Building Excel workbook...',
+  'Downloads ready!',
+];
+
+function SpinnerSVG() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ animation: 'pa-spin 1s linear infinite' }}>
+      <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="3" strokeLinecap="round" strokeDasharray="31.4 31.4" transform="rotate(-90 12 12)" />
+    </svg>
+  );
+}
+
+export default function PrivateAnalyzer() {
+  const [stage, setStage] = useState('idle');
+  const [file, setFile] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [companyName, setCompanyName] = useState('');
+  const [stepIdx, setStepIdx] = useState(0);
+  const [error, setError] = useState('');
+  const [resultMeta, setResultMeta] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const handleFile = useCallback((f) => {
+    if (!f) return;
+    if (!f.name.toLowerCase().endsWith('.pdf')) { setError('Please upload a PDF file.'); return; }
+    if (f.size > 20 * 1024 * 1024) { setError('File must be under 20 MB.'); return; }
+    setFile(f);
+    setError('');
+    setStage('ready');
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  }, [handleFile]);
+
+  const process = async () => {
+    if (!file) return;
+    setStage('processing');
+    setError('');
+    setStepIdx(0);
+    try {
+      const fileBase64 = await fileToBase64(file);
+      setStepIdx(1);
+
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileBase64, fileName: file.name, fileType: 'application/pdf', companyName: companyName.trim() || undefined }),
+      });
+
+      setStepIdx(2);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Server error: ${res.status}`);
+      }
+      const { analysis, ratiosByYear } = await res.json();
+
+      setStepIdx(3);
+      const wordBlob = await generateWordDoc(analysis, ratiosByYear);
+
+      setStepIdx(4);
+      const excelBlob = await generateExcelWorkbook(analysis, ratiosByYear);
+
+      setStepIdx(5);
+      const name = (analysis.company_profile?.name || companyName || 'PrivateCompany')
+        .replace(/[^a-zA-Z0-9 ]/g, '').trim().replace(/\s+/g, '_');
+      triggerDownload(wordBlob, `${name}_Financial_Brief.docx`);
+      setTimeout(() => triggerDownload(excelBlob, `${name}_Financial_Model.xlsx`), 600);
+
+      setResultMeta({
+        company: analysis.company_profile?.name || companyName || 'Private Company',
+        years: analysis.financial_years || [],
+        wordFile: `${name}_Financial_Brief.docx`,
+        excelFile: `${name}_Financial_Model.xlsx`,
+      });
+      setStage('done');
+    } catch (e) {
+      setError(e.message || 'Processing failed. Please try again.');
+      setStage('error');
+    }
+  };
+
+  const reset = () => {
+    setStage('idle'); setFile(null); setCompanyName('');
+    setError(''); setResultMeta(null); setStepIdx(0);
+  };
+
+  if (stage === 'done' && resultMeta) {
+    return (
+      <div style={{ maxWidth: 520, margin: '0 auto', background: '#fff', borderRadius: 16, padding: '40px 36px', boxShadow: '0 4px 24px rgba(10,22,40,.1)', border: '1px solid #E5E7EB', textAlign: 'center' }}>
+        <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#F0FAF5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, margin: '0 auto 20px' }}>✓</div>
+        <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 22, fontWeight: 800, color: NAVY, marginBottom: 8 }}>Downloads Ready</h2>
+        <p style={{ color: '#6B7280', fontSize: 14, marginBottom: 24 }}>{resultMeta.company} · {resultMeta.years.join(', ')}</p>
+        <div style={{ background: '#F9FAFB', borderRadius: 10, padding: '16px 20px', marginBottom: 24, textAlign: 'left' }}>
+          <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}><span style={{ marginRight: 8 }}>📄</span><strong>{resultMeta.wordFile}</strong></div>
+          <div style={{ fontSize: 13, color: '#374151' }}><span style={{ marginRight: 8 }}>📊</span><strong>{resultMeta.excelFile}</strong></div>
+        </div>
+        <p style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 24 }}>Both files should have downloaded automatically. Check your Downloads folder.</p>
+        <button onClick={reset} style={{ background: NAVY, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+          Analyse Another Document
+        </button>
+      </div>
+    );
+  }
+
+  if (stage === 'processing') {
+    return (
+      <div style={{ maxWidth: 420, margin: '0 auto', background: '#fff', borderRadius: 16, padding: '40px 36px', boxShadow: '0 4px 24px rgba(10,22,40,.1)', border: '1px solid #E5E7EB' }}>
+        <style>{`@keyframes pa-spin { to { transform: rotate(360deg); } }`}</style>
+        <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 20, fontWeight: 700, color: NAVY, marginBottom: 6, textAlign: 'center' }}>Processing Document</h2>
+        <p style={{ color: '#6B7280', fontSize: 13, textAlign: 'center', marginBottom: 28 }}>{file?.name}</p>
+        {STEPS.map((step, i) => {
+          const done = i < stepIdx, active = i === stepIdx;
+          return (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, opacity: i > stepIdx ? 0.35 : 1 }}>
+              <div style={{ width: 28, height: 28, borderRadius: '50%', background: done ? GREEN : active ? ORANGE : '#E5E7EB', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                {done && <span style={{ color: '#fff', fontSize: 13, fontWeight: 700 }}>✓</span>}
+                {active && <SpinnerSVG />}
+              </div>
+              <span style={{ fontSize: 13.5, color: done ? GREEN : active ? NAVY : '#9CA3AF', fontWeight: active ? 600 : 400 }}>{step}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 620, margin: '0 auto' }}>
+      <style>{`@keyframes pa-spin { to { transform: rotate(360deg); } }`}</style>
+
+      <div style={{ textAlign: 'center', marginBottom: 28 }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#EBF0F7', borderRadius: 20, padding: '6px 16px', marginBottom: 14 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: ORANGE, display: 'inline-block' }} />
+          <span style={{ fontSize: 12, fontWeight: 600, color: NAVY, textTransform: 'uppercase', letterSpacing: '.05em' }}>Private Company</span>
+        </div>
+        <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 22, fontWeight: 800, color: NAVY, marginBottom: 8 }}>Upload Financial Document</h2>
+        <p style={{ color: '#6B7280', fontSize: 14, lineHeight: 1.6, maxWidth: 460, margin: '0 auto' }}>
+          Upload any PDF (annual report, MCA filing, balance sheet). Get a Bloomberg-style Word brief + Excel model automatically.
+        </p>
+      </div>
+
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handleDrop}
+        onClick={() => fileInputRef.current?.click()}
+        style={{ border: `2px dashed ${dragOver ? NAVY : file ? GREEN : '#CBD5E1'}`, borderRadius: 14, background: dragOver ? '#EBF0F7' : file ? '#F0FAF5' : '#FAFBFC', padding: '44px 28px', textAlign: 'center', cursor: 'pointer', transition: 'all .2s', marginBottom: 16 }}
+      >
+        <input ref={fileInputRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
+        {file ? (
+          <>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: NAVY, marginBottom: 4 }}>{file.name}</div>
+            <div style={{ fontSize: 12, color: '#6B7280' }}>{(file.size / 1024).toFixed(0)} KB · Click to change</div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>☁</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Drop PDF here or click to browse</div>
+            <div style={{ fontSize: 12, color: '#6B7280' }}>PDF up to 20 MB · Annual reports, MCA filings, balance sheets</div>
+          </>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Company Name <span style={{ color: '#9CA3AF', fontWeight: 400 }}>(optional override)</span></label>
+        <input type="text" value={companyName} onChange={e => setCompanyName(e.target.value)}
+          placeholder="e.g. Acme Private Limited"
+          style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid #E5E7EB', fontSize: 14, color: NAVY, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+      </div>
+
+      {error && (
+        <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#DC2626' }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ background: '#F8FAFC', border: '1px solid #E5E7EB', borderRadius: 12, padding: '14px 18px', marginBottom: 16 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: NAVY, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.05em' }}>What You Get</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+          {['Bloomberg-style Word brief', '5-sheet Excel model', 'SWOT analysis', '30+ financial ratios', 'Income Statement', 'Balance Sheet', 'Cash Flow Statement', 'Data quality notes'].map(item => (
+            <div key={item} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#374151' }}>
+              <span style={{ color: GREEN, fontWeight: 700 }}>✓</span> {item}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <button onClick={process} disabled={!file}
+        style={{ width: '100%', padding: '14px 0', borderRadius: 12, border: 'none', background: file ? NAVY : '#CBD5E1', color: '#fff', fontSize: 15, fontWeight: 700, cursor: file ? 'pointer' : 'not-allowed', fontFamily: 'inherit', transition: 'background .2s' }}>
+        Generate Brief + Excel Model →
+      </button>
+
+      <p style={{ textAlign: 'center', fontSize: 11, color: '#9CA3AF', marginTop: 12, lineHeight: 1.6 }}>
+        Your document is processed securely and never stored. Outputs download automatically.
+      </p>
+    </div>
+  );
+}
