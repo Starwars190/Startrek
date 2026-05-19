@@ -868,14 +868,26 @@ export default function PrivateAnalyzer() {
         );
       };
 
-      const hasIncomeData = (a) => hasSection(a, 'income_statement',
-        ['revenue', 'net_income', 'gross_profit', 'ebitda', 'pbt']);
+      const hasIncomeData = (a) => {
+        const is_ = a.income_statement || {};
+        const keys = ['revenue', 'net_income', 'gross_profit', 'ebitda', 'pbt', 'total_income', 'operating_profit'];
+        const filled = keys.filter(k => Object.values(is_[k] || {}).some(v => v !== null));
+        return filled.length >= 2;
+      };
 
-      const hasBalanceData = (a) => hasSection(a, 'balance_sheet',
-        ['total_assets', 'total_equity', 'cash_equivalents']);
+      const hasBalanceData = (a) => {
+        const bs = a.balance_sheet || {};
+        const keys = ['total_assets', 'total_equity', 'cash_equivalents', 'total_liabilities', 'net_worth'];
+        const filled = keys.filter(k => Object.values(bs[k] || {}).some(v => v !== null));
+        return filled.length >= 2;
+      };
 
-      const hasCashFlowData = (a) => hasSection(a, 'cash_flow',
-        ['cfo', 'cfi', 'cff']);
+      const hasCashFlowData = (a) => {
+        const cf = a.cash_flow || {};
+        const keys = ['cfo', 'cfi', 'cff', 'net_cash_change'];
+        const filled = keys.filter(k => Object.values(cf[k] || {}).some(v => v !== null));
+        return filled.length >= 1;
+      };
 
       const missingSections = [];
       if (!hasIncomeData(analysis)) missingSections.push('income statement, profit and loss, revenue, expenses, net profit');
