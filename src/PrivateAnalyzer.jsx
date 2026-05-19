@@ -748,12 +748,79 @@ export default function PrivateAnalyzer() {
 
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      let binary = '';
-      for (let i = 0; i < bytes.length; i += 8192) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+
+      // Check page count before sending — Claude document API max is 100 pages
+      let requestBody;
+      const fileName = file.name.toLowerCase();
+      if (fileName.endsWith('.pdf')) {
+        const pdfjsLib = await loadPdfJs();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const totalPages = pdf.numPages;
+
+        if (totalPages <= 100) {
+          // Under limit — send as document directly
+          const bytes = new Uint8Array(arrayBuffer);
+          let binary = '';
+          for (let i = 0; i < bytes.length; i += 8192) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+          }
+          requestBody = {
+            mode: 'document',
+            fileBase64: btoa(binary),
+            mimeType: file.type || 'application/pdf',
+            fileName: file.name,
+            companyName: companyName.trim() || null,
+          };
+        } else {
+          // Over 100 pages — extract text using pdfjs on all pages
+          // then send as text mode (no page limit)
+          const financialKeywords = [
+            'profit and loss', 'profit & loss', 'statement of profit',
+            'income statement', 'statement of income', 'revenue from operations',
+            'balance sheet', 'assets and liabilities', 'cash flow', 'cash flows',
+            'total revenue', 'total income', 'gross profit', 'net profit',
+            'net income', 'total assets', 'total liabilities', 'shareholders equity',
+            'shareholders funds', 'share capital', 'retained earnings',
+            'operating activities', 'investing activities', 'financing activities',
+            'depreciation', 'amortisation', 'amortization', 'ebitda',
+            'trade receivables', 'trade payables', 'inventories',
+            'current assets', 'current liabilities', 'revenue', 'turnover'
+          ];
+
+          let extractedText = '';
+          for (let i = 1; i <= totalPages; i++) {
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            const pageText = content.items.map(item => item.str).join(' ');
+            const pageTextLower = pageText.toLowerCase();
+            const hasFinancial = financialKeywords.some(kw => pageTextLower.includes(kw));
+            if (hasFinancial || pageText.replace(/\s/g, '').length > 100) {
+              extractedText += `\n--- PAGE ${i} ---\n` + pageText;
+            }
+          }
+
+          requestBody = {
+            mode: 'text',
+            extractedText: extractedText.slice(0, 150000),
+            fileName: file.name,
+            companyName: companyName.trim() || null,
+          };
+        }
+      } else {
+        // Non-PDF file — convert to base64 and send as document
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        }
+        requestBody = {
+          mode: 'document',
+          fileBase64: btoa(binary),
+          mimeType: file.type || 'application/pdf',
+          fileName: file.name,
+          companyName: companyName.trim() || null,
+        };
       }
-      const fileBase64 = btoa(binary);
 
       setStepIdx(1);
 
@@ -762,13 +829,7 @@ export default function PrivateAnalyzer() {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode: 'document',
-            fileBase64,
-            mimeType: file.type || 'application/pdf',
-            fileName: file.name,
-            companyName: companyName.trim() || null,
-          }),
+          body: JSON.stringify(requestBody),
         }
       );
 
