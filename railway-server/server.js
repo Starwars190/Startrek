@@ -22,7 +22,7 @@ app.get('/', (req, res) => {
 // Main analyze endpoint
 app.post('/analyze', async (req, res) => {
   try {
-    const { mode, extractedText, pageImages, fileName, companyName } = req.body
+    const { mode, extractedText, pageImages, imageBase64, imageMimeType, fileName, companyName } = req.body
 
     let documentText = ''
 
@@ -40,7 +40,7 @@ app.post('/analyze', async (req, res) => {
       }
       visionContent.push({
         type: 'text',
-        text: 'Extract ALL text from these financial document pages exactly as it appears. Include every number, table, label, and footnote. Preserve table structure. Output raw extracted text only.'
+        text: `Extract ALL text from these financial document pages exactly as it appears. Include every number, table, label, and footnote. Preserve table structure using | as separator. This is an Indian company annual report — extract ALL financial statement data including Balance Sheet, Profit & Loss, and Cash Flow Statement. Output raw text only.`
       })
 
       const ocrResponse = await fetch('https://api.anthropic.com/v1/messages', {
@@ -61,8 +61,42 @@ app.post('/analyze', async (req, res) => {
       if (ocrData.error) throw new Error('OCR error: ' + ocrData.error.message)
       documentText = ocrData?.content?.[0]?.text || ''
 
+    } else if (mode === 'image') {
+      const imgResponse = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-opus-4-5',
+          max_tokens: 8192,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: imageMimeType || 'image/jpeg',
+                  data: imageBase64
+                }
+              },
+              {
+                type: 'text',
+                text: `Extract ALL text from this financial document image exactly as it appears. Include every number, table, label and footnote. Output raw text only.`
+              }
+            ]
+          }]
+        })
+      })
+
+      const imgData = await imgResponse.json()
+      documentText = imgData?.content?.[0]?.text || ''
+
     } else {
-      return res.status(400).json({ error: 'Invalid mode. Expected "text" or "vision".' })
+      return res.status(400).json({ error: 'Invalid mode.' })
     }
 
     if (!documentText || documentText.replace(/\s/g, '').length < 200) {
@@ -71,25 +105,15 @@ app.post('/analyze', async (req, res) => {
       })
     }
 
-    // Smart trim — focus on financial section
+    // Indian annual reports: financial statements are always in the second half.
+    // Take the last 80000 chars to capture Balance Sheet, P&L, Cash Flow, and Notes.
     let textToAnalyze = documentText
-    const MARKERS = [
-      'balance sheet', 'profit and loss', 'statement of profit',
-      'income statement', 'financial statement', 'standalone financial',
-      'consolidated financial', 'profit & loss'
-    ]
-    const lowerText = documentText.toLowerCase()
-    let financialStart = -1
-    for (const marker of MARKERS) {
-      const idx = lowerText.indexOf(marker)
-      if (idx !== -1 && (financialStart === -1 || idx < financialStart)) {
-        financialStart = idx
-      }
-    }
-    if (financialStart > 2000) {
-      textToAnalyze = documentText.substring(Math.max(0, financialStart - 2000), financialStart + 80000)
+
+    if (documentText.length > 80000) {
+      textToAnalyze = documentText.substring(Math.max(0, documentText.length - 80000))
+      console.log('[analyze] Trimmed to last 80000 chars of', documentText.length, 'total chars')
     } else {
-      textToAnalyze = documentText.substring(0, 80000)
+      console.log('[analyze] Using full text:', documentText.length, 'chars')
     }
 
     console.log('[analyze] Text length:', textToAnalyze.length, '| Mode:', mode)

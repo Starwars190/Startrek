@@ -15,10 +15,13 @@ function triggerDownload(blob, filename) {
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  a.style.display = 'none';
   document.body.appendChild(a);
   a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 200);
 }
 
 const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs';
@@ -33,14 +36,15 @@ async function loadPdfJs() {
   return lib;
 }
 
-// Extract selectable text from a PDF using pdfjs (browser-side, no size limits)
 async function extractTextFromPDF(file) {
   const pdfjsLib = await loadPdfJs();
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
   let fullText = '';
-  const maxPages = Math.min(pdf.numPages, 60);
+  const totalPages = pdf.numPages;
+  const maxPages = Math.min(totalPages, 80);
+
   for (let i = 1; i <= maxPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
@@ -49,7 +53,8 @@ async function extractTextFromPDF(file) {
   }
 
   const charCount = fullText.replace(/\s/g, '').length;
-  return { text: fullText, numPages: pdf.numPages, isScanned: charCount < 500 };
+  const isScanned = charCount < (maxPages * 50);
+  return { text: fullText, numPages: totalPages, isScanned };
 }
 
 // Render pages to JPEG images via canvas for scanned PDFs
@@ -421,10 +426,9 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
     ['Net Debt/EBITDA', ratioLast['Net Debt to EBITDA'] ?? '-'],
     ['EBITDA Margin %', ratioLast['EBITDA Margin %'] ?? '-'],
   ];
-  const kpiCols = ['A', 'B', 'C', 'D', 'E', 'F'];
   kpis.forEach(([label, value], i) => {
     const col = i + 1;
-    applyCell(dash, 3, col, null, null, orangeFill, null); // orange top bar
+    applyCell(dash, 3, col, null, null, orangeFill, null);
     applyCell(dash, 4, col, label, { name: 'Arial', size: 9, bold: true, color: { argb: 'FF6B7280' } }, paleFill, { horizontal: 'center', vertical: 'middle' });
     applyCell(dash, 5, col, value, { name: 'Arial', size: 13, bold: true, color: { argb: 'FF0A1628' } }, paleFill, { horizontal: 'center', vertical: 'middle' });
     applyCell(dash, 6, col, co.reporting_unit || '', { name: 'Arial', size: 8, color: { argb: 'FF9CA3AF' } }, paleFill, { horizontal: 'center', vertical: 'middle' });
@@ -451,7 +455,6 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
   swotData.forEach((q, qi) => {
     if (qi === 2) swotStartRow += maxTopItems + 2;
     const r = swotStartRow;
-    // Header
     try { dash.mergeCells(r, q.startCol, r, q.startCol + q.colSpan - 1); } catch (e) {}
     const hc = dash.getCell(r, q.startCol);
     hc.value = q.title;
@@ -499,7 +502,6 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
     ws.getColumn(1).width = 36;
     years.forEach((_, i) => { ws.getColumn(i + 2).width = 17; });
 
-    // Header row
     applyCell(ws, 1, 1, `${name}${co.reporting_unit ? ` (${co.reporting_unit})` : ''}`, hFont, navyFill, { vertical: 'middle' });
     years.forEach((yr, i) => applyCell(ws, 1, i + 2, yr, hFont, navyFill, { horizontal: 'center', vertical: 'middle' }));
     ws.getRow(1).height = 24;
@@ -591,7 +593,7 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
       ratioWs.getRow(rRow).height = 18;
       rRow++;
     });
-    rRow++; // spacer
+    rRow++;
   });
 
   const buffer = await wb.xlsx.writeBuffer();
@@ -601,7 +603,7 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 const STEPS = [
-  'Extracting text from PDF...',
+  'Extracting document text...',
   'Sending to Claude AI...',
   'Analysing financials...',
   'Building Word brief...',
@@ -629,8 +631,17 @@ export default function PrivateAnalyzer() {
 
   const handleFile = useCallback((f) => {
     if (!f) return;
-    if (!f.name.toLowerCase().endsWith('.pdf')) { setError('Please upload a PDF file.'); return; }
-    if (f.size > 20 * 1024 * 1024) { setError('File must be under 20 MB.'); return; }
+    const name = f.name.toLowerCase();
+    const validTypes = ['.pdf', '.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.docx', '.doc'];
+    const isValid = validTypes.some(ext => name.endsWith(ext));
+    if (!isValid) {
+      setError('Please upload a PDF, image, or Word document.');
+      return;
+    }
+    if (f.size > 25 * 1024 * 1024) {
+      setError('File must be under 25 MB.');
+      return;
+    }
     setFile(f);
     setError('');
     setStage('ready');
@@ -648,31 +659,62 @@ export default function PrivateAnalyzer() {
     setStage('processing');
     setError('');
     setStepIdx(0);
-    try {
-      // Step 0: Extract text in browser via pdfjs — no file sent to server
-      const { text, isScanned } = await extractTextFromPDF(file);
-      setStepIdx(1);
 
+    try {
+      const name = file.name.toLowerCase();
       let payload;
-      if (!isScanned && text.length > 500) {
+
+      if (name.endsWith('.pdf')) {
+        setStepIdx(0);
+        const { text, isScanned } = await extractTextFromPDF(file);
+
+        if (!isScanned && text.replace(/\s/g, '').length > 500) {
+          payload = {
+            mode: 'text',
+            extractedText: text,
+            fileName: file.name,
+            companyName: companyName.trim() || null,
+          };
+        } else {
+          setStepIdx(0);
+          const pageImages = await extractTextViaVision(file, 10);
+          payload = {
+            mode: 'vision',
+            pageImages,
+            fileName: file.name,
+            companyName: companyName.trim() || null,
+          };
+        }
+      } else if (['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp'].some(ext => name.endsWith(ext))) {
+        const arrayBuffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        }
+        const base64 = btoa(binary);
+        payload = {
+          mode: 'image',
+          imageBase64: base64,
+          imageMimeType: file.type || 'image/jpeg',
+          fileName: file.name,
+          companyName: companyName.trim() || null,
+        };
+      } else if (name.endsWith('.docx') || name.endsWith('.doc')) {
+        const mammoth = await import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js');
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
         payload = {
           mode: 'text',
-          extractedText: text.slice(0, 120000),
+          extractedText: result.value,
           fileName: file.name,
           companyName: companyName.trim() || null,
         };
       } else {
-        // Scanned PDF — render pages to JPEG and send for vision OCR
-        const pageImages = await extractTextViaVision(file, 8);
-        payload = {
-          mode: 'vision',
-          pageImages,
-          fileName: file.name,
-          companyName: companyName.trim() || null,
-        };
+        throw new Error('Unsupported file format');
       }
 
-      setStepIdx(2);
+      setStepIdx(1);
       const res = await fetch('https://startrek-production-3ad9.up.railway.app/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -683,28 +725,36 @@ export default function PrivateAnalyzer() {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || `Server error: ${res.status}`);
       }
+
       const { analysis, ratiosByYear } = await res.json();
+      setStepIdx(2);
 
       setStepIdx(3);
       const wordBlob = await generateWordDoc(analysis, ratiosByYear);
+      const safeName = (
+        analysis.company_profile?.name ||
+        companyName ||
+        'PrivateCompany'
+      ).replace(/[^a-zA-Z0-9 ]/g, '').trim().replace(/\s+/g, '_');
+
+      triggerDownload(wordBlob, `${safeName}_Financial_Brief.docx`);
+      await new Promise(resolve => setTimeout(resolve, 1500));
 
       setStepIdx(4);
       const excelBlob = await generateExcelWorkbook(analysis, ratiosByYear);
-
-      setStepIdx(5);
-      const name = (analysis.company_profile?.name || companyName || 'PrivateCompany')
-        .replace(/[^a-zA-Z0-9 ]/g, '').trim().replace(/\s+/g, '_');
-      triggerDownload(wordBlob, `${name}_Financial_Brief.docx`);
-      setTimeout(() => triggerDownload(excelBlob, `${name}_Financial_Model.xlsx`), 600);
+      triggerDownload(excelBlob, `${safeName}_Financial_Model.xlsx`);
 
       setResultMeta({
         company: analysis.company_profile?.name || companyName || 'Private Company',
         years: analysis.financial_years || [],
-        wordFile: `${name}_Financial_Brief.docx`,
-        excelFile: `${name}_Financial_Model.xlsx`,
+        wordFile: `${safeName}_Financial_Brief.docx`,
+        excelFile: `${safeName}_Financial_Model.xlsx`,
       });
+      setStepIdx(5);
       setStage('done');
+
     } catch (e) {
+      console.error('Process error:', e);
       setError(e.message || 'Processing failed. Please try again.');
       setStage('error');
     }
@@ -766,7 +816,7 @@ export default function PrivateAnalyzer() {
         </div>
         <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 22, fontWeight: 800, color: NAVY, marginBottom: 8 }}>Upload Financial Document</h2>
         <p style={{ color: '#6B7280', fontSize: 14, lineHeight: 1.6, maxWidth: 460, margin: '0 auto' }}>
-          Upload any PDF (annual report, MCA filing, balance sheet). Get a Bloomberg-style Word brief + Excel model automatically.
+          Upload any financial document and get a Bloomberg-style Word brief + Excel model automatically.
         </p>
       </div>
 
@@ -777,7 +827,7 @@ export default function PrivateAnalyzer() {
         onClick={() => fileInputRef.current?.click()}
         style={{ border: `2px dashed ${dragOver ? NAVY : file ? GREEN : '#CBD5E1'}`, borderRadius: 14, background: dragOver ? '#EBF0F7' : file ? '#F0FAF5' : '#FAFBFC', padding: '44px 28px', textAlign: 'center', cursor: 'pointer', transition: 'all .2s', marginBottom: 16 }}
       >
-        <input ref={fileInputRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
+        <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.docx,.doc" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
         {file ? (
           <>
             <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
@@ -787,8 +837,8 @@ export default function PrivateAnalyzer() {
         ) : (
           <>
             <div style={{ fontSize: 32, marginBottom: 8 }}>☁</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Drop PDF here or click to browse</div>
-            <div style={{ fontSize: 12, color: '#6B7280' }}>PDF up to 20 MB · Annual reports, MCA filings, balance sheets</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Drop file here or click to browse</div>
+            <div style={{ fontSize: 12, color: '#6B7280' }}>PDF (text or scanned), images (JPG/PNG), or Word documents up to 25 MB</div>
           </>
         )}
       </div>
