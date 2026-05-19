@@ -307,7 +307,7 @@ Output raw extracted text only. Do not summarise.`
         system: SYSTEM_PROMPT,
         messages: [{
           role: 'user',
-          content: JSON_TEMPLATE + '\n\nDOCUMENT TEXT:\n' + documentText
+          content: 'DOCUMENT TEXT:\n' + documentText + '\n\n' + JSON_TEMPLATE
         }]
       })
     })
