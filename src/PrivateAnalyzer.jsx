@@ -804,8 +804,8 @@ export default function PrivateAnalyzer() {
         const hasIncome = Object.values(is_).some(yr =>
           Object.values(yr || {}).some(v => v !== null)
         );
-        const hasCashFlow = Object.values(cf_).some(yr =>
-          Object.values(yr || {}).some(v => v !== null)
+        const hasCashFlow = ['cfo', 'cfi', 'cff'].some(key =>
+          Object.values(cf_[key] || {}).some(v => v !== null)
         );
         return hasIncome && hasCashFlow;
       };
