@@ -673,7 +673,7 @@ export default function PrivateAnalyzer() {
       }
 
       setStepIdx(2);
-      const res = await fetch('https://startrek-production-6080.up.railway.app/analyze', {
+      const res = await fetch('https://startrek-production-3ad9.up.railway.app/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
