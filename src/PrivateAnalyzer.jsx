@@ -825,7 +825,7 @@ export default function PrivateAnalyzer() {
       setStepIdx(1);
 
       const res = await fetch(
-        'https://startrek-production-3ad9.up.railway.app/analyze',
+        'https://api.finsightai.org/analyze',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -965,7 +965,7 @@ export default function PrivateAnalyzer() {
         const missingHint = missingSections.join(' AND ');
 
         const res2 = await fetch(
-          'https://startrek-production-3ad9.up.railway.app/analyze',
+          'https://api.finsightai.org/analyze',
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
