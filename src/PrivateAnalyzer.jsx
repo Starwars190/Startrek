@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/clerk-react';
 import {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   Header, Footer, AlignmentType, BorderStyle, WidthType,
@@ -612,22 +613,12 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-const STEPS = [
-  'Extracting document text...',
-  'Sending to Claude AI...',
-  'Analysing financials...',
-  'Building Word brief...',
-  'Building Excel workbook...',
-  'Downloads ready!',
+const PROC_STAGES = [
+  { icon: '📤', label: 'Uploading Document' },
+  { icon: '🔍', label: 'Reading Financial Data' },
+  { icon: '🧠', label: 'Running AI Analysis' },
+  { icon: '📊', label: 'Generating Reports' },
 ];
-
-function SpinnerSVG() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ animation: 'pa-spin 1s linear infinite' }}>
-      <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="3" strokeLinecap="round" strokeDasharray="31.4 31.4" transform="rotate(-90 12 12)" />
-    </svg>
-  );
-}
 
 function recalculateRatios(data) {
   const years = data.financial_years || []
@@ -705,7 +696,7 @@ function recalculateRatios(data) {
   return result
 }
 
-export default function PrivateAnalyzer() {
+function AnalyzerCore() {
   const [stage, setStage] = useState('idle');
   const [file, setFile] = useState(null);
   const [dragOver, setDragOver] = useState(false);
@@ -714,6 +705,16 @@ export default function PrivateAnalyzer() {
   const [error, setError] = useState('');
   const [resultMeta, setResultMeta] = useState(null);
   const fileInputRef = useRef(null);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [confidentialMode, setConfidentialMode] = useState(false);
+
+  useEffect(() => {
+    if (stage === 'processing') {
+      setElapsedTime(0);
+      const interval = setInterval(() => setElapsedTime(t => t + 1), 1000);
+      return () => clearInterval(interval);
+    }
+  }, [stage]);
 
   const handleFile = useCallback((f) => {
     if (!f) return;
@@ -1000,29 +1001,41 @@ export default function PrivateAnalyzer() {
   const reset = () => {
     setStage('idle'); setFile(null); setCompanyName('');
     setError(''); setResultMeta(null); setStepIdx(0);
+    setConfidentialMode(false);
   };
 
   if (stage === 'done' && resultMeta) {
     return (
       <div style={{ maxWidth: 520, margin: '0 auto', background: '#fff', borderRadius: 16, padding: '40px 36px', boxShadow: '0 4px 24px rgba(10,22,40,.1)', border: '1px solid #E5E7EB', textAlign: 'center' }}>
         <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#F0FAF5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, margin: '0 auto 20px' }}>✓</div>
-        <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 22, fontWeight: 800, color: NAVY, marginBottom: 8 }}>Downloads Ready</h2>
-        <p style={{ color: '#6B7280', fontSize: 14, marginBottom: 24 }}>{resultMeta.company} · {resultMeta.years.join(', ')}</p>
-        <div style={{ background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: 10, padding: '14px 18px', marginBottom: 20, textAlign: 'left' }}>
-          {[
-            ['Income Statement', Object.values(resultMeta._analysis?.income_statement || {}).some(f => Object.values(f||{}).some(v => v != null))],
-            ['Balance Sheet',    Object.values(resultMeta._analysis?.balance_sheet    || {}).some(f => Object.values(f||{}).some(v => v != null))],
-            ['Cash Flow',        Object.values(resultMeta._analysis?.cash_flow        || {}).some(f => Object.values(f||{}).some(v => v != null))],
-          ].map(([label, ok]) => (
-            <div key={label} style={{ display: 'flex', gap: 8, fontSize: 13, marginBottom: 6 }}>
-              <span style={{ color: ok ? '#0D7A3E' : '#DC2626', fontWeight: 700 }}>{ok ? '✓' : '⚠'}</span>
-              <span style={{ color: ok ? '#374151' : '#DC2626' }}>{label}{!ok ? ' — not extracted' : ''}</span>
-            </div>
-          ))}
+        <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 22, fontWeight: 800, color: NAVY, marginBottom: 16 }}>Downloads Ready</h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 20 }}>
+          <span style={{ fontSize: 13, color: '#6B7280' }}>🔒 Confidential Mode</span>
+          <div
+            onClick={() => setConfidentialMode(m => !m)}
+            style={{ width: 40, height: 22, borderRadius: 11, cursor: 'pointer', transition: 'background 0.2s', background: confidentialMode ? NAVY : '#E5E7EB', position: 'relative', flexShrink: 0 }}
+          >
+            <div style={{ position: 'absolute', top: 2, left: confidentialMode ? 20 : 2, width: 18, height: 18, borderRadius: '50%', background: '#fff', boxShadow: '0 1px 4px rgba(0,0,0,0.2)', transition: 'left 0.2s' }} />
+          </div>
         </div>
-        <div style={{ background: '#F9FAFB', borderRadius: 10, padding: '16px 20px', marginBottom: 24, textAlign: 'left' }}>
-          <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}><span style={{ marginRight: 8 }}>📄</span><strong>{resultMeta.wordFile}</strong></div>
-          <div style={{ fontSize: 13, color: '#374151' }}><span style={{ marginRight: 8 }}>📊</span><strong>{resultMeta.excelFile}</strong></div>
+        <div style={{ filter: confidentialMode ? 'blur(6px)' : 'none', transition: 'filter 0.3s', userSelect: confidentialMode ? 'none' : 'auto' }}>
+          <p style={{ color: '#6B7280', fontSize: 14, marginBottom: 24 }}>{resultMeta.company} · {resultMeta.years.join(', ')}</p>
+          <div style={{ background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: 10, padding: '14px 18px', marginBottom: 20, textAlign: 'left' }}>
+            {[
+              ['Income Statement', Object.values(resultMeta._analysis?.income_statement || {}).some(f => Object.values(f||{}).some(v => v != null))],
+              ['Balance Sheet',    Object.values(resultMeta._analysis?.balance_sheet    || {}).some(f => Object.values(f||{}).some(v => v != null))],
+              ['Cash Flow',        Object.values(resultMeta._analysis?.cash_flow        || {}).some(f => Object.values(f||{}).some(v => v != null))],
+            ].map(([label, ok]) => (
+              <div key={label} style={{ display: 'flex', gap: 8, fontSize: 13, marginBottom: 6 }}>
+                <span style={{ color: ok ? '#0D7A3E' : '#DC2626', fontWeight: 700 }}>{ok ? '✓' : '⚠'}</span>
+                <span style={{ color: ok ? '#374151' : '#DC2626' }}>{label}{!ok ? ' — not extracted' : ''}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ background: '#F9FAFB', borderRadius: 10, padding: '16px 20px', marginBottom: 24, textAlign: 'left' }}>
+            <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}><span style={{ marginRight: 8 }}>📄</span><strong>{resultMeta.wordFile}</strong></div>
+            <div style={{ fontSize: 13, color: '#374151' }}><span style={{ marginRight: 8 }}>📊</span><strong>{resultMeta.excelFile}</strong></div>
+          </div>
         </div>
         <p style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 24 }}>Both files should have downloaded automatically. Check your Downloads folder.</p>
         <button onClick={reset} style={{ background: NAVY, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
@@ -1033,23 +1046,51 @@ export default function PrivateAnalyzer() {
   }
 
   if (stage === 'processing') {
+    const stageForStep = stepIdx >= 3 ? 3 : stepIdx;
+    const progressPct = [5, 30, 60, 80, 92, 100][stepIdx] ?? 5;
     return (
-      <div style={{ maxWidth: 420, margin: '0 auto', background: '#fff', borderRadius: 16, padding: '40px 36px', boxShadow: '0 4px 24px rgba(10,22,40,.1)', border: '1px solid #E5E7EB' }}>
-        <style>{`@keyframes pa-spin { to { transform: rotate(360deg); } }`}</style>
-        <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 20, fontWeight: 700, color: NAVY, marginBottom: 6, textAlign: 'center' }}>Processing Document</h2>
-        <p style={{ color: '#6B7280', fontSize: 13, textAlign: 'center', marginBottom: 28 }}>{file?.name}</p>
-        {STEPS.map((step, i) => {
-          const done = i < stepIdx, active = i === stepIdx;
-          return (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, opacity: i > stepIdx ? 0.35 : 1 }}>
-              <div style={{ width: 28, height: 28, borderRadius: '50%', background: done ? GREEN : active ? ORANGE : '#E5E7EB', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                {done && <span style={{ color: '#fff', fontSize: 13, fontWeight: 700 }}>✓</span>}
-                {active && <SpinnerSVG />}
-              </div>
-              <span style={{ fontSize: 13.5, color: done ? GREEN : active ? NAVY : '#9CA3AF', fontWeight: active ? 600 : 400 }}>{step}</span>
+      <div style={{ position: 'fixed', inset: 0, zIndex: 9000, background: 'radial-gradient(ellipse at center, #0d1e3a 0%, #0A1628 70%)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <style>{`
+          @keyframes pa-spin { to { transform: rotate(360deg); } }
+          @keyframes pa-pulse-glow {
+            0%, 100% { border-color: rgba(201,168,76,0.2); background: rgba(201,168,76,0.06); }
+            50% { border-color: rgba(201,168,76,0.5); background: rgba(201,168,76,0.14); }
+          }
+          @keyframes pa-fade-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        `}</style>
+        <div style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 24, padding: 48, width: '100%', maxWidth: 480, margin: '0 20px', animation: 'pa-fade-in 0.4s ease' }}>
+          <div style={{ textAlign: 'center', marginBottom: 36 }}>
+            <div style={{ fontSize: 28, fontWeight: 800, color: '#C9A84C', fontFamily: "'Plus Jakarta Sans',sans-serif", letterSpacing: '-0.5px' }}>FinSight AI</div>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 6 }}>{file?.name}</div>
+          </div>
+          <div style={{ marginBottom: 32 }}>
+            {PROC_STAGES.map((s, i) => {
+              const isDone = i < stageForStep;
+              const isActive = i === stageForStep;
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 10, padding: '12px 16px', borderRadius: 12, border: isActive ? '1px solid rgba(201,168,76,0.3)' : '1px solid transparent', background: isActive ? 'rgba(201,168,76,0.07)' : 'transparent', animation: isActive ? 'pa-pulse-glow 2s ease-in-out infinite' : 'none', transition: 'all 0.4s ease', opacity: !isDone && !isActive ? 0.3 : 1 }}>
+                  <div style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, background: isDone ? 'rgba(13,122,62,0.25)' : isActive ? 'rgba(201,168,76,0.15)' : 'rgba(255,255,255,0.05)', border: `1px solid ${isDone ? '#0D7A3E' : isActive ? 'rgba(201,168,76,0.4)' : 'rgba(255,255,255,0.1)'}`, transition: 'all 0.4s ease' }}>
+                    {isDone ? <span style={{ color: '#4ade80', fontSize: 17, lineHeight: 1 }}>✓</span> : s.icon}
+                  </div>
+                  <span style={{ flex: 1, fontSize: 14, fontWeight: isActive ? 600 : 400, color: isDone ? 'rgba(255,255,255,0.6)' : isActive ? '#C9A84C' : 'rgba(255,255,255,0.35)', transition: 'color 0.4s ease' }}>{s.label}</span>
+                  {isActive && (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ animation: 'pa-spin 1s linear infinite', flexShrink: 0 }}>
+                      <circle cx="12" cy="12" r="10" stroke="rgba(201,168,76,0.9)" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" transform="rotate(-90 12 12)" />
+                    </svg>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ height: 12, borderRadius: 8, background: '#1a2a4a', overflow: 'hidden' }}>
+              <div style={{ height: '100%', borderRadius: 8, width: `${progressPct}%`, background: 'linear-gradient(90deg, #C9A84C 0%, #f0d080 100%)', boxShadow: '0 0 20px rgba(201,168,76,0.6)', transition: 'width 0.8s ease' }} />
             </div>
-          );
-        })}
+          </div>
+          <div style={{ textAlign: 'center', fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>
+            Analyzing... {elapsedTime}s
+          </div>
+        </div>
       </div>
     );
   }
@@ -1076,7 +1117,7 @@ export default function PrivateAnalyzer() {
         onClick={() => fileInputRef.current?.click()}
         style={{ border: `2px dashed ${dragOver ? NAVY : file ? GREEN : '#CBD5E1'}`, borderRadius: 14, background: dragOver ? '#EBF0F7' : file ? '#F0FAF5' : '#FAFBFC', padding: '44px 28px', textAlign: 'center', cursor: 'pointer', transition: 'all .2s', marginBottom: 16 }}
       >
-        <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.docx,.doc" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
+        <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
         {file ? (
           <>
             <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
@@ -1125,5 +1166,48 @@ export default function PrivateAnalyzer() {
         Your document is processed securely and never stored. Outputs download automatically.
       </p>
     </div>
+  );
+}
+
+const GOLD = '#C9A84C';
+
+export default function PrivateAnalyzer() {
+  return (
+    <>
+      <SignedOut>
+        <div style={{ minHeight: '100vh', background: NAVY, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+          <div style={{ textAlign: 'center', maxWidth: 560 }}>
+            <div style={{ fontSize: 52, fontWeight: 800, color: GOLD, marginBottom: 20, letterSpacing: '-1.5px' }}>
+              FinSight AI
+            </div>
+            <p style={{ fontSize: 20, color: 'rgba(255,255,255,0.8)', marginBottom: 12, fontWeight: 500, lineHeight: 1.4 }}>
+              Institutional-grade private company financial analysis
+            </p>
+            <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.4)', marginBottom: 48, lineHeight: 1.8, maxWidth: 420, margin: '0 auto 48px' }}>
+              Upload any financial document — annual reports, audited accounts, MIS packs — and receive a Bloomberg-style Word brief and 5-sheet Excel model in seconds.
+            </p>
+            <SignInButton mode="modal">
+              <button style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #f0d080 100%)`, color: NAVY, border: 'none', borderRadius: 14, padding: '16px 48px', fontSize: 16, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', boxShadow: '0 4px 24px rgba(201,168,76,0.35)', display: 'inline-block' }}>
+                Sign In to Get Started →
+              </button>
+            </SignInButton>
+            <div style={{ marginTop: 56, display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 32 }}>
+              {['Income Statement', 'Balance Sheet', 'Cash Flow', '30+ Ratios', 'SWOT Analysis', 'Word + Excel'].map(f => (
+                <div key={f} style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)', textAlign: 'center' }}>
+                  <div style={{ color: GOLD, marginBottom: 4, fontSize: 15 }}>✓</div>
+                  {f}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </SignedOut>
+      <SignedIn>
+        <div style={{ position: 'fixed', top: 16, right: 16, zIndex: 9999 }}>
+          <UserButton />
+        </div>
+        <AnalyzerCore />
+      </SignedIn>
+    </>
   );
 }
