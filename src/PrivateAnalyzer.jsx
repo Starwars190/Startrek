@@ -1106,7 +1106,7 @@ function AnalyzerCore() {
         </div>
         <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 22, fontWeight: 800, color: NAVY, marginBottom: 8 }}>Upload Financial Document</h2>
         <p style={{ color: '#6B7280', fontSize: 14, lineHeight: 1.6, maxWidth: 460, margin: '0 auto' }}>
-          Upload any financial document and get a Bloomberg-style Word brief + Excel model automatically.
+          Upload any financial document and get a Institutional-grade Word brief + Excel model automatically.
         </p>
       </div>
 
@@ -1149,7 +1149,7 @@ function AnalyzerCore() {
       <div style={{ background: '#F8FAFC', border: '1px solid #E5E7EB', borderRadius: 12, padding: '14px 18px', marginBottom: 16 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: NAVY, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.05em' }}>What You Get</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-          {['Bloomberg-style Word brief', '5-sheet Excel model', 'SWOT analysis', '30+ financial ratios', 'Income Statement', 'Balance Sheet', 'Cash Flow Statement', 'Data quality notes'].map(item => (
+          {['Institutional-grade Word brief', '5-sheet Excel model', 'SWOT analysis', '30+ financial ratios', 'Income Statement', 'Balance Sheet', 'Cash Flow Statement', 'Data quality notes'].map(item => (
             <div key={item} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#374151' }}>
               <span style={{ color: GREEN, fontWeight: 700 }}>✓</span> {item}
             </div>
@@ -1184,7 +1184,7 @@ export default function PrivateAnalyzer() {
               Institutional-grade private company financial analysis
             </p>
             <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.4)', marginBottom: 48, lineHeight: 1.8, maxWidth: 420, margin: '0 auto 48px' }}>
-              Upload any financial document — annual reports, audited accounts, MIS packs — and receive a Bloomberg-style Word brief and 5-sheet Excel model in seconds.
+              Upload any financial document — annual reports, audited accounts, MIS packs — and receive a Institutional-grade Word brief and 5-sheet Excel model in seconds.
             </p>
             <SignInButton mode="modal">
               <button style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #f0d080 100%)`, color: NAVY, border: 'none', borderRadius: 14, padding: '16px 48px', fontSize: 16, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', boxShadow: '0 4px 24px rgba(201,168,76,0.35)', display: 'inline-block' }}>
