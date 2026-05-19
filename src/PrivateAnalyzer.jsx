@@ -296,6 +296,16 @@ async function generateWordDoc(analysis, ratiosByYear) {
         new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 1440, after: 240 }, children: [new TextRun({ text: companyName, bold: true, size: 72, color: '0A1628', font: 'Arial' })] }),
         new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [new TextRun({ text: co.industry || '', size: 28, color: '1A3A5C', font: 'Arial' })] }),
         new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 480 }, children: [new TextRun({ text: 'PRIVATE COMPANY FINANCIAL ANALYSIS', bold: true, size: 24, color: 'FF6600', font: 'Arial' })] }),
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 240 },
+          children: [new TextRun({
+            text: years.length > 1
+              ? `${years[0]} – ${years[years.length - 1]}`
+              : (years[0] || ''),
+            size: 22, color: '1A3A5C', font: 'Arial'
+          })]
+        }),
         kpiTable,
         pageBreak(),
 
