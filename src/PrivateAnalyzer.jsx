@@ -885,7 +885,7 @@ export default function PrivateAnalyzer() {
       if (missingSections.length > 0) {
         setStepIdx(1);
         const pdfjsLib = await loadPdfJs();
-        const ab = await file.arrayBuffer();
+        const ab = arrayBuffer.slice(0);
         const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
         const totalPages = pdf.numPages;
 
