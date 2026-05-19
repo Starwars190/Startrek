@@ -859,14 +859,28 @@ export default function PrivateAnalyzer() {
       ratiosByYear = recalculateRatios(analysis);
       setStepIdx(2);
 
-      const hasFinancialData = (a) => {
-        const is_ = a.income_statement || {};
-        return Object.values(is_).some(yr =>
-          Object.values(yr || {}).some(v => v !== null)
+      const hasSection = (data, sectionKey, keys) => {
+        const section = data[sectionKey] || {};
+        return keys.some(key =>
+          Object.values(section[key] || {}).some(v => v !== null)
         );
       };
 
-      if (!hasFinancialData(analysis)) {
+      const hasIncomeData = (a) => hasSection(a, 'income_statement',
+        ['revenue', 'net_income', 'gross_profit', 'ebitda', 'pbt']);
+
+      const hasBalanceData = (a) => hasSection(a, 'balance_sheet',
+        ['total_assets', 'total_equity', 'cash_equivalents']);
+
+      const hasCashFlowData = (a) => hasSection(a, 'cash_flow',
+        ['cfo', 'cfi', 'cff']);
+
+      const missingSections = [];
+      if (!hasIncomeData(analysis)) missingSections.push('income statement, profit and loss, revenue, expenses, net profit');
+      if (!hasBalanceData(analysis)) missingSections.push('balance sheet, total assets, total liabilities, equity');
+      if (!hasCashFlowData(analysis)) missingSections.push('cash flow, operating activities, investing activities, financing activities');
+
+      if (missingSections.length > 0) {
         setStepIdx(1);
         const pdfjsLib = await loadPdfJs();
         const ab = await file.arrayBuffer();
@@ -903,9 +917,7 @@ export default function PrivateAnalyzer() {
             scannedPages.push(i);
           } else {
             const hasFinancialContent = financialKeywords.some(kw => pageText.includes(kw));
-            if (hasFinancialContent) {
-              financialPages.push(i);
-            }
+            if (hasFinancialContent) financialPages.push(i);
           }
         }
 
@@ -950,27 +962,47 @@ export default function PrivateAnalyzer() {
           pageImages.push(await renderPage(pageNum));
         }
 
-        const existingUrl = 'https://startrek-production-3ad9.up.railway.app/analyze';
+        const missingHint = missingSections.join(' AND ');
+
         const res2 = await fetch(
-          existingUrl,
+          'https://startrek-production-3ad9.up.railway.app/analyze',
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               mode: 'vision',
               pageImages,
+              missingHint,
               fileName: file.name,
               companyName: companyName.trim() || null,
             }),
           }
         );
+
         if (!res2.ok) {
           const e2 = await res2.json().catch(() => ({}));
-          throw new Error(e2.error || 'Vision fallback failed');
+          if (e2.error && (
+            e2.error.includes('content filtering') ||
+            e2.error.includes('Output blocked') ||
+            e2.error.includes('content_policy')
+          )) {
+            console.warn('Vision fallback blocked by content filter — keeping existing data');
+          } else {
+            throw new Error(e2.error || 'Vision fallback failed');
+          }
+        } else {
+          const data2 = await res2.json();
+          if (!hasIncomeData(analysis) && hasIncomeData(data2.analysis)) {
+            analysis.income_statement = data2.analysis.income_statement;
+          }
+          if (!hasBalanceData(analysis) && hasBalanceData(data2.analysis)) {
+            analysis.balance_sheet = data2.analysis.balance_sheet;
+          }
+          if (!hasCashFlowData(analysis) && hasCashFlowData(data2.analysis)) {
+            analysis.cash_flow = data2.analysis.cash_flow;
+          }
+          ratiosByYear = recalculateRatios(analysis);
         }
-        const data2 = await res2.json();
-        analysis = data2.analysis;
-        ratiosByYear = data2.ratiosByYear;
       }
 
       setStepIdx(3);
