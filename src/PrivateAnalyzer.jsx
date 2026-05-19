@@ -21,13 +21,20 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
+const MAX_UPLOAD_BYTES = 3 * 1024 * 1024; // 3MB raw → ~4MB base64, within 10MB Vercel limit
+
+async function fileToBase64(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const sliced = arrayBuffer.byteLength > MAX_UPLOAD_BYTES
+    ? arrayBuffer.slice(0, MAX_UPLOAD_BYTES)
+    : arrayBuffer;
+  const bytes = new Uint8Array(sliced);
+  let binary = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function fmtNum(v) {
@@ -719,6 +726,11 @@ export default function PrivateAnalyzer() {
             <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
             <div style={{ fontSize: 15, fontWeight: 600, color: NAVY, marginBottom: 4 }}>{file.name}</div>
             <div style={{ fontSize: 12, color: '#6B7280' }}>{(file.size / 1024).toFixed(0)} KB · Click to change</div>
+            {file.size > MAX_UPLOAD_BYTES && (
+              <div style={{ marginTop: 8, fontSize: 12, color: '#92400E', background: '#FEF3C7', borderRadius: 6, padding: '4px 10px', display: 'inline-block' }}>
+                Large PDF — first 15 pages will be processed automatically
+              </div>
+            )}
           </>
         ) : (
           <>
