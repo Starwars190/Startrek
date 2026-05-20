@@ -696,6 +696,52 @@ function recalculateRatios(data) {
   return result
 }
 
+async function compressPdfIfNeeded(file, pdfjsLib) {
+  if (file.size <= 2 * 1024 * 1024) return file
+
+  try {
+    const arrayBuffer = await file.arrayBuffer()
+    const pdf = await pdfjsLib.getDocument({
+      data: arrayBuffer.slice(0)
+    }).promise
+
+    const { jsPDF } = await import('jspdf')
+    const newPdf = new jsPDF({
+      orientation: 'portrait',
+      unit: 'pt',
+      format: 'a4'
+    })
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i)
+      const viewport = page.getViewport({ scale: 1.5 })
+      const canvas = document.createElement('canvas')
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+      await page.render({
+        canvasContext: canvas.getContext('2d'),
+        viewport
+      }).promise
+      const imgData = canvas.toDataURL('image/jpeg', 0.7)
+      if (i > 1) newPdf.addPage()
+      const pageWidth = newPdf.internal.pageSize.getWidth()
+      const pageHeight = newPdf.internal.pageSize.getHeight()
+      newPdf.addImage(imgData, 'JPEG', 0, 0, pageWidth, pageHeight)
+    }
+
+    const compressedBlob = newPdf.output('blob')
+    if (compressedBlob.size < file.size * 0.8) {
+      return new File([compressedBlob], file.name, {
+        type: 'application/pdf'
+      })
+    }
+    return file
+  } catch (err) {
+    console.warn('PDF compression failed, using original:', err)
+    return file
+  }
+}
+
 function AnalyzerCore() {
   const [stage, setStage] = useState('idle');
   const [file, setFile] = useState(null);
@@ -748,13 +794,15 @@ function AnalyzerCore() {
     setStepIdx(0);
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
+      const pdfjsLib = await loadPdfJs();
+      const fileToProcess = await compressPdfIfNeeded(file, pdfjsLib);
+      const arrayBuffer = await fileToProcess.arrayBuffer();
       // Clone the buffer because pdfjs detaches the original
       const arrayBufferCopy = arrayBuffer.slice(0);
 
       // Check page count before sending — Claude document API max is 100 pages
       let requestBody;
-      const fileName = file.name.toLowerCase();
+      const fileName = fileToProcess.name.toLowerCase();
       if (fileName.endsWith('.pdf')) {
         const pdfjsLib = await loadPdfJs();
         const pdf = await pdfjsLib.getDocument({ data: arrayBufferCopy }).promise;
@@ -770,8 +818,8 @@ function AnalyzerCore() {
           requestBody = {
             mode: 'document',
             fileBase64: btoa(binary),
-            mimeType: file.type || 'application/pdf',
-            fileName: file.name,
+            mimeType: fileToProcess.type || 'application/pdf',
+            fileName: fileToProcess.name,
             companyName: companyName.trim() || null,
           };
         } else {
@@ -805,7 +853,7 @@ function AnalyzerCore() {
           requestBody = {
             mode: 'text',
             extractedText: extractedText,
-            fileName: file.name,
+            fileName: fileToProcess.name,
             companyName: companyName.trim() || null,
           };
         }
@@ -819,8 +867,8 @@ function AnalyzerCore() {
         requestBody = {
           mode: 'document',
           fileBase64: btoa(binary),
-          mimeType: file.type || 'application/pdf',
-          fileName: file.name,
+          mimeType: fileToProcess.type || 'application/pdf',
+          fileName: fileToProcess.name,
           companyName: companyName.trim() || null,
         };
       }
@@ -936,7 +984,7 @@ function AnalyzerCore() {
               mode: 'vision',
               pageImages,
               missingHint,
-              fileName: file.name,
+              fileName: fileToProcess.name,
               companyName: companyName.trim() || null,
             }),
           }
