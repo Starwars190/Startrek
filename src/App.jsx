@@ -40,15 +40,17 @@ const PERIODS = [
 const DEFAULT_PERIOD = "1_year";
 
 async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
-  const RETRYABLE = new Set([429, 503, 529]);
-  const MAX_RETRIES = 3;
+  const MAX_RETRIES = 5;
+  const OVERLOAD_WAITS = [15, 30, 60, 120, 120]; // seconds before each retry
   const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: "user", content: userMsg }] };
   if (system) body.system = system;
   if (tools.length) body.tools = tools;
 
+  let s503Count = 0;
+
   for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 90_000);
+    const timeoutId = setTimeout(() => controller.abort(), 120_000);
     let res;
     try {
       res = await fetch(API_URL, {
@@ -60,27 +62,56 @@ async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
     } catch (err) {
       clearTimeout(timeoutId);
       if (err.name === "AbortError") {
-        const isLastAttempt = attempt > MAX_RETRIES;
-        console.warn(`callClaude attempt ${attempt}: request timed out after 90s`);
-        if (isLastAttempt) throw new Error("Rate limit exceeded after 3 retries. Please try again in a few minutes.");
+        const isLast = attempt > MAX_RETRIES;
+        const waitSeconds = OVERLOAD_WAITS[attempt - 1] ?? 120;
+        console.warn(`callClaude attempt ${attempt}: timed out after 120s — treating as overload`);
+        if (isLast) throw new Error("Service is currently overloaded. Please try again in 2-3 minutes.");
+        await new Promise(r => setTimeout(r, waitSeconds * 1000));
         continue;
       }
       throw err;
     }
     clearTimeout(timeoutId);
 
-    if (RETRYABLE.has(res.status)) {
-      const isLastAttempt = attempt > MAX_RETRIES;
-      const baseWait = parseInt(res.headers.get("retry-after") || "60", 10);
-      const waitSeconds = baseWait * Math.pow(2, attempt - 1);
-      console.warn(`callClaude attempt ${attempt}: status ${res.status}, waiting ${waitSeconds}s before retry`);
-      if (isLastAttempt) throw new Error("Rate limit exceeded after 3 retries. Please try again in a few minutes.");
-      await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
+    if (res.status === 429) {
+      const isLast = attempt > MAX_RETRIES;
+      const retryAfter = parseInt(res.headers.get("retry-after") || "60", 10);
+      const waitSeconds = retryAfter + 10;
+      console.warn(`callClaude attempt ${attempt}: 429 rate-limited, waiting ${waitSeconds}s`);
+      if (isLast) throw new Error("Service is currently overloaded. Please try again in 2-3 minutes.");
+      await new Promise(r => setTimeout(r, waitSeconds * 1000));
+      continue;
+    }
+
+    if (res.status === 503) {
+      s503Count++;
+      const isLast = attempt > MAX_RETRIES || s503Count >= 3;
+      console.warn(`callClaude attempt ${attempt}: 503 unavailable (${s503Count}/3)`);
+      if (isLast) throw new Error("Service is currently overloaded. Please try again in 2-3 minutes.");
+      await new Promise(r => setTimeout(r, 20_000));
+      continue;
+    }
+
+    if (res.status === 529) {
+      const isLast = attempt > MAX_RETRIES;
+      const waitSeconds = OVERLOAD_WAITS[attempt - 1] ?? 120;
+      console.warn(`callClaude attempt ${attempt}: 529 overloaded, waiting ${waitSeconds}s`);
+      if (isLast) throw new Error("Service is currently overloaded. Please try again in 2-3 minutes.");
+      await new Promise(r => setTimeout(r, waitSeconds * 1000));
       continue;
     }
 
     const json = await res.json();
     if (json.error) {
+      const errMsg = (typeof json.error === "object" ? json.error?.message : String(json.error)) || "";
+      if (errMsg.toLowerCase().includes("overloaded")) {
+        const isLast = attempt > MAX_RETRIES;
+        const waitSeconds = OVERLOAD_WAITS[attempt - 1] ?? 120;
+        console.warn(`callClaude attempt ${attempt}: overloaded in body, waiting ${waitSeconds}s`);
+        if (isLast) throw new Error("Service is currently overloaded. Please try again in 2-3 minutes.");
+        await new Promise(r => setTimeout(r, waitSeconds * 1000));
+        continue;
+      }
       if (json.error_type) {
         // Structured error from proxy (400/402/403): API is unavailable, not a transient failure
         const err = new Error(json.message || "API unavailable");
@@ -4183,6 +4214,85 @@ function checkBalanceSheet(bs, label) {
 
 async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () => {}) {
   console.log('[START] processPrivateCompanyDoc called', file?.name)
+
+  // ── Retry wrapper for /api/claude calls ────────────────────────────────────
+  async function fetchClaudeWithRetry(requestBody) {
+    const OVERLOAD_WAITS = [15, 30, 60, 120, 120];
+    const MAX_RETRIES = 5;
+    let s503Count = 0;
+    for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120_000);
+      let res;
+      try {
+        res = await fetch('/api/claude', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+          const isLast = attempt > MAX_RETRIES;
+          const waitSeconds = OVERLOAD_WAITS[attempt - 1] ?? 120;
+          console.warn(`[PRIVATE_DOC] attempt ${attempt}: timed out after 120s`);
+          if (isLast) { const e = new Error('Service is currently overloaded. Please try again in 2-3 minutes.'); e.isOverloaded = true; throw e; }
+          onProgress(`API busy — retrying in ${waitSeconds}s (attempt ${attempt} of 5)...`);
+          await new Promise(r => setTimeout(r, waitSeconds * 1000));
+          continue;
+        }
+        throw err;
+      }
+      clearTimeout(timeoutId);
+
+      if (res.status === 429) {
+        const isLast = attempt > MAX_RETRIES;
+        const retryAfter = parseInt(res.headers.get('retry-after') || '60', 10);
+        const waitSeconds = retryAfter + 10;
+        console.warn(`[PRIVATE_DOC] attempt ${attempt}: 429 rate-limited, waiting ${waitSeconds}s`);
+        if (isLast) { const e = new Error('Service is currently overloaded. Please try again in 2-3 minutes.'); e.isOverloaded = true; throw e; }
+        onProgress(`API busy — retrying in ${waitSeconds}s (attempt ${attempt} of 5)...`);
+        await new Promise(r => setTimeout(r, waitSeconds * 1000));
+        continue;
+      }
+
+      if (res.status === 503) {
+        s503Count++;
+        const isLast = attempt > MAX_RETRIES || s503Count >= 3;
+        console.warn(`[PRIVATE_DOC] attempt ${attempt}: 503 (${s503Count}/3)`);
+        if (isLast) { const e = new Error('Service is currently overloaded. Please try again in 2-3 minutes.'); e.isOverloaded = true; throw e; }
+        onProgress(`API busy — retrying in 20s (attempt ${attempt} of 5)...`);
+        await new Promise(r => setTimeout(r, 20_000));
+        continue;
+      }
+
+      if (res.status === 529) {
+        const isLast = attempt > MAX_RETRIES;
+        const waitSeconds = OVERLOAD_WAITS[attempt - 1] ?? 120;
+        console.warn(`[PRIVATE_DOC] attempt ${attempt}: 529 overloaded, waiting ${waitSeconds}s`);
+        if (isLast) { const e = new Error('Service is currently overloaded. Please try again in 2-3 minutes.'); e.isOverloaded = true; throw e; }
+        onProgress(`API busy — retrying in ${waitSeconds}s (attempt ${attempt} of 5)...`);
+        await new Promise(r => setTimeout(r, waitSeconds * 1000));
+        continue;
+      }
+
+      const json = await res.json();
+      const errMsg = (typeof json.error === 'object' ? json.error?.message : String(json.error || '')) || '';
+      if (errMsg.toLowerCase().includes('overloaded')) {
+        const isLast = attempt > MAX_RETRIES;
+        const waitSeconds = OVERLOAD_WAITS[attempt - 1] ?? 120;
+        console.warn(`[PRIVATE_DOC] attempt ${attempt}: overloaded in body, waiting ${waitSeconds}s`);
+        if (isLast) { const e = new Error('Service is currently overloaded. Please try again in 2-3 minutes.'); e.isOverloaded = true; throw e; }
+        onProgress(`API busy — retrying in ${waitSeconds}s (attempt ${attempt} of 5)...`);
+        await new Promise(r => setTimeout(r, waitSeconds * 1000));
+        continue;
+      }
+
+      return json;
+    }
+  }
+
   try {
     onProgress('reading')
     onDebug('FILE RECEIVED: ' + file.name)
@@ -4217,15 +4327,19 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
       throw e
     }
 
+    // ── Text truncation: first 20k + last 20k chars if > 40k ──────────────────
+    let textToSend = cleanedText
+    if (cleanedText.length > 40000) {
+      console.log(`PDF text truncated from ${cleanedText.length}chars to 40000 chars`)
+      textToSend = cleanedText.substring(0, 20000) + cleanedText.substring(cleanedText.length - 20000)
+    }
+
     let rawText
     if (isTextPdf) {
       // ── Text path ──────────────────────────────────────────────────────────
       onProgress('extracting')
       console.log('[FETCH] About to call /api/claude')
-      const apiResp = await fetch('/api/claude', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const apiData = await fetchClaudeWithRetry({
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4000,
           system: 'You are a senior chartered accountant. Extract financial data from Indian company filings. Return ONLY valid JSON. No markdown, no text outside the JSON object.',
@@ -4235,11 +4349,9 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
 {"company_name":"","financial_year":"","unit":"Lakhs","profit_loss":{"revenue":{"current":null,"prior":null},"other_income":{"current":null,"prior":null},"cogs":{"current":null,"prior":null},"gross_profit":{"current":null,"prior":null},"employee_costs":{"current":null,"prior":null},"other_expenses":{"current":null,"prior":null},"depreciation":{"current":null,"prior":null},"finance_costs":{"current":null,"prior":null},"profit_before_tax":{"current":null,"prior":null},"tax_expense":{"current":null,"prior":null},"profit_after_tax":{"current":null,"prior":null}},"balance_sheet":{"total_assets":{"current":null,"prior":null},"fixed_assets":{"current":null,"prior":null},"current_assets":{"current":null,"prior":null},"cash_and_equivalents":{"current":null,"prior":null},"trade_receivables":{"current":null,"prior":null},"inventory":{"current":null,"prior":null},"non_current_assets":{"current":null,"prior":null},"total_equity":{"current":null,"prior":null},"long_term_borrowings":{"current":null,"prior":null},"short_term_borrowings":{"current":null,"prior":null},"current_liabilities":{"current":null,"prior":null},"trade_payables":{"current":null,"prior":null}},"cash_flow":{"operating_cash_flow":{"current":null,"prior":null},"investing_cash_flow":{"current":null,"prior":null},"financing_cash_flow":{"current":null,"prior":null},"closing_cash":{"current":null,"prior":null}}}
 
 DOCUMENT TEXT:
-${cleanedText.substring(0, 8000)}`
+${textToSend}`
           }]
         })
-      })
-      const apiData = await apiResp.json()
       rawText = apiData?.content?.[0]?.text || ''
 
     } else {
@@ -4347,17 +4459,12 @@ Rules:
         }
       ]
 
-      const apiResponse = await fetch('/api/claude', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const apiData = await fetchClaudeWithRetry({
           model: MODEL,
           max_tokens: 4000,
           messages: [{ role: 'user', content: visionContent }]
         })
-      })
-      const apiData = await apiResponse.json()
-      rawText = apiData.content?.[0]?.text || ''
+      rawText = apiData?.content?.[0]?.text || ''
     }
 
     onProgress('analysing')
