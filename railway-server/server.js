@@ -153,209 +153,266 @@ const parseJSON = (text) => {
   throw new Error('Could not parse JSON. Preview: ' + text.substring(0, 200))
 }
 
-app.post('/analyze', async (req, res) => {
-  try {
-    const {
-      mode, extractedText, pageImages, missingHint,
-      imageBase64, imageMimeType,
-      fileBase64, mimeType, fileName, companyName
-    } = req.body
+async function callAnthropicWithRetry(requestBody, apiKey) {
+  const DELAYS = [10000, 20000, 40000, 60000, 90000, 120000, 120000, 120000];
 
-    let documentText = ''
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120000);
 
-    // ── TEXT MODE ──────────────────────────────────────────────
-    if (mode === 'text') {
-      documentText = extractedText || ''
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          ...(requestBody.beta ? { 'anthropic-beta': requestBody.beta } : {})
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
 
-    // ── VISION MODE ────────────────────────────────────────────
-    } else if (mode === 'vision') {
-      const safeImages = (pageImages || []).slice(0, 40)
-      const BATCH_SIZE = 20
-      const batches = []
-      for (let i = 0; i < safeImages.length; i += BATCH_SIZE) {
-        batches.push(safeImages.slice(i, i + BATCH_SIZE))
-      }
-      console.log(`[vision] Pages: ${safeImages.length} | Batches: ${batches.length}`)
-
-      const allText = []
-      for (let b = 0; b < batches.length; b++) {
-        const batch = batches[b]
-        const content = []
-        for (let i = 0; i < batch.length; i++) {
-          content.push({ type: 'text', text: `Page ${b * BATCH_SIZE + i + 1}:` })
-          content.push({
-            type: 'image',
-            source: { type: 'base64', media_type: 'image/jpeg', data: batch[i] }
-          })
+      if ([429, 503, 529].includes(res.status)) {
+        if (attempt < 7) {
+          await new Promise(r => setTimeout(r, DELAYS[attempt]));
+          continue;
         }
+        throw new Error('Anthropic API overloaded after 8 retries');
+      }
+
+      const data = await res.json();
+
+      if (data.error) {
+        const msg = data.error.message || String(data.error);
+        if (msg.toLowerCase().includes('overload') && attempt < 7) {
+          await new Promise(r => setTimeout(r, DELAYS[attempt]));
+          continue;
+        }
+        throw new Error(msg);
+      }
+
+      const text = (data.content || [])
+        .filter(b => b.type === 'text')
+        .map(b => b.text)
+        .join('');
+
+      if (!text || text.trim().length < 10) {
+        if (attempt < 7) {
+          await new Promise(r => setTimeout(r, DELAYS[attempt]));
+          continue;
+        }
+        throw new Error('Claude returned empty response after 8 retries');
+      }
+
+      return { data, text };
+
+    } catch (err) {
+      clearTimeout(timer);
+      if (err.name === 'AbortError' && attempt < 7) {
+        await new Promise(r => setTimeout(r, DELAYS[attempt]));
+        continue;
+      }
+      if (attempt < 7 && !err.message?.includes('after 8 retries')) {
+        await new Promise(r => setTimeout(r, DELAYS[attempt]));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Claude returned empty response after 8 retries');
+}
+
+let activeJobs = 0;
+const MAX_CONCURRENT = 3;
+const jobQueue = [];
+
+function processQueue() {
+  while (activeJobs < MAX_CONCURRENT && jobQueue.length > 0) {
+    const { fn, resolve, reject } = jobQueue.shift();
+    activeJobs++;
+    fn()
+      .then(resolve)
+      .catch(reject)
+      .finally(() => {
+        activeJobs--;
+        processQueue();
+      });
+  }
+}
+
+function enqueueJob(fn) {
+  return new Promise((resolve, reject) => {
+    jobQueue.push({ fn, resolve, reject });
+    processQueue();
+  });
+}
+
+async function processAnalyze(body) {
+  const {
+    mode, extractedText, pageImages, missingHint,
+    imageBase64, imageMimeType,
+    fileBase64, mimeType, fileName, companyName
+  } = body
+
+  let documentText = ''
+
+  // ── TEXT MODE ──────────────────────────────────────────────
+  if (mode === 'text') {
+    documentText = extractedText || ''
+
+  // ── VISION MODE ────────────────────────────────────────────
+  } else if (mode === 'vision') {
+    const safeImages = (pageImages || []).slice(0, 40)
+    const BATCH_SIZE = 20
+    const batches = []
+    for (let i = 0; i < safeImages.length; i += BATCH_SIZE) {
+      batches.push(safeImages.slice(i, i + BATCH_SIZE))
+    }
+    console.log(`[vision] Pages: ${safeImages.length} | Batches: ${batches.length}`)
+
+    const allText = []
+    for (let b = 0; b < batches.length; b++) {
+      const batch = batches[b]
+      const content = []
+      for (let i = 0; i < batch.length; i++) {
+        content.push({ type: 'text', text: `Page ${b * BATCH_SIZE + i + 1}:` })
         content.push({
-          type: 'text',
-          text: `Extract ALL text from these financial document pages exactly as it appears.
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/jpeg', data: batch[i] }
+        })
+      }
+      content.push({
+        type: 'text',
+        text: `Extract ALL text from these financial document pages exactly as it appears.
 Include every number, table, label, and footnote.
 Preserve table structure using | as column separator.
 ${missingHint ? 'IMPORTANT — focus on finding: ' + missingHint : ''}
 Output raw extracted text only. Do not summarise.`
-        })
+      })
 
-        const ocrResp = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({
-            model: 'claude-opus-4-7',
-            max_tokens: 8192,
-            messages: [{ role: 'user', content }]
-          })
-        })
-        const ocrData = await ocrResp.json()
-        if (ocrData.error) {
-          const msg = ocrData.error.message || ''
-          if (msg.includes('content filtering') || msg.includes('Output blocked')) {
-            console.warn('[vision] Batch blocked by content filter — skipping')
-            continue
-          }
-          throw new Error('OCR error: ' + msg)
-        }
-        const txt = ocrData?.content?.[0]?.text || ''
-        if (txt) allText.push(txt)
-      }
-      documentText = allText.join('\n\n')
-
-    // ── IMAGE MODE ─────────────────────────────────────────────
-    } else if (mode === 'image') {
-      const imgResp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify({
-          model: 'claude-opus-4-7',
+      let ocrText = ''
+      try {
+        const ocrResult = await callAnthropicWithRetry({
+          model: 'claude-sonnet-4-20250514',
           max_tokens: 8192,
-          messages: [{
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: { type: 'base64', media_type: imageMimeType || 'image/jpeg', data: imageBase64 }
-              },
-              { type: 'text', text: 'Extract ALL text from this financial document image exactly as it appears. Include every number, table, label and footnote. Output raw text only.' }
-            ]
-          }]
-        })
-      })
-      const imgData = await imgResp.json()
-      documentText = imgData?.content?.[0]?.text || ''
-
-    // ── DOCUMENT MODE ──────────────────────────────────────────
-    } else if (mode === 'document') {
-      const docResp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'pdfs-2024-09-25'
-        },
-        body: JSON.stringify({
-          model: 'claude-opus-4-7',
-          max_tokens: 8000,
-          system: SYSTEM_PROMPT,
-          messages: [{
-            role: 'user',
-            content: [
-              {
-                type: 'document',
-                source: {
-                  type: 'base64',
-                  media_type: mimeType || 'application/pdf',
-                  data: fileBase64
-                }
-              },
-              { type: 'text', text: JSON_TEMPLATE }
-            ]
-          }]
-        })
-      })
-
-      const docData = await docResp.json()
-      if (docData.error) throw new Error('Document API error: ' + docData.error.message)
-      const rawJson = docData?.content?.[0]?.text || ''
-      console.log('[document] Response length:', rawJson.length)
-      console.log('[document] Preview:', rawJson.substring(0, 300))
-      if (!rawJson || rawJson.length < 50) throw new Error('Claude returned empty response.')
-
-      let analysis
-      try { analysis = parseJSON(rawJson) } catch (e) {
-        console.error('[document] Parse error:', e.message)
-        return res.status(500).json({ error: 'Analysis failed — document may be too complex.', debug: rawJson.substring(0, 300) })
+          messages: [{ role: 'user', content }]
+        }, process.env.ANTHROPIC_API_KEY)
+        ocrText = ocrResult.text
+      } catch (ocrErr) {
+        const msg = ocrErr.message || ''
+        if (msg.includes('content filtering') || msg.includes('Output blocked')) {
+          console.warn('[vision] Batch blocked by content filter — skipping')
+          continue
+        }
+        throw new Error('OCR error: ' + msg)
       }
-
-      if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
-      console.log('[document] key_observations count:', analysis.key_observations?.length)
-      const ratiosByYear = calculateRatios(analysis)
-      return res.status(200).json({ success: true, analysis, ratiosByYear, mode })
-
-    } else {
-      return res.status(400).json({ error: 'Invalid mode.' })
+      if (ocrText) allText.push(ocrText)
     }
+    documentText = allText.join('\n\n')
 
-    // ── SHARED: analyse extracted text (text / vision / image modes) ──
-    if (!documentText || documentText.replace(/\s/g, '').length < 200) {
-      if (mode === 'vision' || mode === 'image') {
-        documentText = 'Extract all financial data from the provided images.';
-      } else {
-        return res.status(422).json({
-          error: 'Could not extract text from document. Please ensure the PDF is not password-protected.'
-        })
-      }
-    }
+  // ── IMAGE MODE ─────────────────────────────────────────────
+  } else if (mode === 'image') {
+    const { text: imgText } = await callAnthropicWithRetry({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8192,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: imageMimeType || 'image/jpeg', data: imageBase64 }
+          },
+          { type: 'text', text: 'Extract ALL text from this financial document image exactly as it appears. Include every number, table, label and footnote. Output raw text only.' }
+        ]
+      }]
+    }, process.env.ANTHROPIC_API_KEY)
+    documentText = imgText
 
-    console.log('[analyze] Text length:', documentText.length, '| Mode:', mode)
+  // ── DOCUMENT MODE ──────────────────────────────────────────
+  } else if (mode === 'document') {
+    const { text: rawJson } = await callAnthropicWithRetry({
+      beta: 'pdfs-2024-09-25',
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      system: SYSTEM_PROMPT,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: mimeType || 'application/pdf',
+              data: fileBase64
+            }
+          },
+          { type: 'text', text: JSON_TEMPLATE }
+        ]
+      }]
+    }, process.env.ANTHROPIC_API_KEY)
 
-    const analysisResp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-opus-4-7',
-        max_tokens: 8000,
-        system: SYSTEM_PROMPT,
-        messages: [{
-          role: 'user',
-          content: 'DOCUMENT TEXT:\n' + documentText + '\n\n' + JSON_TEMPLATE
-        }]
-      })
-    })
-
-    const analysisData = await analysisResp.json()
-    if (analysisData?.error) throw new Error('Claude API error: ' + (analysisData.error.message || JSON.stringify(analysisData.error)))
-
-    const rawJson = analysisData?.content?.[0]?.text || ''
-    console.log('[analyze] Response length:', rawJson.length)
-    console.log('[analyze] Preview:', rawJson.substring(0, 300))
-    if (!rawJson || rawJson.length < 50) throw new Error('Claude returned empty response.')
+    console.log('[document] Response length:', rawJson.length)
+    console.log('[document] Preview:', rawJson.substring(0, 300))
 
     let analysis
     try { analysis = parseJSON(rawJson) } catch (e) {
-      console.error('[analyze] Parse error:', e.message)
-      return res.status(500).json({ error: 'Analysis failed — document may be too complex.', debug: rawJson.substring(0, 300) })
+      console.error('[document] Parse error:', e.message)
+      throw new Error('Analysis failed — document may be too complex.')
     }
 
     if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
+    console.log('[document] key_observations count:', analysis.key_observations?.length)
     const ratiosByYear = calculateRatios(analysis)
-    return res.status(200).json({ success: true, analysis, ratiosByYear, textLength: documentText.length, mode })
+    return { success: true, analysis, ratiosByYear, mode }
 
+  } else {
+    throw new Error('Invalid mode.')
+  }
+
+  // ── SHARED: analyse extracted text (text / vision / image modes) ──
+  if (!documentText || documentText.replace(/\s/g, '').length < 200) {
+    if (mode === 'vision' || mode === 'image') {
+      documentText = 'Extract all financial data from the provided images.';
+    } else {
+      throw new Error('Could not extract text from document. Please ensure the PDF is not password-protected.')
+    }
+  }
+
+  console.log('[analyze] Text length:', documentText.length, '| Mode:', mode)
+
+  const { text: rawJson } = await callAnthropicWithRetry({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 8000,
+    system: SYSTEM_PROMPT,
+    messages: [{
+      role: 'user',
+      content: 'DOCUMENT TEXT:\n' + documentText + '\n\n' + JSON_TEMPLATE
+    }]
+  }, process.env.ANTHROPIC_API_KEY)
+
+  console.log('[analyze] Response length:', rawJson.length)
+  console.log('[analyze] Preview:', rawJson.substring(0, 300))
+
+  let analysis
+  try { analysis = parseJSON(rawJson) } catch (e) {
+    console.error('[analyze] Parse error:', e.message)
+    throw new Error('Analysis failed — document may be too complex.')
+  }
+
+  if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
+  const ratiosByYear = calculateRatios(analysis)
+  return { success: true, analysis, ratiosByYear, textLength: documentText.length, mode }
+}
+
+app.post('/analyze', async (req, res) => {
+  try {
+    const result = await enqueueJob(() => processAnalyze(req.body));
+    res.json(result);
   } catch (err) {
-    console.error('[analyze] ERROR:', err.message)
-    return res.status(500).json({ error: err.message })
+    console.error('[analyze] ERROR:', err.message);
+    res.status(500).json({ error: err.message });
   }
 })
 
