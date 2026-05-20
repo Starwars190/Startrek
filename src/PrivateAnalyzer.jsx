@@ -1096,6 +1096,12 @@ function AnalyzerCore() {
   if (stage === 'processing') {
     const stageForStep = stepIdx >= 3 ? 3 : stepIdx;
     const progressPct = [5, 30, 60, 80, 92, 100][stepIdx] ?? 5;
+    const formatElapsed = (secs) => {
+      if (secs < 60) return `${secs}s`
+      const minutes = Math.floor(secs / 60)
+      const seconds = secs % 60
+      return `${minutes}m ${seconds}s`
+    }
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 9000, background: 'radial-gradient(ellipse at center, #0d1e3a 0%, #0A1628 70%)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <style>{`
@@ -1136,7 +1142,7 @@ function AnalyzerCore() {
             </div>
           </div>
           <div style={{ textAlign: 'center', fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>
-            Analyzing... {elapsedTime}s
+            Analyzing... {formatElapsed(elapsedTime)}
           </div>
         </div>
       </div>
