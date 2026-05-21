@@ -202,11 +202,12 @@ Output raw extracted text only. Do not summarise.`
           headers: {
             'Content-Type': 'application/json',
             'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01'
+            'anthropic-version': '2023-06-01',
+            'anthropic-beta': 'max-tokens-3-5-sonnet-20250219',
           },
           body: JSON.stringify({
             model: 'claude-opus-4-7',
-            max_tokens: 8192,
+            max_tokens: 16000,
             messages: [{ role: 'user', content }]
           })
         })
@@ -231,11 +232,12 @@ Output raw extracted text only. Do not summarise.`
         headers: {
           'Content-Type': 'application/json',
           'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'max-tokens-3-5-sonnet-20250219',
         },
         body: JSON.stringify({
           model: 'claude-opus-4-7',
-          max_tokens: 8192,
+          max_tokens: 16000,
           messages: [{
             role: 'user',
             content: [
@@ -259,11 +261,11 @@ Output raw extracted text only. Do not summarise.`
           'Content-Type': 'application/json',
           'x-api-key': process.env.ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'pdfs-2024-09-25'
+          'anthropic-beta': 'max-tokens-3-5-sonnet-20250219,pdfs-2024-09-25'
         },
         body: JSON.stringify({
           model: 'claude-opus-4-7',
-          max_tokens: 8000,
+          max_tokens: 16000,
           system: SYSTEM_PROMPT,
           messages: [{
             role: 'user',
@@ -322,11 +324,12 @@ Output raw extracted text only. Do not summarise.`
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'max-tokens-3-5-sonnet-20250219',
       },
       body: JSON.stringify({
         model: 'claude-opus-4-7',
-        max_tokens: 8000,
+        max_tokens: 16000,
         system: SYSTEM_PROMPT,
         messages: [{
           role: 'user',
