@@ -24,61 +24,10 @@ const C = {
   shadowMd: "0 2px 12px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.04)",
 };
 
-const API_URL = "https://api.finsightai.org/api/claude";
+const API_URL = "/api/claude";
 const MODEL = "claude-sonnet-4-5-20250514";
 const VISION_MODEL = "claude-sonnet-4-5-20250514";
 const AUTHOR_NAME = "Aashni Shah and Hitansh Jhaveri";
-
-// ── Client-side queue (throttle concurrent API calls) ────────────────────────
-const MAX_CONCURRENT = 3;
-const _queue = [];
-let _activeJobs = 0;
-
-function enqueueJob(jobFn) {
-  return new Promise((resolve, reject) => {
-    _queue.push({ jobFn, resolve, reject });
-    _drainQueue();
-  });
-}
-
-function _drainQueue() {
-  while (_activeJobs < MAX_CONCURRENT && _queue.length > 0) {
-    const { jobFn, resolve, reject } = _queue.shift();
-    _activeJobs++;
-    jobFn()
-      .then(resolve)
-      .catch(reject)
-      .finally(() => { _activeJobs--; _drainQueue(); });
-  }
-}
-
-// ── Unified retry helper ──────────────────────────────────────────────────────
-async function retryWithBackoff(fn, options = {}) {
-  const {
-    maxRetries = 5,
-    baseDelay = 15000,
-    maxDelay = 120000,
-    onRetry = () => {}
-  } = options;
-  let lastError;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err;
-      const isRetryable =
-        err.status === 529 ||
-        err.status === 503 ||
-        err.status === 429 ||
-        (err.message && err.message.toLowerCase().includes('overload'));
-      if (!isRetryable || attempt === maxRetries) throw err;
-      const delay = Math.min(baseDelay * Math.pow(1.5, attempt - 1), maxDelay);
-      onRetry(attempt, maxRetries, Math.round(delay / 1000));
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
-  throw lastError;
-}
 
 const PERIODS = [
   { id: "latest_quarter", label: "Latest Quarter", short: "Latest Q", desc: "Most recent quarter" },
@@ -91,40 +40,58 @@ const PERIODS = [
 const DEFAULT_PERIOD = "1_year";
 
 async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
+  const RETRYABLE = new Set([429, 503, 529]);
+  const MAX_RETRIES = 3;
   const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: "user", content: userMsg }] };
   if (system) body.system = system;
   if (tools.length) body.tools = tools;
 
-  return retryWithBackoff(async () => {
+  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120_000);
+    const timeoutId = setTimeout(() => controller.abort(), 90_000);
     let res;
     try {
       res = await fetch(API_URL, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body), signal: controller.signal,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
       });
     } catch (err) {
       clearTimeout(timeoutId);
-      if (err.name === "AbortError") { const e = new Error("Request timed out"); e.status = 529; throw e; }
+      if (err.name === "AbortError") {
+        const isLastAttempt = attempt > MAX_RETRIES;
+        console.warn(`callClaude attempt ${attempt}: request timed out after 90s`);
+        if (isLastAttempt) throw new Error("Rate limit exceeded after 3 retries. Please try again in a few minutes.");
+        continue;
+      }
       throw err;
     }
     clearTimeout(timeoutId);
-    if (res.status === 429 || res.status === 503 || res.status === 529) {
-      const e = new Error(`API returned ${res.status}`); e.status = res.status; throw e;
+
+    if (RETRYABLE.has(res.status)) {
+      const isLastAttempt = attempt > MAX_RETRIES;
+      const baseWait = parseInt(res.headers.get("retry-after") || "60", 10);
+      const waitSeconds = baseWait * Math.pow(2, attempt - 1);
+      console.warn(`callClaude attempt ${attempt}: status ${res.status}, waiting ${waitSeconds}s before retry`);
+      if (isLastAttempt) throw new Error("Rate limit exceeded after 3 retries. Please try again in a few minutes.");
+      await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
+      continue;
     }
+
     const json = await res.json();
     if (json.error) {
-      const msg = (typeof json.error === "object" ? json.error?.message : String(json.error)) || "";
-      if (msg.toLowerCase().includes("overloaded")) { const e = new Error("API overloaded"); e.status = 529; throw e; }
       if (json.error_type) {
+        // Structured error from proxy (400/402/403): API is unavailable, not a transient failure
         const err = new Error(json.message || "API unavailable");
-        err.apiUnavailable = true; err.errorType = json.error_type; throw err;
+        err.apiUnavailable = true;
+        err.errorType = json.error_type;
+        throw err;
       }
       throw new Error(json.error.message || "API call failed");
     }
     return json.content.filter(b => b.type === "text").map(b => b.text).join("");
-  }, { maxRetries: 5, baseDelay: 15000, maxDelay: 120000 });
+  }
 }
 
 async function callClaudeVision({ pageImages, extractionPrompt, maxTokens = 4000 }) {
@@ -136,8 +103,8 @@ async function callClaudeVision({ pageImages, extractionPrompt, maxTokens = 4000
     { type: 'text', text: extractionPrompt }
   ];
   const body = { model: MODEL, max_tokens: maxTokens, messages: [{ role: 'user', content }] };
-
-  return retryWithBackoff(async () => {
+  const RETRYABLE = new Set([429, 503, 529]);
+  for (let attempt = 1; attempt <= 4; attempt++) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120_000);
     let res;
@@ -145,17 +112,19 @@ async function callClaudeVision({ pageImages, extractionPrompt, maxTokens = 4000
       res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
     } catch (err) {
       clearTimeout(timeoutId);
-      if (err.name === 'AbortError') { const e = new Error('Vision timed out'); e.status = 529; throw e; }
+      if (err.name === 'AbortError') { if (attempt > 3) throw new Error('Vision extraction timed out'); continue; }
       throw err;
     }
     clearTimeout(timeoutId);
-    if (res.status === 429 || res.status === 503 || res.status === 529) {
-      const e = new Error(`Vision API returned ${res.status}`); e.status = res.status; throw e;
+    if (RETRYABLE.has(res.status)) {
+      if (attempt > 3) throw new Error('Rate limit on vision extraction');
+      await new Promise(r => setTimeout(r, 60000 * attempt));
+      continue;
     }
     const json = await res.json();
     if (json.error) throw new Error(json.error.message || 'Vision API failed');
     return json.content.filter(b => b.type === 'text').map(b => b.text).join('');
-  }, { maxRetries: 5, baseDelay: 15000, maxDelay: 120000 });
+  }
 }
 
 function cleanText(text) {
@@ -4214,50 +4183,6 @@ function checkBalanceSheet(bs, label) {
 
 async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () => {}) {
   console.log('[START] processPrivateCompanyDoc called', file?.name)
-
-  // ── Retry wrapper for /api/claude calls ────────────────────────────────────
-  async function fetchClaudeWithRetry(requestBody) {
-    return retryWithBackoff(
-      async () => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 120_000);
-        try {
-          const res = await fetch('/api/claude', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestBody),
-            signal: controller.signal,
-          });
-          clearTimeout(timeoutId);
-          if (res.status === 429 || res.status === 503 || res.status === 529) {
-            const e = new Error(`API returned ${res.status}`); e.status = res.status;
-            e.isOverloaded = true; throw e;
-          }
-          const json = await res.json();
-          const errMsg = (typeof json.error === 'object' ? json.error?.message : String(json.error || '')) || '';
-          if (errMsg.toLowerCase().includes('overloaded')) {
-            const e = new Error('API overloaded'); e.status = 529; e.isOverloaded = true; throw e;
-          }
-          return json;
-        } catch (err) {
-          clearTimeout(timeoutId);
-          if (err.name === 'AbortError') {
-            const e = new Error('Request timed out'); e.status = 529; e.isOverloaded = true; throw e;
-          }
-          throw err;
-        }
-      },
-      {
-        maxRetries: 5,
-        baseDelay: 15000,
-        maxDelay: 120000,
-        onRetry: (attempt, max) => {
-          onProgress(`Taking a little longer than usual — please don't close this tab`);
-        },
-      }
-    );
-  }
-
   try {
     onProgress('reading')
     onDebug('FILE RECEIVED: ' + file.name)
@@ -4292,19 +4217,15 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
       throw e
     }
 
-    // ── Text truncation: first 20k + last 20k chars if > 40k ──────────────────
-    let textToSend = cleanedText
-    if (cleanedText.length > 40000) {
-      console.log(`PDF text truncated from ${cleanedText.length}chars to 40000 chars`)
-      textToSend = cleanedText.substring(0, 20000) + cleanedText.substring(cleanedText.length - 20000)
-    }
-
     let rawText
     if (isTextPdf) {
       // ── Text path ──────────────────────────────────────────────────────────
       onProgress('extracting')
       console.log('[FETCH] About to call /api/claude')
-      const apiData = await enqueueJob(() => fetchClaudeWithRetry({
+      const apiResp = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4000,
           system: 'You are a senior chartered accountant. Extract financial data from Indian company filings. Return ONLY valid JSON. No markdown, no text outside the JSON object.',
@@ -4314,9 +4235,11 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
 {"company_name":"","financial_year":"","unit":"Lakhs","profit_loss":{"revenue":{"current":null,"prior":null},"other_income":{"current":null,"prior":null},"cogs":{"current":null,"prior":null},"gross_profit":{"current":null,"prior":null},"employee_costs":{"current":null,"prior":null},"other_expenses":{"current":null,"prior":null},"depreciation":{"current":null,"prior":null},"finance_costs":{"current":null,"prior":null},"profit_before_tax":{"current":null,"prior":null},"tax_expense":{"current":null,"prior":null},"profit_after_tax":{"current":null,"prior":null}},"balance_sheet":{"total_assets":{"current":null,"prior":null},"fixed_assets":{"current":null,"prior":null},"current_assets":{"current":null,"prior":null},"cash_and_equivalents":{"current":null,"prior":null},"trade_receivables":{"current":null,"prior":null},"inventory":{"current":null,"prior":null},"non_current_assets":{"current":null,"prior":null},"total_equity":{"current":null,"prior":null},"long_term_borrowings":{"current":null,"prior":null},"short_term_borrowings":{"current":null,"prior":null},"current_liabilities":{"current":null,"prior":null},"trade_payables":{"current":null,"prior":null}},"cash_flow":{"operating_cash_flow":{"current":null,"prior":null},"investing_cash_flow":{"current":null,"prior":null},"financing_cash_flow":{"current":null,"prior":null},"closing_cash":{"current":null,"prior":null}}}
 
 DOCUMENT TEXT:
-${textToSend}`
+${cleanedText.substring(0, 8000)}`
           }]
-        }))
+        })
+      })
+      const apiData = await apiResp.json()
       rawText = apiData?.content?.[0]?.text || ''
 
     } else {
@@ -4424,12 +4347,17 @@ Rules:
         }
       ]
 
-      const apiData = await enqueueJob(() => fetchClaudeWithRetry({
+      const apiResponse = await fetch('/api/claude', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           model: MODEL,
           max_tokens: 4000,
           messages: [{ role: 'user', content: visionContent }]
-        }))
-      rawText = apiData?.content?.[0]?.text || ''
+        })
+      })
+      const apiData = await apiResponse.json()
+      rawText = apiData.content?.[0]?.text || ''
     }
 
     onProgress('analysing')
@@ -5847,131 +5775,6 @@ function ProcessingSteps({ progress, error, elapsedSecs }) {
   );
 }
 
-// ── PrivateDocProcessingStatus ────────────────────────────────────────────────
-function PrivateDocProcessingStatus({ showRetryWarning }) {
-  const [pct, setPct] = useState(0);
-  const startRef = useRef(Date.now());
-
-  useEffect(() => {
-    startRef.current = Date.now();
-    const id = setInterval(() => {
-      const elapsed = (Date.now() - startRef.current) / 1000;
-      setPct(Math.min(99, Math.round(99 * (1 - Math.exp(-elapsed / 60)))));
-    }, 500);
-    return () => clearInterval(id);
-  }, []);
-
-  const PROC_STEPS = [
-    { threshold: 0,  label: 'Reading your document...' },
-    { threshold: 15, label: 'Extracting financial data...' },
-    { threshold: 35, label: 'Building your Word brief...' },
-    { threshold: 60, label: 'Generating Excel model...' },
-    { threshold: 85, label: 'Finalising your files...' },
-    { threshold: 99, label: 'Ready to download!' },
-  ];
-  const stepLabel = [...PROC_STEPS].reverse().find(s => pct >= s.threshold)?.label || PROC_STEPS[0].label;
-
-  return (
-    <div style={{ background: '#0A1628', borderRadius: 16, padding: '36px 32px', maxWidth: 520, margin: '24px auto 0', boxShadow: '0 8px 40px rgba(0,0,0,0.35)' }}>
-      <style>{`@keyframes pdoc-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.8)}}`}</style>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28 }}>
-        <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 8px #4ade80', animation: 'pdoc-pulse 1.5s ease-in-out infinite', flexShrink: 0 }} />
-        <div style={{ fontSize: 16, fontWeight: 700, color: '#fff', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>Processing your document</div>
-      </div>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ height: 8, borderRadius: 4, background: 'rgba(255,255,255,0.1)', overflow: 'hidden', marginBottom: 8 }}>
-          <div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg,#0D7A3E,#4ade80)', borderRadius: 4, transition: 'width .5s ease', boxShadow: '0 0 10px rgba(74,222,128,.4)' }} />
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'rgba(255,255,255,.5)' }}>
-          <span>{stepLabel}</span>
-          <span>{pct}%</span>
-        </div>
-      </div>
-      <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,.4)', textAlign: 'center', marginBottom: showRetryWarning ? 14 : 0 }}>
-        Usually ready in 60–90 seconds
-      </div>
-      {showRetryWarning && (
-        <div style={{ background: 'rgba(255,255,255,.06)', border: '1px solid rgba(255,255,255,.1)', borderRadius: 8, padding: '10px 14px', fontSize: 12.5, color: 'rgba(255,255,255,.6)', textAlign: 'center', lineHeight: 1.6 }}>
-          Taking a little longer than usual — please don't close this tab
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── PrivateDocSuccessScreen ───────────────────────────────────────────────────
-function PrivateDocSuccessScreen({ docReady, onReset }) {
-  const { excelBlob, excelFileName, docxBlob, docxFileName, companyName, generatedAt } = docReady;
-  const timeStr = generatedAt ? new Date(generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-
-  useEffect(() => {
-    if (docxBlob)  setTimeout(() => triggerBlobDownload(docxBlob, docxFileName), 400);
-    if (excelBlob) setTimeout(() => triggerBlobDownload(excelBlob, excelFileName), 1400);
-  }, []);
-
-  return (
-    <div style={{ background: '#0A1628', borderRadius: 16, padding: '40px 32px', maxWidth: 520, margin: '24px auto 0', boxShadow: '0 8px 40px rgba(0,0,0,0.35)', textAlign: 'center' }}>
-      <style>{`@keyframes pdoc-pop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}`}</style>
-      <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(74,222,128,.15)', border: '2px solid #4ade80', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', fontSize: 30, color: '#4ade80', animation: 'pdoc-pop .4s cubic-bezier(.34,1.56,.64,1) both' }}>✓</div>
-      <div style={{ fontSize: 20, fontWeight: 800, color: '#fff', fontFamily: "'Plus Jakarta Sans',sans-serif", marginBottom: 6 }}>Your files are downloading…</div>
-      {companyName && <div style={{ fontSize: 13.5, color: 'rgba(255,255,255,.6)', marginBottom: 4 }}>{companyName}</div>}
-      {timeStr && <div style={{ fontSize: 12, color: 'rgba(255,255,255,.35)', marginBottom: 24 }}>Generated at {timeStr}</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
-        {docxBlob && (
-          <button onClick={() => triggerBlobDownload(docxBlob, docxFileName)}
-            style={{ padding: '12px 0', borderRadius: 10, border: '1px solid rgba(255,255,255,.15)', background: 'rgba(255,255,255,.07)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
-            📄 Download Word Brief Again
-          </button>
-        )}
-        {excelBlob && (
-          <button onClick={() => triggerBlobDownload(excelBlob, excelFileName)}
-            style={{ padding: '12px 0', borderRadius: 10, border: '1px solid rgba(74,222,128,.3)', background: 'rgba(74,222,128,.08)', color: '#4ade80', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
-            📊 Download Excel Model Again
-          </button>
-        )}
-      </div>
-      <button onClick={onReset}
-        style={{ padding: '12px 28px', borderRadius: 10, border: 'none', background: '#1a3a5c', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-        Analyse another document
-      </button>
-    </div>
-  );
-}
-
-// ── PrivateDocErrorCard ───────────────────────────────────────────────────────
-function PrivateDocErrorCard({ isOverloaded, error, fileSizeMB, onRetry, onReset }) {
-  return (
-    <div style={{ background: '#0A1628', borderRadius: 16, padding: '36px 32px', maxWidth: 520, margin: '24px auto 0', boxShadow: '0 8px 40px rgba(0,0,0,0.35)', textAlign: 'center' }}>
-      <div style={{ fontSize: 40, marginBottom: 16 }}>⏳</div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: '#fff', fontFamily: "'Plus Jakarta Sans',sans-serif", marginBottom: 12 }}>
-        We couldn't process this document right now.
-      </div>
-      <div style={{ fontSize: 13.5, color: 'rgba(255,255,255,.6)', lineHeight: 1.75, marginBottom: 24 }}>
-        {isOverloaded ? (
-          <>This is usually temporary — Anthropic's AI service is under high demand.<br /><br />Please try again in 2–3 minutes.</>
-        ) : (
-          error || 'An unexpected error occurred. Please try again.'
-        )}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <button onClick={onRetry}
-          style={{ padding: '13px 0', borderRadius: 10, border: 'none', background: '#4ade80', color: '#0A1628', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
-          Try Again
-        </button>
-        {fileSizeMB > 5 && (
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,.4)', padding: '10px 14px', background: 'rgba(255,255,255,.05)', borderRadius: 8, lineHeight: 1.5 }}>
-            Your PDF is {fileSizeMB.toFixed(1)} MB — try a smaller or text-based version for faster results.
-          </div>
-        )}
-        <button onClick={onReset}
-          style={{ padding: '11px 0', borderRadius: 10, border: '1px solid rgba(255,255,255,.15)', background: 'transparent', color: 'rgba(255,255,255,.6)', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
-          Upload a different document
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function PrivateDocUploadZone({ onFileSelected, isProcessing, progress, error }) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
@@ -6208,8 +6011,6 @@ function FinSightApp() {
   const [privateDocLoading, setPrivateDocLoading] = useState(false);
   const [privateDocProgress, setPrivateDocProgress] = useState("");
   const [privateDocError, setPrivateDocError] = useState("");
-  const [privateDocIsOverloaded, setPrivateDocIsOverloaded] = useState(false);
-  const [privateDocShowRetryWarning, setPrivateDocShowRetryWarning] = useState(false);
   const [docReady, setDocReady] = useState(null);
   const [selectedOutputs, setSelectedOutputs] = useState({ briefWord: true, excel: true, detailedPdf: false, detailedWord: false });
   const [privateDocStage, setPrivateDocStage] = useState('idle');
@@ -6245,41 +6046,19 @@ function FinSightApp() {
     } catch (ex) { setErr(ex.message || "Analysis failed."); setScreen("error"); }
   };
 
-  const resetPrivateDoc = () => {
-    setPrivateDocFile(null);
-    setPrivateDocError("");
-    setPrivateDocIsOverloaded(false);
-    setPrivateDocShowRetryWarning(false);
-    setPrivateDocProgress("");
-    setPrivateDocLoading(false);
-    setDocReady(null);
-    setPrivateDocStage('idle');
-  };
-
   const handlePrivateFileSelected = (file) => {
     setPrivateDocFile(file);
     setPrivateDocError("");
-    setPrivateDocIsOverloaded(false);
     setPrivateDocStage('uploaded');
   };
 
   const runPrivateDocProcess = async (file, outputs) => {
-    setPrivateDocLoading(true);
-    setPrivateDocError("");
-    setPrivateDocIsOverloaded(false);
-    setPrivateDocShowRetryWarning(false);
-    setPrivateDocProgress("");
-    setDocReady(null);
+    setPrivateDocLoading(true); setPrivateDocError(""); setPrivateDocProgress(""); setDocReady(null);
     setScannedPdfWarn(null);
     setPrivateDocStage('processing');
     try {
-      const result = await processPrivateCompanyDoc(file, outputs, (msg) => {
-        setPrivateDocProgress(msg);
-        if (msg && msg.toLowerCase().includes("taking a little longer")) {
-          setPrivateDocShowRetryWarning(true);
-        }
-      });
-      const ready = {
+      const result = await processPrivateCompanyDoc(file, outputs, (msg) => setPrivateDocProgress(msg));
+      setDocReady({
         pdfBlob: result.pdfBlob,
         pdfFileName: result.pdfFileName,
         docxBlob: result.docxBlob,
@@ -6295,7 +6074,6 @@ function FinSightApp() {
         extractionWarnings: result.extractionWarnings,
         selectedOutputs: outputs,
         companyName: result.companyInfo?.name || 'Private Company',
-        generatedAt: Date.now(),
         summary: {
           sectionCount: result.sectionCount,
           ratioCount: result.ratioCount,
@@ -6305,17 +6083,14 @@ function FinSightApp() {
           failedChunks: result.failedChunks,
           extractionMethod: result.extractionMethod,
         }
-      };
-      setDocReady(ready);
+      });
       setPrivateDocLoading(false);
       setPrivateDocProgress("");
-      setPrivateDocStage('done');
     } catch (e) {
       setPrivateDocError(e.message || "Failed to process document.");
-      setPrivateDocIsOverloaded(!!e.isOverloaded);
       setPrivateDocLoading(false);
       setPrivateDocProgress("");
-      setPrivateDocStage('error');
+      setPrivateDocStage('idle');
     }
   };
 
@@ -6389,37 +6164,7 @@ function FinSightApp() {
           ))}
         </div>
 
-{/* ── Private document processor ───────────────────────────────────── */}
-        <div style={{ width: '100%', maxWidth: 620, margin: '0 auto' }}>
-          {docReady ? (
-            <PrivateDocSuccessScreen docReady={docReady} onReset={resetPrivateDoc} />
-          ) : privateDocStage === 'error' ? (
-            <PrivateDocErrorCard
-              isOverloaded={privateDocIsOverloaded}
-              error={privateDocError}
-              fileSizeMB={privateDocFile ? privateDocFile.size / 1048576 : 0}
-              onRetry={() => runPrivateDocProcess(privateDocFile, selectedOutputs)}
-              onReset={resetPrivateDoc}
-            />
-          ) : privateDocStage === 'processing' ? (
-            <PrivateDocProcessingStatus showRetryWarning={privateDocShowRetryWarning} />
-          ) : privateDocStage === 'uploaded' ? (
-            <DeliverableSelectionScreen
-              file={privateDocFile}
-              selectedOutputs={selectedOutputs}
-              onToggle={k => setSelectedOutputs(prev => ({ ...prev, [k]: !prev[k] }))}
-              onCancel={resetPrivateDoc}
-              onGenerate={() => runPrivateDocProcess(privateDocFile, selectedOutputs)}
-            />
-          ) : (
-            <PrivateDocUploadZone
-              onFileSelected={handlePrivateFileSelected}
-              isProcessing={false}
-              progress=""
-              error=""
-            />
-          )}
-        </div>
+<PrivateAnalyzer />
       </main>
 
       <footer style={{ padding: "18px 20px", textAlign: "center", borderTop: `1px solid ${C.border}`, background: C.bgCard }}>
