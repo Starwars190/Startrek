@@ -875,14 +875,22 @@ function AnalyzerCore() {
 
       setStepIdx(1);
 
-      const res = await fetch(
-        'https://api.finsightai.org/analyze',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-        }
-      );
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 300000);
+      let res;
+      try {
+        res = await fetch(
+          'https://api.finsightai.org/analyze',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          }
+        );
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
