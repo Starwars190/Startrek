@@ -26,6 +26,28 @@ app.get('/', (req, res) => {
   res.json({ status: 'FinSight AI Analyzer — online' })
 })
 
+app.post('/api/claude', async (req, res) => {
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    const response = await fetch(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify(req.body)
+      }
+    )
+    const data = await response.json()
+    return res.status(response.status).json(data)
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
 const SYSTEM_PROMPT = `You are a financial data extraction API. You output ONLY raw JSON.
 No prose. No markdown. No code fences. No explanation before or after.
 Start your response with { and end with }
