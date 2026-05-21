@@ -949,7 +949,6 @@ function AnalyzerCore() {
       const missingSections = [];
       if (!hasIncomeData(analysis)) missingSections.push('income statement, profit and loss, revenue, expenses, net profit');
       if (!hasBalanceData(analysis)) missingSections.push('balance sheet, total assets, total liabilities, equity');
-      if (!hasCashFlowData(analysis)) missingSections.push('cash flow, operating activities, investing activities, financing activities');
 
       if (missingSections.length > 0) {
         setStepIdx(1);
