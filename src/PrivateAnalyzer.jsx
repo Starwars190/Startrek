@@ -1030,12 +1030,8 @@ function AnalyzerCore() {
         companyName || 'PrivateCompany')
         .replace(/[^a-zA-Z0-9 ]/g, '').trim().replace(/\s+/g, '_');
 
-      triggerDownload(wordBlob, `${safeName}_Financial_Brief.docx`);
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
       setStepIdx(4);
       const excelBlob = await generateExcelWorkbook(analysis, ratiosByYear);
-      triggerDownload(excelBlob, `${safeName}_Financial_Model.xlsx`);
 
       setResultMeta({
         company: analysis.company_profile?.name ||
@@ -1044,6 +1040,8 @@ function AnalyzerCore() {
         wordFile: `${safeName}_Financial_Brief.docx`,
         excelFile: `${safeName}_Financial_Model.xlsx`,
         _analysis: analysis,
+        wordBlob: wordBlob,
+        excelBlob: excelBlob,
       });
       setStepIdx(5);
       setStage('done');
