@@ -696,70 +696,6 @@ function recalculateRatios(data) {
   return result
 }
 
-async function fetchWithRetry(url, options) {
-  const DELAYS = [10000, 20000, 40000, 60000, 90000, 120000, 120000, 120000];
-
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120000);
-
-    try {
-      const res = await fetch(url, { ...options, signal: controller.signal });
-      clearTimeout(timer);
-
-      if ([429, 503, 529].includes(res.status)) {
-        if (attempt < 7) {
-          await new Promise(r => setTimeout(r, DELAYS[attempt]));
-          continue;
-        }
-        return null;
-      }
-
-      let data;
-      try { data = await res.json(); }
-      catch {
-        if (attempt < 7) {
-          await new Promise(r => setTimeout(r, DELAYS[attempt]));
-          continue;
-        }
-        return null;
-      }
-
-      const errMsg = typeof data.error === 'string'
-        ? data.error
-        : (data.error?.message || '');
-
-      if (errMsg.toLowerCase().includes('overload') ||
-          errMsg.toLowerCase().includes('overloaded')) {
-        if (attempt < 7) {
-          await new Promise(r => setTimeout(r, DELAYS[attempt]));
-          continue;
-        }
-        return null;
-      }
-
-      if (!data || (typeof data === 'object' && Object.keys(data).length === 0)) {
-        if (attempt < 7) {
-          await new Promise(r => setTimeout(r, DELAYS[attempt]));
-          continue;
-        }
-        return null;
-      }
-
-      return data;
-
-    } catch (err) {
-      clearTimeout(timer);
-      if (attempt < 7) {
-        await new Promise(r => setTimeout(r, DELAYS[attempt]));
-        continue;
-      }
-      return null;
-    }
-  }
-  return null;
-}
-
 async function compressPdfIfNeeded(file, pdfjsLib) {
   if (file.size <= 2 * 1024 * 1024) return file
 
@@ -854,6 +790,7 @@ function AnalyzerCore() {
   const process = async () => {
     if (!file) return;
     setStage('processing');
+    setError('');
     setStepIdx(0);
 
     try {
@@ -913,12 +850,6 @@ function AnalyzerCore() {
             }
           }
 
-          if (extractedText && extractedText.length > 40000) {
-            console.log('PDF text truncated from ' + extractedText.length + ' to 40000 chars');
-            extractedText = extractedText.substring(0, 20000) +
-              extractedText.substring(extractedText.length - 20000);
-          }
-
           requestBody = {
             mode: 'text',
             extractedText: extractedText,
@@ -944,7 +875,7 @@ function AnalyzerCore() {
 
       setStepIdx(1);
 
-      const result = await fetchWithRetry(
+      const res = await fetch(
         'https://api.finsightai.org/analyze',
         {
           method: 'POST',
@@ -953,21 +884,12 @@ function AnalyzerCore() {
         }
       );
 
-      if (!result) {
-        setStepIdx(3);
-        setResultMeta({
-          company: companyName || 'Private Company',
-          years: [],
-          wordFile: null,
-          excelFile: null,
-          _analysis: null,
-          processingDelayed: true,
-        });
-        setStage('done');
-        return;
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Server error: ${res.status}`);
       }
 
-      let { analysis, ratiosByYear } = result;
+      let { analysis, ratiosByYear } = await res.json();
       if ((analysis.financial_years || []).length > 1) {
         analysis.financial_years = [...analysis.financial_years].sort((a, b) => {
           const numA = parseInt(String(a).match(/\d{4}/)?.[0] || '0');
@@ -1053,28 +975,34 @@ function AnalyzerCore() {
 
         const missingHint = missingSections.join(' AND ');
 
-        let data2 = null;
-        try {
-          data2 = await fetchWithRetry(
-            'https://api.finsightai.org/analyze',
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                mode: 'vision',
-                pageImages,
-                missingHint,
-                fileName: fileToProcess.name,
-                companyName: companyName.trim() || null,
-              }),
-            }
-          );
-        } catch (visionErr) {
-          console.warn('Vision fallback failed, continuing:', visionErr.message);
-          data2 = null;
-        }
+        const res2 = await fetch(
+          'https://api.finsightai.org/analyze',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'vision',
+              pageImages,
+              missingHint,
+              fileName: fileToProcess.name,
+              companyName: companyName.trim() || null,
+            }),
+          }
+        );
 
-        if (data2) {
+        if (!res2.ok) {
+          const e2 = await res2.json().catch(() => ({}));
+          if (e2.error && (
+            e2.error.includes('content filtering') ||
+            e2.error.includes('Output blocked') ||
+            e2.error.includes('content_policy')
+          )) {
+            console.warn('Vision fallback blocked by content filter — keeping existing data');
+          } else {
+            throw new Error(e2.error || 'Vision fallback failed');
+          }
+        } else {
+          const data2 = await res2.json();
           if (!hasIncomeData(analysis) && hasIncomeData(data2.analysis)) {
             analysis.income_statement = data2.analysis.income_statement;
           }
@@ -1113,16 +1041,8 @@ function AnalyzerCore() {
       setStage('done');
 
     } catch (e) {
-      console.error('Processing error:', e.message);
-      setResultMeta({
-        company: companyName || 'Private Company',
-        years: [],
-        wordFile: null,
-        excelFile: null,
-        _analysis: null,
-        processingDelayed: true,
-      });
-      setStage('done');
+      setError(e.message || 'Processing failed.');
+      setStage('error');
     }
   };
 
@@ -1133,38 +1053,6 @@ function AnalyzerCore() {
   };
 
   if (stage === 'done' && resultMeta) {
-      if (resultMeta.processingDelayed) {
-        return (
-          <div style={{ maxWidth: 520, margin: '0 auto', background: '#fff',
-            borderRadius: 16, padding: '40px 36px',
-            boxShadow: '0 4px 24px rgba(10,22,40,.1)',
-            border: '1px solid #E5E7EB', textAlign: 'center' }}>
-            <div style={{ width: 60, height: 60, borderRadius: '50%',
-              background: '#F0FAF5', display: 'flex', alignItems: 'center',
-              justifyContent: 'center', fontSize: 28, margin: '0 auto 20px' }}>
-              ⏳
-            </div>
-            <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif",
-              fontSize: 22, fontWeight: 800, color: '#0A1628', marginBottom: 12 }}>
-              Your report is being prepared
-            </h2>
-            <p style={{ color: '#6B7280', fontSize: 14, lineHeight: 1.7,
-              marginBottom: 28, maxWidth: 380, margin: '0 auto 28px' }}>
-              The service is currently under high demand.
-              Your document has been received and is being processed.
-              Please try uploading again in 2–3 minutes —
-              it will work on the next attempt.
-            </p>
-            <button onClick={reset}
-              style={{ background: '#0A1628', color: '#fff', border: 'none',
-                borderRadius: 10, padding: '12px 28px', fontSize: 14,
-                fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-              Try Again
-            </button>
-          </div>
-        );
-      }
-
     return (
       <div style={{ maxWidth: 520, margin: '0 auto', background: '#fff', borderRadius: 16, padding: '40px 36px', boxShadow: '0 4px 24px rgba(10,22,40,.1)', border: '1px solid #E5E7EB', textAlign: 'center' }}>
         <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#F0FAF5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, margin: '0 auto 20px' }}>✓</div>
@@ -1253,18 +1141,8 @@ function AnalyzerCore() {
               <div style={{ height: '100%', borderRadius: 8, width: `${progressPct}%`, background: 'linear-gradient(90deg, #C9A84C 0%, #f0d080 100%)', boxShadow: '0 0 20px rgba(201,168,76,0.6)', transition: 'width 0.8s ease' }} />
             </div>
           </div>
-          <div style={{ textAlign: 'center', fontSize: 13,
-            color: 'rgba(255,255,255,0.4)' }}>
-            {[
-              'Reading your document...',
-              'Extracting financial data...',
-              'Building Word brief...',
-              'Generating Excel model...',
-              'Finalising your files...',
-              'Ready to download!'
-            ][stepIdx] || 'Processing...'}
-            {' — '}
-            {formatElapsed(elapsedTime)}
+          <div style={{ textAlign: 'center', fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>
+            Analyzing... {formatElapsed(elapsedTime)}
           </div>
         </div>
       </div>
@@ -1316,6 +1194,11 @@ function AnalyzerCore() {
           style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid #E5E7EB', fontSize: 14, color: NAVY, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
       </div>
 
+      {error && (
+        <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#DC2626' }}>
+          {error}
+        </div>
+      )}
 
       <div style={{ background: '#F8FAFC', border: '1px solid #E5E7EB', borderRadius: 12, padding: '14px 18px', marginBottom: 16 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: NAVY, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.05em' }}>What You Get</div>
@@ -1382,4 +1265,3 @@ export default function PrivateAnalyzer() {
     </>
   );
 }
-
