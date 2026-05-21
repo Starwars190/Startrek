@@ -24,7 +24,7 @@ const C = {
   shadowMd: "0 2px 12px rgba(0,0,0,.08), 0 1px 4px rgba(0,0,0,.04)",
 };
 
-const API_URL = "/api/claude";
+const API_URL = "https://api.finsightai.org/analyze";
 const MODEL = "claude-sonnet-4-5-20250514";
 const VISION_MODEL = "claude-sonnet-4-5-20250514";
 const AUTHOR_NAME = "Aashni Shah and Hitansh Jhaveri";
@@ -4222,7 +4222,7 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 120_000);
         try {
-          const res = await fetch('/api/claude', {
+          const res = await fetch('https://api.finsightai.org/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody),
