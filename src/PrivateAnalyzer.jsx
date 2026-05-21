@@ -983,20 +983,28 @@ function AnalyzerCore() {
 
         const missingHint = missingSections.join(' AND ');
 
-        const res2 = await fetch(
-          'https://api.finsightai.org/analyze',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              mode: 'vision',
-              pageImages,
-              missingHint,
-              fileName: fileToProcess.name,
-              companyName: companyName.trim() || null,
-            }),
-          }
-        );
+        const controller2 = new AbortController();
+        const timeoutId2 = setTimeout(() => controller2.abort(), 300000);
+        let res2;
+        try {
+          res2 = await fetch(
+            'https://api.finsightai.org/analyze',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                mode: 'vision',
+                pageImages,
+                missingHint,
+                fileName: fileToProcess.name,
+                companyName: companyName.trim() || null,
+              }),
+              signal: controller2.signal,
+            }
+          );
+        } finally {
+          clearTimeout(timeoutId2);
+        }
 
         if (!res2.ok) {
           const e2 = await res2.json().catch(() => ({}));
