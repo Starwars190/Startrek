@@ -1091,7 +1091,16 @@ function AnalyzerCore() {
             <div style={{ fontSize: 13, color: '#374151' }}><span style={{ marginRight: 8 }}>📊</span><strong>{resultMeta.excelFile}</strong></div>
           </div>
         </div>
-        <p style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 24 }}>Both files should have downloaded automatically. Check your Downloads folder.</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
+          <button onClick={() => triggerDownload(resultMeta.wordBlob, resultMeta.wordFile)}
+            style={{ background: NAVY, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            📄 Download Word Brief
+          </button>
+          <button onClick={() => triggerDownload(resultMeta.excelBlob, resultMeta.excelFile)}
+            style={{ background: '#1A6B3C', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            📊 Download Excel Model
+          </button>
+        </div>
         <button onClick={reset} style={{ background: NAVY, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
           Analyse Another Document
         </button>
