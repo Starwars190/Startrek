@@ -203,7 +203,6 @@ Output raw extracted text only. Do not summarise.`
             'Content-Type': 'application/json',
             'x-api-key': process.env.ANTHROPIC_API_KEY,
             'anthropic-version': '2023-06-01',
-            'anthropic-beta': 'max-tokens-3-5-sonnet-20250219',
           },
           body: JSON.stringify({
             model: 'claude-sonnet-4-20250514',
@@ -233,7 +232,6 @@ Output raw extracted text only. Do not summarise.`
           'Content-Type': 'application/json',
           'x-api-key': process.env.ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'max-tokens-3-5-sonnet-20250219',
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
@@ -261,7 +259,7 @@ Output raw extracted text only. Do not summarise.`
           'Content-Type': 'application/json',
           'x-api-key': process.env.ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01',
-          'anthropic-beta': 'max-tokens-3-5-sonnet-20250219,pdfs-2024-09-25'
+          'anthropic-beta': 'pdfs-2024-09-25'
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
@@ -325,7 +323,6 @@ Output raw extracted text only. Do not summarise.`
         'Content-Type': 'application/json',
         'x-api-key': process.env.ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'max-tokens-3-5-sonnet-20250219',
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
