@@ -439,6 +439,23 @@ function calculateRatios(data) {
     r['FCF Margin %'] = pct(fcf, rev)
     r['Capex to Revenue %'] = pct(capex, rev)
     r['CFO to Net Income'] = div(cfo, ni)
+      // Altman Z-Score for private companies (Z' model)
+      const re = g(bs_, 'retained_earnings')
+      const tl_ = g(bs_, 'total_liabilities')
+      const wc = (ca != null && cl != null) ? ca - cl : null
+      if (wc != null && re != null && ebit != null && eq != null && tl_ != null && rev != null && ta != null && ta > 0 && tl_ > 0) {
+        const A = wc / ta
+        const B = re / ta
+        const C = ebit / ta
+        const D = eq / tl_
+        const E = rev / ta
+        const z = Math.round(((0.717 * A) + (0.847 * B) + (3.107 * C) + (0.420 * D) + (0.998 * E)) * 100) / 100
+        r["Altman Z-Score"] = z
+        r["Altman Zone"] = z >= 2.9 ? "Safe Zone" : z >= 1.23 ? "Grey Zone" : "Distress Zone"
+      } else {
+        r["Altman Z-Score"] = null
+        r["Altman Zone"] = null
+      }
     const prevYr = years[years.indexOf(yr) - 1]
     if (prevYr) {
       const gp2 = (s, k) => { const v = s[k]?.[prevYr]; if (v == null) return null; const n = parseFloat(String(v).replace(/,/g, '')); return isNaN(n) ? null : n }
