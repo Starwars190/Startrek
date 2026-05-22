@@ -371,6 +371,22 @@ async function generateWordDoc(analysis, ratiosByYear) {
         // 8. Data Quality Notes
         sectionHeading('8', 'Data Quality Notes'),
         ...(analysis.data_quality_notes || []).map(note => new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: '• ' + note, size: 18, font: 'Arial' })] })),
+        pageBreak(),
+
+        // 9. Credit Intelligence
+        sectionHeading('9', 'Credit Intelligence'),
+        ...years.map(yr => {
+          const z = ratiosByYear?.[yr]?.['Altman Z-Score']
+          const zone = ratiosByYear?.[yr]?.['Altman Zone']
+          if (z == null) return new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: `${yr}: Altman Z-Score — insufficient data`, size: 18, font: 'Arial', color: '6B7280' })] })
+          const color = zone === 'Safe Zone' ? '1A6B3C' : zone === 'Grey Zone' ? 'A87C1A' : '8B1A1A'
+          const interpretation = zone === 'Safe Zone' ? 'Low bankruptcy risk. Strong financial health.' : zone === 'Grey Zone' ? 'Monitor carefully. Some financial stress indicators present.' : 'High bankruptcy risk. Immediate attention required.'
+          return new Paragraph({ spacing: { after: 120 }, children: [
+            new TextRun({ text: `${yr} Altman Z-Score: `, bold: true, size: 18, font: 'Arial' }),
+            new TextRun({ text: `${z} — ${zone}`, bold: true, size: 18, font: 'Arial', color }),
+            new TextRun({ text: `  |  ${interpretation}`, size: 18, font: 'Arial', color: '374151' }),
+          ]})
+        }),
       ]
     }]
   });
