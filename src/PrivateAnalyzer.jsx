@@ -245,6 +245,7 @@ async function generateWordDoc(analysis, ratiosByYear) {
     { title: 'Efficiency', keys: ['Asset Turnover', 'Fixed Asset Turnover', 'Inventory Days', 'Receivables Days (DSO)', 'Payables Days (DPO)'] },
     { title: 'Cash Flow', keys: ['FCF Margin %', 'Capex to Revenue %', 'CFO to Net Income'] },
     { title: 'Growth', keys: ['Revenue Growth %', 'Net Income Growth %', 'EBITDA Growth %'] },
+    { title: 'Credit Intelligence', keys: ['Altman Z-Score', 'Altman Zone'] },
   ];
 
   const ratioElements = ratioSections.flatMap(section => [
@@ -584,6 +585,7 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
     { title: 'Efficiency',    color: 'A87C1A', keys: ['Asset Turnover', 'Fixed Asset Turnover', 'Inventory Days', 'Receivables Days (DSO)', 'Payables Days (DPO)'] },
     { title: 'Cash Flow',     color: '1A5C4A', keys: ['FCF Margin %', 'Capex to Revenue %', 'CFO to Net Income'] },
     { title: 'Growth',        color: '0A1628', keys: ['Revenue Growth %', 'Net Income Growth %', 'EBITDA Growth %'] },
+    { title: 'Credit Intelligence', color: '1A3A5C', keys: ['Altman Z-Score', 'Altman Zone'] },
   ];
 
   let rRow = 1;
