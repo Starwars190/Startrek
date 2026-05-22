@@ -441,6 +441,7 @@ function calculateRatios(data) {
     r['CFO to Net Income'] = div(cfo, ni)
       // Altman Z-Score for private companies (Z' model)
       const re = g(bs_, 'retained_earnings')
+      console.log('[altman]', yr, 'wc:', wc, 're:', re, 'ebit:', ebit, 'eq:', eq, 'tl_:', tl_, 'rev:', rev, 'ta:', ta)
       const tl_ = g(bs_, 'total_liabilities')
       const wc = (ca != null && cl != null) ? ca - cl : null
       if (wc != null && re != null && ebit != null && eq != null && tl_ != null && rev != null && ta != null && ta > 0 && tl_ > 0) {
