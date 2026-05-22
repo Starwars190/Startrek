@@ -26,6 +26,16 @@ app.get('/', (req, res) => {
   res.json({ status: 'FinSight AI Analyzer — online' })
 })
 
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    model: 'claude-sonnet-4-6',
+    maxTokens: 16000,
+    replica: process.env.RAILWAY_REPLICA_ID || 'single'
+  })
+})
+
 const SYSTEM_PROMPT = `You are a financial data extraction API. You output ONLY raw JSON.
 No prose. No markdown. No code fences. No explanation before or after.
 Start your response with { and end with }
@@ -151,6 +161,28 @@ const parseJSON = (text) => {
     try { return JSON.parse(fixed) } catch (e4) {}
   }
   throw new Error('Could not parse JSON. Preview: ' + text.substring(0, 200))
+}
+
+function validateAnalysis(analysis) {
+  const is_ = analysis.income_statement || {}
+  const bs_ = analysis.balance_sheet || {}
+  const years = analysis.financial_years || []
+  const warnings = []
+  for (const yr of years) {
+    const rev = parseFloat(String(is_.revenue?.[yr] || 0).replace(/,/g,'')) || 0
+    const ni = parseFloat(String(is_.net_income?.[yr] || 0).replace(/,/g,'')) || 0
+    const ta = parseFloat(String(bs_.total_assets?.[yr] || 0).replace(/,/g,'')) || 0
+    const te = parseFloat(String(bs_.total_equity?.[yr] || 0).replace(/,/g,'')) || 0
+    const tl = parseFloat(String(bs_.total_liabilities?.[yr] || 0).replace(/,/g,'')) || 0
+    if (rev < 0) warnings.push(yr + ': Revenue negative — likely extraction error')
+    if (rev > 0 && Math.abs(ni) > Math.abs(rev) * 2) warnings.push(yr + ': Net income exceeds 2x revenue — likely extraction error')
+    if (ta > 0 && te > 0 && tl > 0) {
+      const diff = Math.abs(ta - (te + tl))
+      if (diff / ta > 0.15) warnings.push(yr + ': Balance sheet gap ' + diff.toFixed(0) + ' lakhs')
+    }
+  }
+  if (warnings.length > 0) console.warn('[validation]', warnings.join(' | '))
+  return warnings
 }
 
 app.post('/analyze', async (req, res) => {
@@ -297,6 +329,7 @@ Output raw extracted text only. Do not summarise.`
 
       if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
       console.log('[document] key_observations count:', analysis.key_observations?.length)
+      validateAnalysis(analysis)
       const ratiosByYear = calculateRatios(analysis)
       return res.status(200).json({ success: true, analysis, ratiosByYear, mode })
 
@@ -350,6 +383,7 @@ Output raw extracted text only. Do not summarise.`
     }
 
     if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
+    validateAnalysis(analysis)
     const ratiosByYear = calculateRatios(analysis)
     return res.status(200).json({ success: true, analysis, ratiosByYear, textLength: documentText.length, mode })
 
