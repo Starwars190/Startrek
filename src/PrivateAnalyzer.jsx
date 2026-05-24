@@ -789,7 +789,7 @@ function AnalyzerCore() {
       setError('Please upload a PDF, image, or Word document.');
       return;
     }
-    if (f.size > 25 * 1024 * 1024) {
+    if (f.size > 100 * 1024 * 1024) {
       setError('File must be under 25 MB.');
       return;
     }
