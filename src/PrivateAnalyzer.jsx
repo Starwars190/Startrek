@@ -709,6 +709,23 @@ function recalculateRatios(data) {
       r['Net Income Growth %'] = (ni != null && nip != null && nip !== 0) ? Math.round((ni - nip) / Math.abs(nip) * 10000) / 100 : null
       r['EBITDA Growth %'] = (ebitda != null && ep != null && ep !== 0) ? Math.round((ebitda - ep) / Math.abs(ep) * 10000) / 100 : null
     }
+      // Altman Z-Score (Z' model for private companies)
+      const re = g(bs_, 'retained_earnings') ?? g(bs_, 'reserves_surplus') ?? g(bs_, 'reserves_and_surplus') ?? g(bs_, 'reserves_and_surplus_balance') ?? eq
+      const tl_ = g(bs_, 'total_liabilities') ?? g(bs_, 'total_liabilities_net') ?? (g(bs_, 'non_current_liabilities') != null && g(bs_, 'current_liabilities') != null ? g(bs_, 'non_current_liabilities') + g(bs_, 'current_liabilities') : null) ?? (cl != null ? cl : null) ?? (ta != null && eq != null ? ta - eq : null)
+      const wc = (ca != null && cl != null) ? ca - cl : null
+      if (wc != null && re != null && ebit != null && eq != null && tl_ != null && rev != null && ta != null && ta > 0 && tl_ > 0) {
+        const A = wc / ta
+        const B = re / ta
+        const C = ebit / ta
+        const D = eq / tl_
+        const E = rev / ta
+        const z = Math.round(((0.717 * A) + (0.847 * B) + (3.107 * C) + (0.420 * D) + (0.998 * E)) * 100) / 100
+        r['Altman Z-Score'] = z
+        r['Altman Zone'] = z >= 2.9 ? 'Safe Zone' : z >= 1.23 ? 'Grey Zone' : 'Distress Zone'
+      } else {
+        r['Altman Z-Score'] = null
+        r['Altman Zone'] = null
+      }
     result[yr] = r
   }
   return result
