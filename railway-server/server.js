@@ -440,7 +440,7 @@ function calculateRatios(data) {
     r['Capex to Revenue %'] = pct(capex, rev)
     r['CFO to Net Income'] = div(cfo, ni)
       // Altman Z-Score for private companies (Z' model)
-      const re = g(bs_, 'retained_earnings')
+      const re = g(bs_, 'retained_earnings') ?? g(bs_, 'reserves_surplus') ?? g(bs_, 'reserves_and_surplus')
       const tl_ = g(bs_, 'total_liabilities')
       const wc = (ca != null && cl != null) ? ca - cl : null
       if (wc != null && re != null && ebit != null && eq != null && tl_ != null && rev != null && ta != null && ta > 0 && tl_ > 0) {
