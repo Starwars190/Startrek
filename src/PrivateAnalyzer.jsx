@@ -375,6 +375,11 @@ async function generateWordDoc(analysis, ratiosByYear) {
 
         // 9. Credit Intelligence
         sectionHeading('9', 'Credit Intelligence'),
+          ...(() => {
+            const flags = detectRedFlags(analysis, ratiosByYear)
+            if (flags.length === 0) return [new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: '✓ No red flags detected.', size: 18, font: 'Arial', color: '1A6B3C' })] })]
+            return flags.map(f => new Paragraph({ spacing: { after: 80 }, children: [new TextRun({ text: f, size: 18, font: 'Arial', color: '8B1A1A' })] }))
+          })(),
         ...years.map(yr => {
           const z = ratiosByYear?.[yr]?.['Altman Z-Score']
           const zone = ratiosByYear?.[yr]?.['Altman Zone']
@@ -639,6 +644,29 @@ const PROC_STAGES = [
   { icon: '🧠', label: 'Running AI Analysis' },
   { icon: '📊', label: 'Generating Reports' },
 ];
+
+function detectRedFlags(data, ratiosByYear) {
+  const flags = []
+  const years = data.financial_years || []
+  const latestYr = years[years.length - 1]
+  const r = ratiosByYear?.[latestYr] || {}
+  const g = (s, k) => { const v = s?.[k]?.[latestYr]; if (v == null) return null; const n = parseFloat(String(v).replace(/,/g, '')); return isNaN(n) ? null : n }
+  const bs_ = data.balance_sheet || {}
+  const is_ = data.income_statement || {}
+  const eq = g(bs_, 'total_equity') ?? g(bs_, 'shareholders_equity') ?? g(bs_, 'net_worth')
+  const ni = g(is_, 'net_income') ?? g(is_, 'profit_after_tax')
+  const rev = g(is_, 'revenue') ?? g(is_, 'revenue_from_operations')
+  if (eq != null && eq < 0) flags.push('⚠ Negative net worth — company is technically insolvent')
+  if (ni != null && ni < 0) flags.push('⚠ Net loss reported in latest year')
+  if (r['Current Ratio'] != null && r['Current Ratio'] < 1) flags.push('⚠ Current ratio below 1.0 — short-term liquidity risk')
+  if (r['Debt-Equity Ratio'] != null && r['Debt-Equity Ratio'] > 2) flags.push('⚠ High leverage — Debt/Equity exceeds 2x')
+  if (r['Interest Cover (EBIT)'] != null && r['Interest Cover (EBIT)'] < 1.5) flags.push('⚠ Weak interest coverage — earnings may not service debt')
+  if (r['Revenue Growth %'] != null && r['Revenue Growth %'] < -10) flags.push('⚠ Revenue declining more than 10% year-on-year')
+  if (r['Altman Z-Score'] != null && r['Altman Z-Score'] < 1.23) flags.push('⚠ Altman Z-Score in Distress Zone — high bankruptcy risk')
+  if (r['Altman Z-Score'] != null && r['Altman Z-Score'] >= 1.23 && r['Altman Z-Score'] < 2.9) flags.push('⚠ Altman Z-Score in Grey Zone — monitor closely')
+  if (r['Net Profit Margin %'] != null && r['Net Profit Margin %'] < 0) flags.push('⚠ Negative net profit margin')
+  return flags
+}
 
 function recalculateRatios(data) {
   const years = data.financial_years || []
