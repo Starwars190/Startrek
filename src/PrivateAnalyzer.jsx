@@ -385,6 +385,8 @@ async function generateWordDoc(analysis, ratiosByYear) {
             new TextRun({ text: `${yr} Altman Z-Score: `, bold: true, size: 18, font: 'Arial' }),
             new TextRun({ text: `${z} — ${zone}`, bold: true, size: 18, font: 'Arial', color }),
             new TextRun({ text: `  |  ${interpretation}`, size: 18, font: 'Arial', color: '374151' }),
+              new TextRun({ text: `\n${yr} FinSight Credit Rating: `, bold: true, size: 18, font: 'Arial' }),
+              new TextRun({ text: ratiosByYear?.[yr]?.['Credit Rating'] ?? '—', bold: true, size: 18, font: 'Arial', color }),
           ]})
         }),
       ]
@@ -722,6 +724,7 @@ function recalculateRatios(data) {
         const z = Math.round(((0.717 * A) + (0.847 * B) + (3.107 * C) + (0.420 * D) + (0.998 * E)) * 100) / 100
         r['Altman Z-Score'] = z
         r['Altman Zone'] = z >= 2.9 ? 'Safe Zone' : z >= 1.23 ? 'Grey Zone' : 'Distress Zone'
+        r['Credit Rating'] = z >= 5.0 ? 'AAA' : z >= 4.0 ? 'AA' : z >= 3.0 ? 'A' : z >= 2.9 ? 'BBB' : z >= 2.0 ? 'BB' : z >= 1.23 ? 'B' : 'D'
       } else {
         r['Altman Z-Score'] = null
         r['Altman Zone'] = null
