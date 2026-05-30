@@ -28,14 +28,21 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
   const growthPct = cmaInputs.growthPct != null ? cmaInputs.growthPct / 100 : defaultGrowth
   const marginPct = cmaInputs.marginPct != null ? cmaInputs.marginPct / 100 : 0.25
 
-  // Per-line-item projection: grow only if historical trend is non-negative; else hold flat (conservative)
+  // Per-line-item projection (generic):
+  //  - growing item        -> compound at growthPct
+  //  - declining item but revenue growing -> grow at revenue rate (margins hold, stays internally consistent)
+  //  - declining item and revenue flat/declining -> hold flat (conservative)
+  //  - negative base (losses) -> hold flat (don't project compounding losses)
+  const revenueGrowing = growthPct > 0
   const projectValue = (sec, key, step) => {
     const base = (() => { const v = sec?.[key]?.[lastYr]; if (v == null) return null; const n = parseFloat(String(v).replace(/,/g, '')); return isNaN(n) ? null : n })()
     if (base == null) return null
     const prev = (() => { const v = sec?.[key]?.[firstYr]; if (v == null) return null; const n = parseFloat(String(v).replace(/,/g, '')); return isNaN(n) ? null : n })()
-    // if we have a prior year and the item declined, hold flat rather than grow
+    if (base < 0) return base // never compound a loss; hold flat
     const declining = (prev != null && base < prev)
-    const rate = declining ? 0 : growthPct
+    let rate
+    if (!declining) rate = growthPct
+    else rate = revenueGrowing ? growthPct : 0
     return Math.round(base * Math.pow(1 + rate, step) * 10) / 10
   }
 
@@ -332,11 +339,11 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
 
   const ratioList = [
     ['Current Ratio', 'Current Ratio', 1.33, 'min'],
-    ['Debt-Equity Ratio', 'Debt-Equity Ratio', 2.0, 'max'],
+    ['Debt-Equity Ratio', 'Debt to Equity', 2.0, 'max'],
     ['Interest Cover (EBIT)', 'Interest Cover (EBIT)', 2.0, 'min'],
     ['Net Profit Margin %', 'Net Profit Margin %', 5.0, 'min'],
     ['EBITDA Margin %', 'EBITDA Margin %', 10.0, 'min'],
-    ['Return on Equity %', 'Return on Equity Ratio', 15.0, 'min'],
+    ['Return on Equity %', 'Return on Equity %', 15.0, 'min'],
     ['Receivables Days (DSO)', 'Receivables Days (DSO)', 60, 'max'],
     ['Inventory Days', 'Inventory Days', 60, 'max'],
     ['Revenue Growth %', 'Revenue Growth %', 10.0, 'min'],

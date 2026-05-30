@@ -660,7 +660,7 @@ function detectRedFlags(data, ratiosByYear) {
   if (eq != null && eq < 0) flags.push('⚠ Negative net worth — company is technically insolvent')
   if (ni != null && ni < 0) flags.push('⚠ Net loss reported in latest year')
   if (r['Current Ratio'] != null && r['Current Ratio'] < 1) flags.push('⚠ Current ratio below 1.0 — short-term liquidity risk')
-  if (r['Debt-Equity Ratio'] != null && r['Debt-Equity Ratio'] > 2) flags.push('⚠ High leverage — Debt/Equity exceeds 2x')
+  if (r['Debt to Equity'] != null && r['Debt to Equity'] > 2) flags.push('⚠ High leverage — Debt/Equity exceeds 2x')
   if (r['Interest Cover (EBIT)'] != null && r['Interest Cover (EBIT)'] < 1.5) flags.push('⚠ Weak interest coverage — earnings may not service debt')
   if (r['Revenue Growth %'] != null && r['Revenue Growth %'] < -10) flags.push('⚠ Revenue declining more than 10% year-on-year')
   if (r['Altman Z-Score'] != null && r['Altman Z-Score'] < 1.23) flags.push('⚠ Altman Z-Score in Distress Zone — high bankruptcy risk')
