@@ -6,6 +6,7 @@ import {
   ShadingType, VerticalAlign, PageNumber
 } from 'docx';
 import ExcelJS from 'exceljs';
+import { generateCMAWorkbook } from './CMAGenerator';
 
 const NAVY = '#0A1628';
 const GREEN = '#0D7A3E';
@@ -1105,6 +1106,7 @@ function AnalyzerCore() {
 
       setStepIdx(4);
       const excelBlob = await generateExcelWorkbook(analysis, ratiosByYear);
+      const cmaBlob = await generateCMAWorkbook(analysis, ratiosByYear);
 
       setResultMeta({
         company: analysis.company_profile?.name ||
@@ -1112,9 +1114,11 @@ function AnalyzerCore() {
         years: analysis.financial_years || [],
         wordFile: `${safeName}_Financial_Brief.docx`,
         excelFile: `${safeName}_Financial_Model.xlsx`,
+        cmaFile: `${safeName}_CMA_Data.xlsx`,
         _analysis: analysis,
         wordBlob: wordBlob,
         excelBlob: excelBlob,
+        cmaBlob: cmaBlob,
       });
       setStepIdx(5);
       setStage('done');
@@ -1172,6 +1176,10 @@ function AnalyzerCore() {
           <button onClick={() => triggerDownload(resultMeta.excelBlob, resultMeta.excelFile)}
             style={{ background: '#1A6B3C', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
             📊 Download Excel Model
+          </button>
+          <button onClick={() => triggerDownload(resultMeta.cmaBlob, resultMeta.cmaFile)}
+            style={{ background: ORANGE, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            🏦 Download CMA Data
           </button>
         </div>
         <button onClick={reset} style={{ background: NAVY, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
