@@ -28,6 +28,17 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
   const growthPct = cmaInputs.growthPct != null ? cmaInputs.growthPct / 100 : defaultGrowth
   const marginPct = cmaInputs.marginPct != null ? cmaInputs.marginPct / 100 : 0.25
 
+  // Per-line-item projection: grow only if historical trend is non-negative; else hold flat (conservative)
+  const projectValue = (sec, key, step) => {
+    const base = (() => { const v = sec?.[key]?.[lastYr]; if (v == null) return null; const n = parseFloat(String(v).replace(/,/g, '')); return isNaN(n) ? null : n })()
+    if (base == null) return null
+    const prev = (() => { const v = sec?.[key]?.[firstYr]; if (v == null) return null; const n = parseFloat(String(v).replace(/,/g, '')); return isNaN(n) ? null : n })()
+    // if we have a prior year and the item declined, hold flat rather than grow
+    const declining = (prev != null && base < prev)
+    const rate = declining ? 0 : growthPct
+    return Math.round(base * Math.pow(1 + rate, step) * 10) / 10
+  }
+
   // projected year labels
   const lastNum = parseInt(String(lastYr).replace(/\D/g, '')) || 0
   const projYr1 = lastNum ? 'FY' + (lastNum + 1) + 'P' : 'Proj Yr1'
@@ -126,11 +137,9 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
       const num = g(is_, key, yr)
       applyCell(f2, rn, yi + 2, num, isTotal ? bbFont : bFont, baseFill, { horizontal: 'center' }, '#,##0.0')
     })
-    // projections: grow last historical by growthPct compounded
-    const baseVal = g(is_, key, lastYr)
     ;[1, 2].forEach((step) => {
       const col = years.length + step + 1
-      const proj = baseVal != null ? Math.round(baseVal * Math.pow(1 + growthPct, step) * 10) / 10 : null
+      const proj = projectValue(is_, key, step)
       applyCell(f2, rn, col, proj, isTotal ? bbFont : bFont, projFill, { horizontal: 'center' }, '#,##0.0')
     })
   })
@@ -172,10 +181,9 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
       const num = g(bs_, key, yr)
       applyCell(f3, rn, yi + 2, num, isTotal ? bbFont : bFont, baseFill, { horizontal: 'center' }, '#,##0.0')
     })
-    const baseVal = g(bs_, key, lastYr)
     ;[1, 2].forEach((step) => {
       const col = years.length + step + 1
-      const proj = baseVal != null ? Math.round(baseVal * Math.pow(1 + growthPct, step) * 10) / 10 : null
+      const proj = projectValue(bs_, key, step)
       applyCell(f3, rn, col, proj, isTotal ? bbFont : bFont, projFill, { horizontal: 'center' }, '#,##0.0')
     })
   })
@@ -241,7 +249,20 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
   mpbfRow(m5start + 4, 'Less: Existing Bank Finance (CC/OD)', existingCC, false)
   mpbfRow(m5start + 5, 'Surplus / (Shortfall) — Recommended Limit', surplus, true)
 
-  applyCell(f4, m5start + 7, 1, 'Tandon Method II is the RBI-recommended approach. CA contributes 25% of working capital gap as margin. Existing CC defaults to short-term debt unless entered.', { name: 'Arial', size: 8, italic: true, color: { argb: 'FF6B7280' } }, null, { vertical: 'middle' })
+  // Generic applicability guard: detect companies with no working capital cycle
+  const wcGapLast = wcGap(lastYr)
+  const anyStDebt = years.some(yr => { const v = stDebt(yr); return v != null && v > 0 })
+  const mpbfNotApplicable = (wcGapLast == null || wcGapLast <= 0) && !anyStDebt
+  if (mpbfNotApplicable) {
+    const naRow = m5start + 7
+    applyCell(f4, naRow, 1, 'MPBF / Working Capital Finance — NOT APPLICABLE', bbFont, yellowFill, { vertical: 'middle' })
+    years.forEach((_, i) => applyCell(f4, naRow, i + 2, 'N/A', { name: 'Arial', size: 10, italic: true, color: { argb: 'FF999999' } }, yellowFill, { horizontal: 'center' }))
+    applyCell(f4, naRow + 1, 1, 'This entity shows no working capital funding gap (current liabilities cover current assets) and no short-term bank borrowing. A working capital limit is not applicable. The historical figures above are shown for reference only.', { name: 'Arial', size: 8, italic: true, color: { argb: 'FF6B7280' } }, null, { wrapText: true, vertical: 'top' })
+    f4.mergeCells(naRow + 1, 1, naRow + 1, years.length + 1)
+    f4.getRow(naRow + 1).height = 40
+  } else {
+    applyCell(f4, m5start + 7, 1, 'Tandon Method II is the RBI-recommended approach. CA contributes 25% of working capital gap as margin. Existing CC defaults to short-term debt unless entered.', { name: 'Arial', size: 8, italic: true, color: { argb: 'FF6B7280' } }, null, { vertical: 'middle' })
+  }
 
   // ---------- FORM 6: FUND FLOW STATEMENT ----------
   const f6 = wb.addWorksheet('Form 6 - Fund Flow')
@@ -331,11 +352,22 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
     years.forEach((yr, yi) => {
       const val = ratiosByYear?.[yr]?.[key]
       let cellFont = bFont
+      let display = val != null ? val : null
       if (val != null) {
         const pass = dir === 'min' ? val >= bench : val <= bench
         cellFont = pass ? greenTextFont : redTextFont
       }
-      applyCell(f7, rn, yi + 2, val != null ? val : null, cellFont, fill, { horizontal: 'center' }, '#,##0.00')
+      // Altman: very high scores are valid but cap the display with context to avoid looking like a glitch
+      if (key === 'Altman Z-Score' && val != null && val > 8) {
+        const cell = f7.getCell(rn, yi + 2)
+        cell.value = '8.0+ (very strong)'
+        cell.font = greenTextFont
+        cell.fill = fill
+        cell.alignment = { horizontal: 'center' }
+        cell.border = border4
+        return
+      }
+      applyCell(f7, rn, yi + 2, display, cellFont, fill, { horizontal: 'center' }, '#,##0.00')
     })
     applyCell(f7, rn, years.length + 2, benchLabel[dir](bench), { name: 'Arial', size: 9, italic: true, color: { argb: 'FF6B7280' } }, fill, { horizontal: 'center' })
   })
