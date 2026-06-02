@@ -1462,7 +1462,7 @@ function generateSmartFilename(companyInfo, extension) {
 }
 
 async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot, chartImages, originalFileName, extraParams = {}) {
-  const { documentMetadata = {}, visionStructuredData = {}, aggregated: aggFin = {}, aggregatedPrior: aggPrior = {} } = extraParams;
+  const { documentMetadata = {}, visionStructuredData = {}, aggregated: aggFin = {}, aggregatedPrior: aggPrior = {}, dataFlags = {} } = extraParams;
   const docx = await loadDocx();
   const {
     Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
@@ -1557,6 +1557,30 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
 
   const blankLine = () => para([txt("", { size: 12 })], { spacing: { before: 80, after: 80 } });
   const pageBreak = () => new Paragraph({ children: [new TextRun({ text: "" })], pageBreakBefore: true });
+
+  // Amber notice box for data-availability flags (abridged filings, etc.)
+  const AMBER = "D97706"; const AMBER_BG = "FFFBEB";
+  const amberBorder = {
+    top:    { style: BorderStyle.SINGLE, size: 16, color: AMBER },
+    bottom: { style: BorderStyle.SINGLE, size: 4,  color: AMBER },
+    left:   { style: BorderStyle.SINGLE, size: 16, color: AMBER },
+    right:  { style: BorderStyle.SINGLE, size: 4,  color: AMBER },
+  };
+  const dataNoticeBox = (heading, note) => new Table({
+    rows: [new TableRow({ children: [new TableCell({
+      children: [
+        para([txt(`⚠  ${heading}`, { font: "Times New Roman", size: 22, bold: true, color: AMBER })],
+          { spacing: { before: 100, after: 80 } }),
+        para([txt(note, { font: "Times New Roman", size: 20, italics: true, color: DK })],
+          { align: AlignmentType.JUSTIFIED, spacing: { before: 60, after: 100, line: 320 } }),
+      ],
+      borders: amberBorder,
+      shading: { type: ShadingType.SOLID, color: AMBER_BG },
+      margins: { top: 200, bottom: 200, left: 280, right: 280 },
+    })] })],
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
+  });
 
   // Traffic-light logic for ratios
   const RATIO_BENCHMARKS = {
@@ -1730,6 +1754,14 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   allSections.push(sectionHeader("1", "Executive Summary"));
   allSections.push(hrule(NAVY, 8));
   allSections.push(blankLine());
+
+  if (dataFlags.abridged_financials) {
+    allSections.push(dataNoticeBox(
+      'DATA AVAILABILITY NOTICE — ABRIDGED FINANCIAL STATEMENTS',
+      dataFlags.abridged_note || 'This company filed abridged or non-standard balance sheets. Working-capital-based metrics cannot be computed; P&L-based analysis is available.'
+    ));
+    allSections.push(blankLine());
+  }
 
   // Executive outlook paragraphs
   const execOutlook = swot?.executiveOutlook || "";
@@ -1992,6 +2024,13 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   allSections.push(pageBreak());
   allSections.push(sectionHeader("4", "Balance Sheet Analysis"));
   allSections.push(hrule(NAVY, 8));
+  if (dataFlags.abridged_financials) {
+    allSections.push(blankLine());
+    allSections.push(dataNoticeBox(
+      'ABRIDGED FILING — BALANCE SHEET DETAIL NOT AVAILABLE',
+      'Current Assets, Current Liabilities, and related working-capital line items are not disclosed in this company\'s regulatory filing. The rows below reflect only the fields present in the filed data. Blank cells are not estimation errors — the underlying data does not exist in the MCA submission.'
+    ));
+  }
   allSections.push(disclaimer(unit));
   allSections.push(blankLine());
 
@@ -4506,7 +4545,10 @@ Rules:
       console.error('Excel generation failed:', e)
     }
     try {
-      wordResult = await generateOrganizedWordDoc([], companyInfo, null, swot, [], file.name, { aggregated, aggregatedPrior })
+      const wordDataFlags = (aggregated.currentAssets == null && aggregated.currentLiabilities == null && aggregated.totalAssets != null)
+        ? { abridged_financials: true, abridged_note: 'This company filed abridged or non-standard balance sheets. Current Assets and Current Liabilities are not disclosed in the regulatory filing, so working-capital-based metrics (Altman Z-Score, Current Ratio, Working Capital, MPBF) cannot be computed. P&L-based metrics (revenue, EBITDA, EBIT, PAT, margins, interest cover) are available. Blank cells in this report reflect genuinely missing data — no values have been estimated or fabricated.' }
+        : {}
+      wordResult = await generateOrganizedWordDoc([], companyInfo, null, swot, [], file.name, { aggregated, aggregatedPrior, dataFlags: wordDataFlags })
     } catch(e) {
       console.error('Word generation failed:', e)
     }
