@@ -1,2 +1,3 @@
-[start]
-cmd = "node server.js"
+# [start] is intentionally omitted — Railway reads the Procfile.
+# web service:    node server.js
+# worker service: node worker.js  (separate Railway service, same repo)
