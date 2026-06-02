@@ -1,9 +1,11 @@
 import express from 'express'
 import cors from 'cors'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import https from 'https'
+import { adaptBRiskReport } from './lib/brisk.js'
+import { instafinancials } from './lib/queues.js'
+import pool, { ensureSchema } from './lib/postgres.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -476,211 +478,62 @@ function calculateRatios(data) {
 }
 
 // ---------------------------------------------------------------------------
-// https GET with JSON body — native fetch rejects body on GET (Node 18+ strict),
-// so we bypass it with the lower-level https module for InstaFinancials download.
-function httpsGetJson(url, headers, body) {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const bodyStr = JSON.stringify(body)
-    const req = https.request(
-      { hostname: u.hostname, path: u.pathname + u.search, method: 'GET',
-        headers: { ...headers, 'Content-Length': Buffer.byteLength(bodyStr) } },
-      (r) => {
-        let raw = ''
-        r.on('data', c => { raw += c })
-        r.on('end', () => {
-          resolve({
-            ok:   r.statusCode >= 200 && r.statusCode < 300,
-            status: r.statusCode,
-            json: () => JSON.parse(raw),
-            text: () => raw,
-          })
-        })
-      }
-    )
-    req.on('error', reject)
-    req.write(bodyStr)
-    req.end()
-  })
-}
-
-// BRisk adapter helpers
+// GET /fetch-mca/:cin — check caches, then enqueue async BRisk job
 // ---------------------------------------------------------------------------
-function toMap(arr) {
-  if (!Array.isArray(arr)) return {}
-  return Object.fromEntries(arr.map(({ FinancialYear, Amount }) => [FinancialYear, Amount]))
-}
-
-function adaptBRiskReport(reportData) {
-  const fin = reportData?.ReportData?.ComparativeFinancialsStandalone
-  if (!fin) throw new Error('ComparativeFinancialsStandalone not found in report')
-
-  const pl  = fin.ProfitAndLossStatement      ?? {}
-  const bs  = fin.BalanceSheetStandalone      ?? {}
-  const cfs = fin.CashFlowStatementStandalone ?? {}
-  const paidupCapital =
-    reportData?.ReportData?.CorporateDirectory?.CompanyMaster?.PaidupCapital ?? null
-
-  // P&L maps
-  const revenue       = toMap(pl.TotalRevenues)
-  const ebitdaMap     = toMap(pl.EBDITA)
-  const deprMap       = toMap(pl.Depreciations)
-  const pat           = toMap(pl.PAT)
-  const interestMap   = toMap(pl.Interests)
-  const pbtMap        = toMap(pl.PBT)
-  const taxMap        = toMap(pl.Taxes)
-
-  // Balance sheet maps
-  const netWorthMap   = toMap(bs.NetWorth)
-  const totalDebtMap  = toMap(bs.Borrowings)
-  const currentAssets = toMap(bs.CurrentAssets)
-  const currentLiab   = toMap(bs.CurrentLiabilities)
-  const cashMap       = toMap(bs.CashAndBankBalances)
-  const receivables   = toMap(bs.TradeReceivables)
-  const inventories   = toMap(bs.Inventories)
-  const tangible      = toMap(bs.TangibleAssets)
-  const intangible    = toMap(bs.IntangibleAssets)
-  const cwip          = toMap(bs.CapitalWIPAndOthers)
-  // totalAssets: prefer TotalAssets field; fall back to TotalEquityAndLiabilities
-  const totalAssetsMap = Array.isArray(bs.TotalAssets)
-    ? toMap(bs.TotalAssets)
-    : toMap(bs.TotalEquityAndLiabilities)
-  // workingCapital: prefer WorkingCapitals array; fall back to CA − CL
-  const workingCapMap = Array.isArray(bs.WorkingCapitals) ? toMap(bs.WorkingCapitals) : null
-
-  // Cash-flow maps
-  const cfoMap = toMap(cfs.OperatingActivities)
-  const cfiMap = toMap(cfs.InvestingActivities)
-  const cffMap = toMap(cfs.FinancingActivities)
-
-  const allYears = [...new Set([
-    ...Object.keys(revenue),       ...Object.keys(ebitdaMap),  ...Object.keys(pat),
-    ...Object.keys(netWorthMap),   ...Object.keys(totalDebtMap),
-    ...Object.keys(currentAssets), ...Object.keys(currentLiab),
-    ...Object.keys(totalAssetsMap),
-    ...Object.keys(cashMap),       ...Object.keys(receivables), ...Object.keys(cfoMap),
-  ])].sort()
-
-  return allYears.map((year) => {
-    const nw  = netWorthMap[year]    ?? null
-    const ca  = currentAssets[year]  ?? null
-    const cl  = currentLiab[year]    ?? null
-    const ta  = totalAssetsMap[year] ?? null
-    const wc  = workingCapMap !== null
-      ? (workingCapMap[year] ?? null)
-      : (ca !== null && cl !== null ? ca - cl : null)
-    const re  = nw !== null && paidupCapital !== null ? nw - paidupCapital : null
-    const insufficient = ta === null || nw === null
-    const reExtreme = re !== null && ta !== null && ta !== 0 && Math.abs(re) > ta
-
-    // ebit: EBITDA − Depreciation; fall back to EBITDA when depreciation absent
-    const eb   = ebitdaMap[year] ?? null
-    const dp   = deprMap[year]   ?? null
-    const ebit = eb !== null ? (dp !== null ? eb - dp : eb) : null
-
-    // fixedAssetsNet: sum components, treating absent ones as 0 when ≥1 is present
-    const tan  = tangible[year]   ?? null
-    const itan = intangible[year] ?? null
-    const wip  = cwip[year]       ?? null
-    const fixedAssetsNet = (tan !== null || itan !== null || wip !== null)
-      ? (tan ?? 0) + (itan ?? 0) + (wip ?? 0) : null
-
-    return {
-      year,
-      revenue:            revenue[year]        ?? null,
-      ebitda:             eb,
-      depreciation:       dp,
-      ebit,
-      interestExpense:    interestMap[year]    ?? null,
-      pbt:                pbtMap[year]         ?? null,
-      tax:                taxMap[year]         ?? null,
-      pat:                pat[year]            ?? null,
-      netWorth:           nw,
-      shareCapital:       paidupCapital,
-      retainedEarnings:   re,
-      totalDebt:          totalDebtMap[year]   ?? null,
-      currentAssets:      ca,
-      currentLiabilities: cl,
-      workingCapital:     wc,
-      cash:               cashMap[year]        ?? null,
-      receivables:        receivables[year]    ?? null,
-      inventory:          inventories[year]    ?? null,
-      fixedAssetsNet,
-      totalAssets:        ta,
-      cfo:                cfoMap[year]         ?? null,
-      cfi:                cfiMap[year]         ?? null,
-      cff:                cffMap[year]         ?? null,
-      ...(insufficient ? { flag: 'insufficient' } : {}),
-      ...(reExtreme    ? { retainedEarningsFlag: 'extreme — abs value exceeds total assets, verify against source filing' } : {}),
-    }
-  })
-}
-
-// ---------------------------------------------------------------------------
-// GET /fetch-mca/:cin — BRisk Financials lookup with local cache
-// ---------------------------------------------------------------------------
-const BRISK_BASE = 'https://api.instafinancials.com/InstaReports/v1/BRiskFinancials'
-const CACHE_DIR  = join(__dirname, 'cache')
+const CACHE_DIR = join(__dirname, 'cache')
 
 app.get('/fetch-mca/:cin', async (req, res) => {
   const { cin } = req.params
   if (!cin || !/^[A-Z0-9]{21}$/.test(cin)) {
     return res.status(400).json({ error: 'Invalid CIN format' })
   }
-
-  const apiKey = process.env.INSTAFINANCIALS_API_KEY
-  if (!apiKey) {
+  if (!process.env.INSTAFINANCIALS_API_KEY) {
     return res.status(500).json({ error: 'INSTAFINANCIALS_API_KEY not configured on server' })
   }
 
+  // 1. File cache hit — adapt inline and return immediately (no queue needed)
   const cachePath = join(CACHE_DIR, `brisk_${cin}.json`)
-  const headers = {
-    'user-key': apiKey,
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-  }
-
-  try {
-    let reportData
-
-    if (existsSync(cachePath)) {
-      reportData = JSON.parse(readFileSync(cachePath, 'utf8'))
-    } else {
-      // Place order
-      const orderRes = await fetch(`${BRISK_BASE}/CompanyCIN/${cin}/OrderReport`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(['FIN']),
-      })
-      if (!orderRes.ok) {
-        const detail = await orderRes.text()
-        return res.status(502).json({ error: `BRisk order failed (${orderRes.status})`, detail })
-      }
-      const orderJson = await orderRes.json()
-      const orderId = orderJson?.OrderID ?? orderJson?.Data?.OrderID ?? orderJson?.orderId
-      if (!orderId) {
-        return res.status(502).json({ error: 'No OrderID in BRisk response', raw: orderJson })
-      }
-
-      // Download report — use httpsGetJson because native fetch rejects GET+body
-      const dlRes = await httpsGetJson(`${BRISK_BASE}/OrderID/${orderId}/DownloadReport`, headers, ['FIN'])
-      if (!dlRes.ok) {
-        const detail = await dlRes.text()
-        return res.status(502).json({ error: `BRisk download failed (${dlRes.status})`, detail })
-      }
-      reportData = await dlRes.json()
-
-      // Persist to cache
-      mkdirSync(CACHE_DIR, { recursive: true })
-      writeFileSync(cachePath, JSON.stringify(reportData, null, 2))
+  if (existsSync(cachePath)) {
+    try {
+      const adapted = adaptBRiskReport(JSON.parse(readFileSync(cachePath, 'utf8')))
+      return res.json(adapted)
+    } catch (err) {
+      console.warn(`[fetch-mca] cache read failed for ${cin}:`, err.message)
     }
-
-    const adapted = adaptBRiskReport(reportData)
-    return res.json(adapted)
-  } catch (err) {
-    return res.status(500).json({ error: err.message })
   }
+
+  // 2. Postgres completed-report hit
+  try {
+    const { rows } = await pool.query(
+      'SELECT adapted_data FROM brisk_reports WHERE cin = $1 AND status = $2',
+      [cin, 'complete']
+    )
+    if (rows.length > 0 && rows[0].adapted_data) {
+      return res.json(rows[0].adapted_data)
+    }
+  } catch (err) {
+    console.warn('[fetch-mca] Postgres check failed:', err.message)
+  }
+
+  // 3. Enqueue — jobId deduplicates so double-clicks collapse to one job
+  const job = await instafinancials.add('fetch-brisk', { cin }, { jobId: `brisk:${cin}` })
+  return res.status(202).json({ jobId: job.id, status: 'queued' })
 })
+
+// ---------------------------------------------------------------------------
+// GET /jobs/:id — poll job state; returns result payload when complete
+// ---------------------------------------------------------------------------
+app.get('/jobs/:id', async (req, res) => {
+  const job = await instafinancials.getJob(req.params.id)
+  if (!job) return res.status(404).json({ error: 'Job not found' })
+  const state = await job.getState()
+  const response = { id: job.id, state, progress: job.progress }
+  if (state === 'completed') response.result    = job.returnvalue
+  if (state === 'failed')    response.failedReason = job.failedReason
+  return res.json(response)
+})
+
+ensureSchema().catch(err => console.error('[postgres] schema error:', err.message))
 
 const server = app.listen(process.env.PORT || 3001, '0.0.0.0', () => {
   console.log(`Server running on port ${process.env.PORT || 3001}`)
