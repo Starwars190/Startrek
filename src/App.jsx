@@ -3060,20 +3060,21 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
   const levelBulletFmt = (docx.LevelFormat || {}).BULLET || 'bullet';
 
   // ── Palette ──────────────────────────────────────────────────────────────
-  const BROWN = "8B4513", DK = "4A4A4A", MID = "888888";
-  const BROWN_BG = "F5EFE7", WHITE = "FFFFFF", ALT = "FAFAFA";
-  const BORD = { top: { style: BorderStyle.SINGLE, size: 4, color: "D3D3D3" }, bottom: { style: BorderStyle.SINGLE, size: 4, color: "D3D3D3" }, left: { style: BorderStyle.SINGLE, size: 4, color: "D3D3D3" }, right: { style: BorderStyle.SINGLE, size: 4, color: "D3D3D3" } };
+  const NAVY = "1F3A5F", DK = "222222", MID = "888888";
+  const SWOT_GREEN = "1E7A3C", SWOT_GREEN_BG = "E8F3EC", SWOT_RED = "9E2A2A", SWOT_RED_BG = "FBEBEB";
+  const WHITE = "FFFFFF", ALT = "F2F4F7";
+  const BORD = { top: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" }, bottom: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" }, left: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" }, right: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" } };
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   const run = (text, o = {}) => new TextRun({ text: String(text ?? ''), font: 'Calibri', size: o.size || 22, bold: o.bold || false, italics: o.italics || false, color: o.color || DK });
-  const pg = (children, o = {}) => new Paragraph({ children: Array.isArray(children) ? children : [children], alignment: o.align || AlignmentType.LEFT, spacing: o.sp || { before: 80, after: 80, line: 280 }, ...(o.num ? { numbering: { reference: 'bb', level: 0 } } : {}), ...(o.brk ? { pageBreakBefore: true } : {}) });
-  const h1 = (txt, brk = false) => pg([run(txt, { size: 32, bold: true, color: BROWN })], { sp: { before: 280, after: 140, line: 360 }, brk });
-  const h2 = (txt) => pg([run(txt, { size: 24, bold: true, color: BROWN })], { sp: { before: 180, after: 100, line: 320 } });
-  const body = (txt, o = {}) => pg([run(txt, { size: 22, ...o })], { sp: { before: 60, after: 60, line: 288 } });
-  const kv = (label, val) => pg([run(`${label}: `, { size: 22, bold: true }), run(val || '—', { size: 22 })], { sp: { before: 50, after: 50, line: 276 } });
-  const bullet = (txt) => pg([run(txt, { size: 22 })], { sp: { before: 40, after: 40, line: 280 }, num: true });
+  const pg = (children, o = {}) => new Paragraph({ children: Array.isArray(children) ? children : [children], alignment: o.align || AlignmentType.LEFT, spacing: o.sp || { before: 80, after: 120, line: 276 }, ...(o.num ? { numbering: { reference: 'bb', level: 0 } } : {}), ...(o.brk ? { pageBreakBefore: true } : {}) });
+  const h1 = (txt, brk = false) => new Paragraph({ children: [run(txt, { size: 28, bold: true, color: NAVY })], alignment: AlignmentType.LEFT, border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: NAVY } }, spacing: { before: 280, after: 160, line: 276 }, ...(brk ? { pageBreakBefore: true } : {}) });
+  const h2 = (txt) => pg([run(txt, { size: 24, bold: true, color: NAVY })], { sp: { before: 180, after: 100, line: 276 } });
+  const body = (txt, o = {}) => pg([run(txt, { size: 22, ...o })], { sp: { before: 60, after: 120, line: 276 } });
+  const kv = (label, val) => pg([run(`${label}: `, { size: 22, bold: true, color: NAVY }), run(val || '—', { size: 22 })], { sp: { before: 50, after: 120, line: 276 } });
+  const bullet = (txt) => pg([run(txt, { size: 22 })], { sp: { before: 40, after: 160, line: 276 }, num: true });
   const blank = () => pg([run('')], { sp: { before: 60, after: 60 } });
-  const hr = () => new Paragraph({ children: [], border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'E8E1D8' } }, spacing: { before: 100, after: 100 } });
+  const hr = () => new Paragraph({ children: [], border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'D0D5DD' } }, spacing: { before: 100, after: 100 } });
 
   const tc = (kids, o = {}) => new TableCell({ children: Array.isArray(kids) ? kids : [kids], borders: BORD, width: o.w, shading: o.shd, margins: { top: 80, bottom: 80, left: 120, right: 120 } });
 
@@ -3163,19 +3164,19 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
   }));
 
   const CW = [{ size: 47, type: WidthType.PERCENTAGE }, { size: 18, type: WidthType.PERCENTAGE }, { size: 18, type: WidthType.PERCENTAGE }, { size: 17, type: WidthType.PERCENTAGE }];
-  const hdrShd = { fill: BROWN, type: ShadingType.CLEAR, color: 'auto' };
+  const hdrShd = { fill: NAVY, type: ShadingType.CLEAR, color: 'auto' };
   const tblHdr = new TableRow({ tableHeader: true, children: [
-    tc([pg([run('Particulars', { size: 20, bold: true, color: WHITE })], { sp: { before: 60, after: 60 } })], { w: CW[0], shd: hdrShd }),
-    tc([pg([run(fyL.pri, { size: 20, bold: true, color: WHITE })], { align: AlignmentType.RIGHT, sp: { before: 60, after: 60 } })], { w: CW[1], shd: hdrShd }),
-    tc([pg([run(fyL.cur, { size: 20, bold: true, color: WHITE })], { align: AlignmentType.RIGHT, sp: { before: 60, after: 60 } })], { w: CW[2], shd: hdrShd }),
-    tc([pg([run('YoY %', { size: 20, bold: true, color: WHITE })], { align: AlignmentType.RIGHT, sp: { before: 60, after: 60 } })], { w: CW[3], shd: hdrShd }),
+    tc([pg([run('Particulars', { size: 22, bold: true, color: WHITE })], { sp: { before: 60, after: 60 } })], { w: CW[0], shd: hdrShd }),
+    tc([pg([run(fyL.pri, { size: 22, bold: true, color: WHITE })], { align: AlignmentType.RIGHT, sp: { before: 60, after: 60 } })], { w: CW[1], shd: hdrShd }),
+    tc([pg([run(fyL.cur, { size: 22, bold: true, color: WHITE })], { align: AlignmentType.RIGHT, sp: { before: 60, after: 60 } })], { w: CW[2], shd: hdrShd }),
+    tc([pg([run('YoY %', { size: 22, bold: true, color: WHITE })], { align: AlignmentType.RIGHT, sp: { before: 60, after: 60 } })], { w: CW[3], shd: hdrShd }),
   ]});
   const tblBody = finRows.map((r, i) => {
     const bg = i % 2 === 0 ? WHITE : ALT;
     const shd = { fill: bg, type: ShadingType.CLEAR, color: 'auto' };
     const rsp = { before: 60, after: 60 };
     return new TableRow({ children: [
-      tc([pg([run(r.L, { size: 20 })], { sp: rsp })], { w: CW[0], shd }),
+      tc([pg([run(r.L, { size: 20, bold: true })], { sp: rsp })], { w: CW[0], shd }),
       tc([pg([run(r.ps, { size: 20 })], { align: AlignmentType.RIGHT, sp: rsp })], { w: CW[1], shd }),
       tc([pg([run(r.cs, { size: 20 })], { align: AlignmentType.RIGHT, sp: rsp })], { w: CW[2], shd }),
       tc([pg([run(r.ys, { size: 20 })], { align: AlignmentType.RIGHT, sp: rsp })], { w: CW[3], shd }),
@@ -3188,7 +3189,7 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
 
   // ── Title page ────────────────────────────────────────────────────────────
   ch.push(pg([run('')], { sp: { before: 900, after: 0 } }));
-  ch.push(pg([run(companyInfo.name || 'Private Company', { size: 52, bold: true, color: BROWN })], { align: AlignmentType.CENTER, sp: { before: 200, after: 200, line: 560 } }));
+  ch.push(pg([run(companyInfo.name || 'Private Company', { size: 44, bold: true, color: NAVY })], { align: AlignmentType.CENTER, sp: { before: 200, after: 200, line: 460 } }));
   ch.push(pg([run('Company Brief', { size: 30, italics: true, color: DK })], { align: AlignmentType.CENTER, sp: { before: 100, after: 100 } }));
   if (companyInfo.period) ch.push(pg([run(`Reporting Period: ${companyInfo.period}`, { size: 22, color: MID })], { align: AlignmentType.CENTER, sp: { before: 80, after: 60 } }));
   ch.push(pg([run('Prepared by FinSight AI  ·  finsightai.org', { size: 20, italics: true, color: MID })], { align: AlignmentType.CENTER, sp: { before: 200, after: 60 } }));
@@ -3277,7 +3278,7 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
   // ── Header / Footer ───────────────────────────────────────────────────────
   const docHeader = new Header({ children: [
     new Paragraph({ alignment: AlignmentType.LEFT, border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'E8E1D8' } }, spacing: { before: 0, after: 80 },
-      children: [new TextRun({ text: companyInfo.name || 'Company Brief', font: 'Calibri', size: 18, italics: true, color: MID })] }),
+      children: [new TextRun({ text: companyInfo.name || 'Company Brief', font: 'Calibri', size: 18, italics: true, color: NAVY })] }),
   ]});
   const docFooter = new Footer({ children: [
     new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 80, after: 0 }, children: [
@@ -3294,12 +3295,13 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
     subject: 'Brief company analysis',
     creator: 'FinSight AI',
     keywords: 'company brief, financial analysis, India',
+    styles: { default: { document: { run: { font: 'Calibri', size: 22 }, paragraph: { spacing: { line: 276, after: 120 } } } } },
     numbering: {
       config: [{
         reference: 'bb',
         levels: [{
           level: 0, format: levelBulletFmt, text: '•', alignment: AlignmentType.LEFT,
-          style: { paragraph: { indent: { left: 720, hanging: 360 } }, run: { font: 'Symbol', size: 20 } },
+          style: { paragraph: { indent: { left: 720, hanging: 360 } }, run: { font: 'Symbol', size: 22 } },
         }],
       }],
     },
