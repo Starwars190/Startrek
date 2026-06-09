@@ -1469,14 +1469,18 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     BorderStyle, AlignmentType, WidthType, PageNumber, Header, Footer, ShadingType, ImageRun
   } = docx;
 
-  // Goldman Sachs / Corporate color palette
-  const NAVY  = "0F2044";
-  const GOLD  = "B7860F";
-  const DK    = "1A202C";
-  const MID   = "4A5568";
-  const LIGHT = "E8EFF8";
-  const WHITE = "FFFFFF";
-  const BLACK = "000000";
+  // Calibri / Corporate color palette
+  const NAVY      = "1F3A5F";
+  const GOLD      = "B7860F";
+  const DK        = "222222";
+  const MID       = "4A5568";
+  const LIGHT     = "F2F4F7";
+  const WHITE     = "FFFFFF";
+  const BLACK     = "000000";
+  const GREEN_HDR = "1E7A3C";
+  const GREEN_BG  = "E8F3EC";
+  const RED_HDR   = "9E2A2A";
+  const RED_BG    = "FBEBEB";
 
   const noBorder = { style: BorderStyle.NONE, size: 0, color: WHITE };
   const noBorders = { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder };
@@ -1489,15 +1493,15 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   };
 
   const thinBorder = {
-    top:    { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
-    bottom: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
-    left:   { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
-    right:  { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
+    top:    { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" },
+    bottom: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" },
+    left:   { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" },
+    right:  { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" },
   };
 
   const txt = (str, opts = {}) => new TextRun({
     text: String(str || ""),
-    font: opts.font || "Times New Roman",
+    font: opts.font || "Calibri",
     size: opts.size || 22,
     bold: opts.bold || false,
     italics: opts.italics || false,
@@ -1507,7 +1511,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   const para = (children, opts = {}) => new Paragraph({
     children: Array.isArray(children) ? children : [children],
     alignment: opts.align || AlignmentType.LEFT,
-    spacing: opts.spacing || { before: 120, after: 120, line: 320 },
+    spacing: opts.spacing || { before: 0, after: 120, line: 276 },
   });
 
   const cell = (children, opts = {}) => new TableCell({
@@ -1519,16 +1523,16 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     margins: opts.margins || { top: 100, bottom: 100, left: 140, right: 140 },
   });
 
-  // Section header: large navy heading (14pt = size 28)
+  // Section header: 14pt bold navy with spacing per spec
   const sectionHeader = (number, title) => para(
     [txt(`${number ? number + ".  " : ""}${humanizeTitle(title)}`, {
-      font: "Times New Roman", size: 28, bold: true, color: NAVY
+      font: "Calibri", size: 28, bold: true, color: NAVY
     })],
-    { align: AlignmentType.LEFT, spacing: { before: 500, after: 180, line: 340 } }
+    { align: AlignmentType.LEFT, spacing: { before: 280, after: 160, line: 276 } }
   );
 
   // Horizontal rule via table
-  const hrule = (color = "C5D3E8", thickness = 8) => new Table({
+  const hrule = (color = "D0D5DD", thickness = 8) => new Table({
     rows: [new TableRow({ children: [new TableCell({
       children: [new Paragraph({ children: [] })],
       borders: { top: { style: BorderStyle.SINGLE, size: thickness, color }, bottom: noBorder, left: noBorder, right: noBorder },
@@ -1539,18 +1543,18 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   });
 
   const subSectionHeader = (title) => para(
-    [txt(humanizeTitle(title), { font: "Times New Roman", size: 26, bold: true, color: NAVY })],
-    { spacing: { before: 400, after: 160, line: 340 } }
+    [txt(humanizeTitle(title), { font: "Calibri", size: 26, bold: true, color: NAVY })],
+    { spacing: { before: 360, after: 160, line: 276 } }
   );
 
   const subheading = (title) => para(
-    [txt(humanizeTitle(title), { font: "Times New Roman", size: 23, bold: true, color: NAVY })],
-    { spacing: { before: 260, after: 120, line: 320 } }
+    [txt(humanizeTitle(title), { font: "Calibri", size: 23, bold: true, color: NAVY })],
+    { spacing: { before: 240, after: 120, line: 276 } }
   );
 
   const disclaimer = (rounding) => para(
     [txt(`Unless otherwise specified, all monetary values are in ${rounding || "Lakhs"} of INR`, {
-      font: "Times New Roman", size: 18, italics: true, color: MID
+      font: "Calibri", size: 18, italics: true, color: MID
     })],
     { align: AlignmentType.RIGHT, spacing: { before: 80, after: 160 } }
   );
@@ -1569,9 +1573,9 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   const dataNoticeBox = (heading, note) => new Table({
     rows: [new TableRow({ children: [new TableCell({
       children: [
-        para([txt(`⚠  ${heading}`, { font: "Times New Roman", size: 22, bold: true, color: AMBER })],
+        para([txt(`⚠  ${heading}`, { font: "Calibri", size: 22, bold: true, color: AMBER })],
           { spacing: { before: 100, after: 80 } }),
-        para([txt(note, { font: "Times New Roman", size: 20, italics: true, color: DK })],
+        para([txt(note, { font: "Calibri", size: 20, italics: true, color: DK })],
           { align: AlignmentType.JUSTIFIED, spacing: { before: 60, after: 100, line: 320 } }),
       ],
       borders: amberBorder,
@@ -1643,7 +1647,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     rows: [new TableRow({ children: [
       new TableCell({ children: [new Paragraph({ children: [], spacing: { before: 200 } })], borders: noBorders, width: { size: 25, type: WidthType.PERCENTAGE }, margins: { top: 0, bottom: 0, left: 0, right: 0 } }),
       new TableCell({
-        children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "[ COMPANY LOGO ]", font: "Times New Roman", size: 22, color: NAVY, bold: true })], spacing: { before: 300, after: 300 } })],
+        children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "[ COMPANY LOGO ]", font: "Calibri", size: 22, color: NAVY, bold: true })], spacing: { before: 300, after: 300 } })],
         borders: navyBorder,
         shading: { type: ShadingType.SOLID, color: "F0F5FC" },
         width: { size: 50, type: WidthType.PERCENTAGE },
@@ -1659,35 +1663,35 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
 
   // Company name
   allSections.push(para(
-    [txt(companyInfo.name || "PRIVATE COMPANY", { font: "Times New Roman", size: 52, bold: true, color: NAVY })],
-    { align: AlignmentType.CENTER, spacing: { before: 400, after: 200, line: 440 } }
+    [txt(companyInfo.name || "PRIVATE COMPANY", { font: "Calibri", size: 44, bold: true, color: NAVY })],
+    { align: AlignmentType.CENTER, spacing: { before: 400, after: 200, line: 400 } }
   ));
 
   // Horizontal rule (navy)
   allSections.push(hrule(NAVY, 12));
 
   allSections.push(para(
-    [txt("FINANCIAL ANALYSIS REPORT", { font: "Times New Roman", size: 28, bold: true, color: NAVY })],
-    { align: AlignmentType.CENTER, spacing: { before: 240, after: 120 } }
+    [txt("FINANCIAL ANALYSIS REPORT", { font: "Calibri", size: 22, bold: true, color: NAVY })],
+    { align: AlignmentType.CENTER, spacing: { before: 240, after: 100 } }
   ));
 
   if (companyInfo.period) {
     allSections.push(para(
-      [txt(`Period: ${preserveDateRanges(companyInfo.period)}`, { font: "Times New Roman", size: 20, italics: true, color: MID })],
-      { align: AlignmentType.CENTER, spacing: { before: 100, after: 80 } }
+      [txt(`Period: ${preserveDateRanges(companyInfo.period)}`, { font: "Calibri", size: 22, bold: true, color: NAVY })],
+      { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }
     ));
   }
 
   allSections.push(para(
-    [txt("Confidential — Prepared by FinSight AI", { font: "Times New Roman", size: 18, italics: true, color: MID })],
+    [txt("Confidential — Prepared by FinSight AI", { font: "Calibri", size: 18, italics: true, color: MID })],
     { align: AlignmentType.CENTER, spacing: { before: 80, after: 40 } }
   ));
   allSections.push(para(
-    [txt("finsightai.org", { font: "Times New Roman", size: 16, color: MID })],
+    [txt("finsightai.org", { font: "Calibri", size: 16, color: MID })],
     { align: AlignmentType.CENTER, spacing: { before: 40, after: 40 } }
   ));
   allSections.push(para(
-    [txt(reportDate, { font: "Times New Roman", size: 16, color: MID })],
+    [txt(reportDate, { font: "Calibri", size: 16, color: MID })],
     { align: AlignmentType.CENTER, spacing: { before: 40, after: 240 } }
   ));
 
@@ -1708,7 +1712,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   // ═══════════════════════════════════════════════════════════════
   allSections.push(pageBreak());
   allSections.push(para(
-    [txt("TABLE OF CONTENTS", { font: "Times New Roman", size: 32, bold: true, color: NAVY })],
+    [txt("TABLE OF CONTENTS", { font: "Calibri", size: 32, bold: true, color: NAVY })],
     { align: AlignmentType.LEFT, spacing: { before: 200, after: 200 } }
   ));
   allSections.push(hrule(NAVY, 10));
@@ -1728,9 +1732,9 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   tocRows.push(new TableRow({
     tableHeader: true,
     children: [
-      cell(para(txt("No.", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 6, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 120, right: 120 } }),
-      cell(para(txt("Section", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 30, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 120, right: 120 } }),
-      cell(para(txt("Description", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 64, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 120, right: 120 } }),
+      cell(para(txt("No.", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 6, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 120, right: 120 } }),
+      cell(para(txt("Section", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 30, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 120, right: 120 } }),
+      cell(para(txt("Description", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 64, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 120, right: 120 } }),
     ]
   }));
   for (let i = 0; i < tocEntries.length; i++) {
@@ -1739,9 +1743,9 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     const bg = isAlt ? LIGHT : WHITE;
     tocRows.push(new TableRow({
       children: [
-        cell(para(txt(num, { font: "Times New Roman", size: 20, bold: true, color: NAVY }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 6, type: WidthType.PERCENTAGE } }),
-        cell(para(txt(section, { font: "Times New Roman", size: 20, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 30, type: WidthType.PERCENTAGE } }),
-        cell(para(txt(desc, { font: "Times New Roman", size: 19, color: MID }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 64, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(num, { font: "Calibri", size: 20, bold: true, color: NAVY }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 6, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(section, { font: "Calibri", size: 20, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 30, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(desc, { font: "Calibri", size: 19, color: MID }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 64, type: WidthType.PERCENTAGE } }),
       ]
     }));
   }
@@ -1772,8 +1776,8 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   for (const p of mainParas) {
     if (!p || !p.trim()) continue;
     allSections.push(para(
-      [txt(fullClean(p.trim()), { font: "Times New Roman", size: 22, color: DK })],
-      { align: AlignmentType.JUSTIFIED, spacing: { before: 140, after: 160, line: 340 } }
+      [txt(fullClean(p.trim()), { font: "Calibri", size: 22, color: DK })],
+      { align: AlignmentType.JUSTIFIED, spacing: { before: 0, after: 120, line: 276 } }
     ));
   }
 
@@ -1793,8 +1797,8 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     allSections.push(subSectionHeader("Key Financial Highlights"));
     for (const hi of highlightItems) {
       allSections.push(para(
-        [txt("  ●  ", { font: "Times New Roman", size: 22, bold: true, color: NAVY }), txt(hi, { font: "Times New Roman", size: 22, color: DK })],
-        { spacing: { before: 80, after: 80, line: 320 }, indent: { left: 360, hanging: 220 } }
+        [txt("  ●  ", { font: "Calibri", size: 22, bold: true, color: NAVY }), txt(hi, { font: "Calibri", size: 22, color: DK })],
+        { spacing: { before: 60, after: 160, line: 276 }, indent: { left: 360, hanging: 220 } }
       ));
     }
   }
@@ -1806,8 +1810,8 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     for (const risk of topThreats) {
       if (!risk || !risk.trim()) continue;
       allSections.push(para(
-        [txt("  ⚠  ", { font: "Times New Roman", size: 22, bold: true, color: "C04040" }), txt(risk.trim(), { font: "Times New Roman", size: 22, color: DK })],
-        { spacing: { before: 80, after: 80, line: 320 }, indent: { left: 360, hanging: 260 } }
+        [txt("  ⚠  ", { font: "Calibri", size: 22, bold: true, color: "C04040" }), txt(risk.trim(), { font: "Calibri", size: 22, color: DK })],
+        { spacing: { before: 60, after: 160, line: 276 }, indent: { left: 360, hanging: 260 } }
       ));
     }
   }
@@ -1820,7 +1824,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     allSections.push(subSectionHeader("Investment Thesis"));
     allSections.push(new Table({
       rows: [new TableRow({ children: [new TableCell({
-        children: [para([txt(thesisPara, { font: "Times New Roman", size: 21, italics: true, color: DK })], { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 120, line: 340 } })],
+        children: [para([txt(thesisPara, { font: "Calibri", size: 21, italics: true, color: DK })], { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 120, line: 340 } })],
         shading: { type: ShadingType.SOLID, color: LIGHT },
         borders: { top: { style: BorderStyle.SINGLE, size: 12, color: NAVY }, bottom: noBorder, left: noBorder, right: noBorder },
         margins: { top: 200, bottom: 200, left: 240, right: 240 },
@@ -1874,8 +1878,8 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
             if (!cleanP) continue;
             if (block.title && !narrativeAdded) allSections.push(subSectionHeader(block.title));
             allSections.push(para(
-              [txt(cleanP, { font: "Times New Roman", size: 22, color: DK })],
-              { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 160, line: 340 } }
+              [txt(cleanP, { font: "Calibri", size: 22, color: DK })],
+              { align: AlignmentType.JUSTIFIED, spacing: { before: 0, after: 120, line: 276 } }
             ));
             narrativeAdded = true;
           }
@@ -1889,8 +1893,8 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
             if (shouldSkipKVPair(labelClean, pair.value)) continue;
             const valueClean = pair.value == null ? "—" : fullClean(String(pair.value)) || "—";
             tableRows.push(new TableRow({ children: [
-              cell(para(txt(labelClean, { font: "Times New Roman", size: 21, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { width: { size: 42, type: WidthType.PERCENTAGE }, borders: thinBorder }),
-              cell(para(txt(valueClean, { font: "Times New Roman", size: 21, color: MID }), { spacing: { before: 80, after: 80 } }), { width: { size: 58, type: WidthType.PERCENTAGE }, borders: thinBorder }),
+              cell(para(txt(labelClean, { font: "Calibri", size: 21, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { width: { size: 42, type: WidthType.PERCENTAGE }, borders: thinBorder }),
+              cell(para(txt(valueClean, { font: "Calibri", size: 21, color: MID }), { spacing: { before: 80, after: 80 } }), { width: { size: 58, type: WidthType.PERCENTAGE }, borders: thinBorder }),
             ]}));
           }
           if (tableRows.length > 0) {
@@ -1904,8 +1908,8 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     }
     if (!narrativeAdded) {
       allSections.push(para(
-        [txt(`${companyInfo.name || "The Company"} operates in the ${companyInfo.sector || "corporate"} sector. For a detailed company background, please refer to the Directors' Report and Management Discussion & Analysis sections of the source filing. Financial performance analysis is presented in the subsequent sections of this report.`, { font: "Times New Roman", size: 22, color: DK })],
-        { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 160, line: 340 } }
+        [txt(`${companyInfo.name || "The Company"} operates in the ${companyInfo.sector || "corporate"} sector. For a detailed company background, please refer to the Directors' Report and Management Discussion & Analysis sections of the source filing. Financial performance analysis is presented in the subsequent sections of this report.`, { font: "Calibri", size: 22, color: DK })],
+        { align: AlignmentType.JUSTIFIED, spacing: { before: 0, after: 120, line: 276 } }
       ));
     }
   }
@@ -1922,7 +1926,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   {
     const colW = [45, 25, 18, 12];
     const mkHdr = (label, align = AlignmentType.LEFT) =>
-      cell(para(txt(label, { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align, spacing: { before: 80, after: 80 } }),
+      cell(para(txt(label, { font: "Calibri", size: 21, bold: true, color: WHITE }), { align, spacing: { before: 80, after: 80 } }),
         { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders });
 
     const plRows = [];
@@ -1937,28 +1941,32 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       if (skipIfNull && cur == null && prior == null) return null;
       const yov = yoyStr(cur, prior);
       const yoyColor = yov.startsWith("▲") ? "1B6B4A" : (yov.startsWith("▼") ? "C04040" : "999999");
-      const bg = isTotal ? LIGHT : WHITE;
+      const bg = plRows.length % 2 === 0 ? WHITE : LIGHT;
       return new TableRow({ children: [
-        cell(para(txt(label, { font: "Times New Roman", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }),
+        cell(para(txt(label, { font: "Calibri", size: 20, bold: true, color: isTotal ? NAVY : DK }),
           { indent: isSub ? { left: 360 } : {}, spacing: { before: 60, after: 60 } }),
           { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[0], type: WidthType.PERCENTAGE } }),
-        cell(para(txt(fmtInr(cur), { font: "Times New Roman", size: 20, bold: isTotal, color: (cur != null && cur < 0) ? "C04040" : (isTotal ? NAVY : DK) }),
+        cell(para(txt(fmtInr(cur), { font: "Calibri", size: 20, bold: isTotal, color: (cur != null && cur < 0) ? "C04040" : (isTotal ? NAVY : DK) }),
           { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
           { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[1], type: WidthType.PERCENTAGE } }),
-        cell(para(txt(fmtInr(prior), { font: "Times New Roman", size: 20, color: MID }),
+        cell(para(txt(fmtInr(prior), { font: "Calibri", size: 20, color: MID }),
           { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
           { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[2], type: WidthType.PERCENTAGE } }),
-        cell(para(txt(yov, { font: "Times New Roman", size: 18, bold: true, color: yoyColor }),
+        cell(para(txt(yov, { font: "Calibri", size: 18, bold: true, color: yoyColor }),
           { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
           { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: colW[3], type: WidthType.PERCENTAGE } }),
       ]});
     };
-    const marginRow = (label, pct) => pct == null ? null : new TableRow({ children: [
-      cell(para(txt(label, { font: "Times New Roman", size: 18, italics: true, color: MID }), { indent: { left: 360 }, spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
-      cell(para(txt(pct, { font: "Times New Roman", size: 18, italics: true, color: NAVY }), { align: AlignmentType.RIGHT, spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
-      cell(para(txt("", { font: "Times New Roman", size: 18 }), { spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
-      cell(para(txt("", { font: "Times New Roman", size: 18 }), { spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: LIGHT }, borders: thinBorder }),
-    ]});
+    const marginRow = (label, pct) => {
+      if (pct == null) return null;
+      const bg = plRows.length % 2 === 0 ? WHITE : LIGHT;
+      return new TableRow({ children: [
+        cell(para(txt(label, { font: "Calibri", size: 18, italics: true, color: MID }), { indent: { left: 360 }, spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+        cell(para(txt(pct, { font: "Calibri", size: 18, italics: true, color: NAVY }), { align: AlignmentType.RIGHT, spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+        cell(para(txt("", { font: "Calibri", size: 18 }), { spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+        cell(para(txt("", { font: "Calibri", size: 18 }), { spacing: { before: 40, after: 40 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+      ]});
+    };
 
     const ebitdaMgn = (aggFin.ebitda != null && aggFin.revenue != null && aggFin.revenue !== 0)
       ? ((aggFin.ebitda / aggFin.revenue) * 100).toFixed(1) + "%" : null;
@@ -1986,7 +1994,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     if (plRows.length > 1) {
       allSections.push(new Table({ rows: plRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
     } else {
-      allSections.push(para([txt("Financial statement data could not be extracted. Please refer to the source filing.", { font: "Times New Roman", size: 22, color: DK })], { spacing: { before: 120, after: 160 } }));
+      allSections.push(para([txt("Financial statement data could not be extracted. Please refer to the source filing.", { font: "Calibri", size: 22, color: DK })], { spacing: { before: 120, after: 160 } }));
     }
     allSections.push(blankLine());
 
@@ -2002,12 +2010,12 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       allSections.push(new Table({
         rows: [new TableRow({ children: kpis.map(kpi => new TableCell({
           children: [
-            para([txt(kpi.label, { font: "Times New Roman", size: 20, bold: true, color: WHITE })], { align: AlignmentType.CENTER, spacing: { before: 80, after: 40 } }),
-            para([txt(kpi.value, { font: "Times New Roman", size: 26, bold: true, color: WHITE })], { align: AlignmentType.CENTER, spacing: { before: 40, after: 40 } }),
-            para([txt(kpi.sub,   { font: "Times New Roman", size: 16, italics: true, color: "C5D3E8" })], { align: AlignmentType.CENTER, spacing: { before: 40, after: 80 } }),
+            para([txt(kpi.label, { font: "Calibri", size: 20, bold: true, color: WHITE })], { align: AlignmentType.CENTER, spacing: { before: 80, after: 40 } }),
+            para([txt(kpi.value, { font: "Calibri", size: 26, bold: true, color: WHITE })], { align: AlignmentType.CENTER, spacing: { before: 40, after: 40 } }),
+            para([txt(kpi.sub,   { font: "Calibri", size: 16, italics: true, color: "C5D3E8" })], { align: AlignmentType.CENTER, spacing: { before: 40, after: 80 } }),
           ],
           shading: { type: ShadingType.SOLID, color: NAVY },
-          borders: { top: noBorder, bottom: noBorder, left: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" }, right: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" } },
+          borders: { top: noBorder, bottom: noBorder, left: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" }, right: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" } },
           width: { size: cw, type: WidthType.PERCENTAGE },
           margins: { top: 200, bottom: 200, left: 200, right: 200 },
         }))})],
@@ -2037,29 +2045,30 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   {
     const bsRow = (label, cur, prior, isTotal = false, isSub = false, skipNull = false) => {
       if (skipNull && cur == null && prior == null) return null;
+      const bg = bsRows.length % 2 === 0 ? WHITE : LIGHT;
       return new TableRow({ children: [
-        cell(para(txt(label, { font: "Times New Roman", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }),
+        cell(para(txt(label, { font: "Calibri", size: 20, bold: true, color: isTotal ? NAVY : DK }),
           { indent: isSub ? { left: 360 } : {}, spacing: { before: 60, after: 60 } }),
-          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 50, type: WidthType.PERCENTAGE } }),
-        cell(para(txt(fmtInr(cur), { font: "Times New Roman", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }),
+          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 50, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(fmtInr(cur), { font: "Calibri", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }),
           { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 28, type: WidthType.PERCENTAGE } }),
-        cell(para(txt(fmtInr(prior), { font: "Times New Roman", size: 20, color: MID }),
+          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 28, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(fmtInr(prior), { font: "Calibri", size: 20, color: MID }),
           { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-          { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 22, type: WidthType.PERCENTAGE } }),
+          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 22, type: WidthType.PERCENTAGE } }),
       ]});
     };
     const bsSect = (label) => new TableRow({ children: [
-      cell(para(txt(label, { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { spacing: { before: 60, after: 60 } }),
-        { shading: { type: ShadingType.SOLID, color: "1B3A6B" }, borders: noBorders, columnSpan: 3 }),
+      cell(para(txt(label, { font: "Calibri", size: 19, bold: true, color: WHITE }), { spacing: { before: 60, after: 60 } }),
+        { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, columnSpan: 3 }),
     ]});
     const addBs = (r) => { if (r) bsRows.push(r); };
 
     const bsRows = [];
     bsRows.push(new TableRow({ tableHeader: true, children: [
-      cell(para(txt("Particulars", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
-      cell(para(txt(companyInfo.period || "Current Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
-      cell(para(txt("Prior Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
+      cell(para(txt("Particulars", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
+      cell(para(txt(companyInfo.period || "Current Year", { font: "Calibri", size: 21, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
+      cell(para(txt("Prior Year", { font: "Calibri", size: 21, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
     ]}));
     bsRows.push(bsSect("ASSETS"));
     addBs(bsRow("Fixed Assets (Net Block)",    aggFin.fixedAssets,       aggPrior.fixedAssets,       false, true, true));
@@ -2083,7 +2092,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       const diff = Math.abs(aggFin.totalAssets - totalLE);
       const balanced = diff <= Math.max(100, (aggFin.totalAssets ?? 0) * 0.01);
       bsRows.push(new TableRow({ children: [
-        cell(para(txt(balanced ? "✓  Balance Check: BALANCED" : `⚠  Balance Check: MISMATCH  (Δ ${fmtInr(diff)})`, { font: "Times New Roman", size: 18, bold: true, color: balanced ? "1B6B4A" : "C04040" }), { spacing: { before: 80, after: 80 } }),
+        cell(para(txt(balanced ? "✓  Balance Check: BALANCED" : `⚠  Balance Check: MISMATCH  (Δ ${fmtInr(diff)})`, { font: "Calibri", size: 18, bold: true, color: balanced ? "1B6B4A" : "C04040" }), { spacing: { before: 80, after: 80 } }),
           { shading: { type: ShadingType.SOLID, color: balanced ? "EDF7F2" : "FDF2F2" }, borders: thinBorder, columnSpan: 3 }),
       ]}));
     }
@@ -2101,20 +2110,23 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
   allSections.push(blankLine());
 
   {
-    const cfRow = (label, cur, prior, isTotal = false) => new TableRow({ children: [
-      cell(para(txt(label, { font: "Times New Roman", size: 20, bold: isTotal, color: isTotal ? NAVY : DK }), { spacing: { before: 60, after: 60 } }),
-        { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 55, type: WidthType.PERCENTAGE } }),
-      cell(para(txt(fmtInr(cur), { font: "Times New Roman", size: 20, bold: isTotal, color: (cur != null && cur < 0) ? "C04040" : (isTotal ? NAVY : DK) }), { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-        { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 24, type: WidthType.PERCENTAGE } }),
-      cell(para(txt(fmtInr(prior), { font: "Times New Roman", size: 20, color: MID }), { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
-        { shading: { type: ShadingType.SOLID, color: isTotal ? LIGHT : WHITE }, borders: thinBorder, width: { size: 21, type: WidthType.PERCENTAGE } }),
-    ]});
+    const cfRow = (label, cur, prior, isTotal = false) => {
+      const bg = cfRows.length % 2 === 0 ? WHITE : LIGHT;
+      return new TableRow({ children: [
+        cell(para(txt(label, { font: "Calibri", size: 20, bold: true, color: isTotal ? NAVY : DK }), { spacing: { before: 60, after: 60 } }),
+          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 55, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(fmtInr(cur), { font: "Calibri", size: 20, bold: isTotal, color: (cur != null && cur < 0) ? "C04040" : (isTotal ? NAVY : DK) }), { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
+          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 24, type: WidthType.PERCENTAGE } }),
+        cell(para(txt(fmtInr(prior), { font: "Calibri", size: 20, color: MID }), { align: AlignmentType.RIGHT, spacing: { before: 60, after: 60 } }),
+          { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 21, type: WidthType.PERCENTAGE } }),
+      ]});
+    };
 
     const cfRows = [];
     cfRows.push(new TableRow({ tableHeader: true, children: [
-      cell(para(txt("Cash Flow Summary", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
-      cell(para(txt(companyInfo.period || "Current Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
-      cell(para(txt("Prior Year", { font: "Times New Roman", size: 20, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
+      cell(para(txt("Cash Flow Summary", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
+      cell(para(txt(companyInfo.period || "Current Year", { font: "Calibri", size: 21, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
+      cell(para(txt("Prior Year", { font: "Calibri", size: 21, bold: true, color: WHITE }), { align: AlignmentType.RIGHT, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders }),
     ]}));
     if (aggFin.operatingCashFlow  != null) cfRows.push(cfRow("Cash Flow from Operations (CFO)", aggFin.operatingCashFlow,  aggPrior.operatingCashFlow,  true));
     if (aggFin.investingCashFlow  != null) cfRows.push(cfRow("Cash Flow from Investing (CFI)",  aggFin.investingCashFlow,  aggPrior.investingCashFlow));
@@ -2148,17 +2160,17 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       allSections.push(subSectionHeader("Working Capital Metrics"));
       const wcRows = [];
       wcRows.push(new TableRow({ tableHeader: true, children: [
-        cell(para(txt("Metric", { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 40, type: WidthType.PERCENTAGE } }),
-        cell(para(txt("Value", { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 20, type: WidthType.PERCENTAGE } }),
-        cell(para(txt("Formula", { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 40, type: WidthType.PERCENTAGE } }),
+        cell(para(txt("Metric", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 40, type: WidthType.PERCENTAGE } }),
+        cell(para(txt("Value", { font: "Calibri", size: 21, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 20, type: WidthType.PERCENTAGE } }),
+        cell(para(txt("Formula", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 40, type: WidthType.PERCENTAGE } }),
       ]}));
       for (let wi = 0; wi < wcMetrics.length; wi++) {
         const m = wcMetrics[wi];
         const bg = wi % 2 === 0 ? LIGHT : WHITE;
         wcRows.push(new TableRow({ children: [
-          cell(para(txt(m.name, { font: "Times New Roman", size: 20, bold: true, color: DK }), { spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
-          cell(para(txt(m.value, { font: "Times New Roman", size: 20, bold: true, color: NAVY }), { align: AlignmentType.CENTER, spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
-          cell(para(txt(m.formula || "—", { font: "Times New Roman", size: 17, italics: true, color: MID }), { spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+          cell(para(txt(m.name, { font: "Calibri", size: 20, bold: true, color: DK }), { spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+          cell(para(txt(m.value, { font: "Calibri", size: 20, bold: true, color: NAVY }), { align: AlignmentType.CENTER, spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+          cell(para(txt(m.formula || "—", { font: "Calibri", size: 17, italics: true, color: MID }), { spacing: { before: 60, after: 60 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
         ]}));
       }
       allSections.push(new Table({ rows: wcRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
@@ -2175,18 +2187,18 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     allSections.push(hrule(NAVY, 8));
     allSections.push(disclaimer(unit));
     allSections.push(para(
-      [txt("🟢 Within benchmark  🟡 Near benchmark  🔴 Outside benchmark  ⚪ No benchmark", { font: "Times New Roman", size: 20, italics: true, color: MID })],
+      [txt("🟢 Within benchmark  🟡 Near benchmark  🔴 Outside benchmark  ⚪ No benchmark", { font: "Calibri", size: 20, italics: true, color: MID })],
       { align: AlignmentType.JUSTIFIED, spacing: { before: 100, after: 180 } }
     ));
     for (const category of ratios) {
       allSections.push(subheading(category.category));
       const ratioRows = [];
       ratioRows.push(new TableRow({ tableHeader: true, children: [
-        cell(para(txt("", { font: "Times New Roman", size: 18 }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 5, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 80, right: 80 } }),
-        cell(para(txt("Ratio", { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 25, type: WidthType.PERCENTAGE } }),
-        cell(para(txt("Value", { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 13, type: WidthType.PERCENTAGE } }),
-        cell(para(txt("Formula", { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 27, type: WidthType.PERCENTAGE } }),
-        cell(para(txt("Interpretation", { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 30, type: WidthType.PERCENTAGE } }),
+        cell(para(txt("", { font: "Calibri", size: 21 }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 5, type: WidthType.PERCENTAGE }, margins: { top: 100, bottom: 100, left: 80, right: 80 } }),
+        cell(para(txt("Ratio", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 25, type: WidthType.PERCENTAGE } }),
+        cell(para(txt("Value", { font: "Calibri", size: 21, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 13, type: WidthType.PERCENTAGE } }),
+        cell(para(txt("Formula", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 27, type: WidthType.PERCENTAGE } }),
+        cell(para(txt("Interpretation", { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 100, after: 100 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 30, type: WidthType.PERCENTAGE } }),
       ]}));
       for (let ri = 0; ri < category.items.length; ri++) {
         const item = category.items[ri];
@@ -2194,11 +2206,11 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
         const lightEmoji = getRatioLight(item.name, item.rawValue);
         const bg = isAlt ? LIGHT : WHITE;
         ratioRows.push(new TableRow({ children: [
-          cell(para(txt(lightEmoji, { font: "Times New Roman", size: 18 }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 5, type: WidthType.PERCENTAGE }, margins: { top: 80, bottom: 80, left: 60, right: 60 } }),
-          cell(para(txt(item.name, { font: "Times New Roman", size: 20, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
-          cell(para(txt(item.value, { font: "Times New Roman", size: 20, bold: true, color: item.value === "—" ? "999999" : NAVY }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
-          cell(para(txt(item.formula, { font: "Times New Roman", size: 17, italics: true, color: MID }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
-          cell(para(txt(item.interpretation, { font: "Times New Roman", size: 17, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+          cell(para(txt(lightEmoji, { font: "Calibri", size: 18 }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder, width: { size: 5, type: WidthType.PERCENTAGE }, margins: { top: 80, bottom: 80, left: 60, right: 60 } }),
+          cell(para(txt(item.name, { font: "Calibri", size: 20, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+          cell(para(txt(item.value, { font: "Calibri", size: 20, bold: true, color: item.value === "—" ? "999999" : NAVY }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+          cell(para(txt(item.formula, { font: "Calibri", size: 17, italics: true, color: MID }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+          cell(para(txt(item.interpretation, { font: "Calibri", size: 17, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
         ]}));
       }
       allSections.push(new Table({ rows: ratioRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
@@ -2214,36 +2226,36 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     allSections.push(sectionHeader("7", "SWOT Analysis"));
     allSections.push(hrule(NAVY, 8));
     allSections.push(para(
-      [txt(`Data-backed SWOT for ${companyInfo.name || "the Company"} derived from extracted financials.`, { font: "Times New Roman", size: 22, italics: true, color: MID })],
+      [txt(`Data-backed SWOT for ${companyInfo.name || "the Company"} derived from extracted financials.`, { font: "Calibri", size: 22, italics: true, color: MID })],
       { align: AlignmentType.JUSTIFIED, spacing: { before: 100, after: 200 } }
     ));
 
     const swotCellFn = (title, items, textColor, bgColor, borderColor) => {
       const children = [];
-      children.push(para([txt(title, { font: "Times New Roman", size: 24, bold: true, color: textColor })],
-        { align: AlignmentType.CENTER, spacing: { before: 180, after: 200 } }));
+      children.push(para([txt(title, { font: "Calibri", size: 24, bold: true, color: textColor })],
+        { align: AlignmentType.CENTER, spacing: { before: 180, after: 160 } }));
       const displayed = (items || []).filter(Boolean).slice(0, 5);
       if (displayed.length > 0) {
         for (const item of displayed) {
           children.push(para(
-            [txt("●  ", { font: "Times New Roman", size: 20, bold: true, color: textColor }),
-             txt(item.trim(), { font: "Times New Roman", size: 20, color: DK })],
-            { spacing: { before: 100, after: 100, line: 340 }, indent: { left: 280, hanging: 200 } }
+            [txt("●  ", { font: "Calibri", size: 21, bold: true, color: textColor }),
+             txt(item.trim(), { font: "Calibri", size: 21, color: DK })],
+            { spacing: { before: 60, after: 200, line: 288 }, indent: { left: 280, hanging: 200 } }
           ));
         }
       } else {
-        children.push(para([txt("No data available from source filing.", { font: "Times New Roman", size: 19, italics: true, color: "999999" })], { align: AlignmentType.CENTER }));
+        children.push(para([txt("No data available from source filing.", { font: "Calibri", size: 19, italics: true, color: "999999" })], { align: AlignmentType.CENTER }));
       }
       return new TableCell({
         children,
         borders: {
           top:    { style: BorderStyle.SINGLE, size: 8, color: borderColor },
-          bottom: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
-          left:   { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
-          right:  { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" },
+          bottom: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" },
+          left:   { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" },
+          right:  { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" },
         },
         shading: { type: ShadingType.SOLID, color: bgColor },
-        margins: { top: 240, bottom: 240, left: 240, right: 240 },
+        margins: { top: 300, bottom: 300, left: 280, right: 280 },
         width: { size: 50, type: WidthType.PERCENTAGE },
         verticalAlign: "top",
       });
@@ -2252,12 +2264,12 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     allSections.push(new Table({
       rows: [
         new TableRow({ children: [
-          swotCellFn("STRENGTHS",    swot.strengths    || [], "1B6B4A", "EDF7F2", "1B6B4A"),
-          swotCellFn("WEAKNESSES",   swot.weaknesses   || [], "C04040", "FDF2F2", "C04040"),
+          swotCellFn("STRENGTHS",    swot.strengths    || [], GREEN_HDR, GREEN_BG, GREEN_HDR),
+          swotCellFn("WEAKNESSES",   swot.weaknesses   || [], RED_HDR,   RED_BG,   RED_HDR),
         ]}),
         new TableRow({ children: [
-          swotCellFn("OPPORTUNITIES",swot.opportunities|| [], "1A5276", "EBF5FB", "1A5276"),
-          swotCellFn("THREATS",      swot.threats      || [], "884400", "FFF8EE", "B7860F"),
+          swotCellFn("OPPORTUNITIES",swot.opportunities|| [], GREEN_HDR, GREEN_BG, GREEN_HDR),
+          swotCellFn("THREATS",      swot.threats      || [], RED_HDR,   RED_BG,   RED_HDR),
         ]}),
       ],
       width: { size: 100, type: WidthType.PERCENTAGE },
@@ -2293,10 +2305,10 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
 
     const riskRows = [];
     riskRows.push(new TableRow({ tableHeader: true, children: [
-      cell(para(txt("Risk Factor",  { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 34, type: WidthType.PERCENTAGE } }),
-      cell(para(txt("Probability",  { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 14, type: WidthType.PERCENTAGE } }),
-      cell(para(txt("Impact",       { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 14, type: WidthType.PERCENTAGE } }),
-      cell(para(txt("Mitigation",   { font: "Times New Roman", size: 19, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 38, type: WidthType.PERCENTAGE } }),
+      cell(para(txt("Risk Factor",  { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 34, type: WidthType.PERCENTAGE } }),
+      cell(para(txt("Probability",  { font: "Calibri", size: 21, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 14, type: WidthType.PERCENTAGE } }),
+      cell(para(txt("Impact",       { font: "Calibri", size: 21, bold: true, color: WHITE }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 14, type: WidthType.PERCENTAGE } }),
+      cell(para(txt("Mitigation",   { font: "Calibri", size: 21, bold: true, color: WHITE }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: NAVY }, borders: noBorders, width: { size: 38, type: WidthType.PERCENTAGE } }),
     ]}));
     for (let ri = 0; ri < risks.length; ri++) {
       const r = risks[ri];
@@ -2304,10 +2316,10 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       const probColor   = r.prob   === "High" ? "C04040" : (r.prob   === "Medium" ? "884400" : "1B6B4A");
       const impactColor = r.impact === "High" ? "C04040" : (r.impact === "Medium" ? "884400" : "1B6B4A");
       riskRows.push(new TableRow({ children: [
-        cell(para(txt(r.risk,       { font: "Times New Roman", size: 19, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
-        cell(para(txt(r.prob,       { font: "Times New Roman", size: 19, bold: true, color: probColor }),   { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
-        cell(para(txt(r.impact,     { font: "Times New Roman", size: 19, bold: true, color: impactColor }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
-        cell(para(txt(r.mitigation, { font: "Times New Roman", size: 18, color: MID }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+        cell(para(txt(r.risk,       { font: "Calibri", size: 19, bold: true, color: DK }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+        cell(para(txt(r.prob,       { font: "Calibri", size: 19, bold: true, color: probColor }),   { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+        cell(para(txt(r.impact,     { font: "Calibri", size: 19, bold: true, color: impactColor }), { align: AlignmentType.CENTER, spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
+        cell(para(txt(r.mitigation, { font: "Calibri", size: 18, color: MID }), { spacing: { before: 80, after: 80 } }), { shading: { type: ShadingType.SOLID, color: bg }, borders: thinBorder }),
       ]}));
     }
     allSections.push(new Table({ rows: riskRows, width: { size: 100, type: WidthType.PERCENTAGE } }));
@@ -2321,7 +2333,7 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
       : `${companyInfo.name || "The Company"} is positioned within the ${companyInfo.sector || "corporate"} sector with an established operational track record. Over the next 12 months, management is expected to focus on revenue growth, margin improvement and working capital optimisation. Key monitorables include revenue trajectory, debt reduction progress and operating cash flow generation. Stakeholders should track quarterly filings for updated guidance and material developments.`;
     allSections.push(new Table({
       rows: [new TableRow({ children: [new TableCell({
-        children: [para([txt(outlookContent, { font: "Times New Roman", size: 21, color: DK })], { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 120, line: 340 } })],
+        children: [para([txt(outlookContent, { font: "Calibri", size: 21, color: DK })], { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 120, line: 340 } })],
         shading: { type: ShadingType.SOLID, color: LIGHT },
         borders: { top: { style: BorderStyle.SINGLE, size: 12, color: NAVY }, bottom: noBorder, left: noBorder, right: noBorder },
         margins: { top: 200, bottom: 200, left: 240, right: 240 },
@@ -2334,18 +2346,18 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     // Conclusion
     allSections.push(subSectionHeader("Conclusion"));
     allSections.push(para(
-      [txt(`This financial analysis report for ${companyInfo.name || "the Company"} has been prepared using AI-assisted extraction and analysis of the source filing. The data covers ${companyInfo.period || "the reported period"} and is derived from official company documents. Investors and stakeholders should conduct their own due diligence and consult qualified financial advisers before making any investment or business decisions. FinSight AI does not warrant the completeness or accuracy of the underlying source data.`, { font: "Times New Roman", size: 22, color: DK })],
-      { align: AlignmentType.JUSTIFIED, spacing: { before: 120, after: 200, line: 340 } }
+      [txt(`This financial analysis report for ${companyInfo.name || "the Company"} has been prepared using AI-assisted extraction and analysis of the source filing. The data covers ${companyInfo.period || "the reported period"} and is derived from official company documents. Investors and stakeholders should conduct their own due diligence and consult qualified financial advisers before making any investment or business decisions. FinSight AI does not warrant the completeness or accuracy of the underlying source data.`, { font: "Calibri", size: 22, color: DK })],
+      { align: AlignmentType.JUSTIFIED, spacing: { before: 0, after: 120, line: 276 } }
     ));
 
     // Disclaimer box
-    allSections.push(hrule("C5D3E8", 6));
+    allSections.push(hrule("D0D5DD", 6));
     allSections.push(new Table({
       rows: [new TableRow({ children: [new TableCell({
         children: [
-          para([txt("DISCLAIMER", { font: "Times New Roman", size: 20, bold: true, color: NAVY })], { spacing: { before: 80, after: 80 } }),
-          para([txt("This report is generated by FinSight AI for informational purposes only. It does not constitute investment advice, a solicitation, or an offer to purchase or sell any security. Financial data is extracted from public filings using AI; verify figures against primary sources. Past performance is not indicative of future results.", { font: "Times New Roman", size: 18, italics: true, color: MID })], { align: AlignmentType.JUSTIFIED, spacing: { before: 60, after: 80, line: 320 } }),
-          para([txt(`© ${new Date().getFullYear()} FinSight AI  •  finsightai.org  •  Prepared by ${AUTHOR_NAME}`, { font: "Times New Roman", size: 16, color: MID })], { align: AlignmentType.CENTER, spacing: { before: 40, after: 80 } }),
+          para([txt("DISCLAIMER", { font: "Calibri", size: 20, bold: true, color: NAVY })], { spacing: { before: 80, after: 80 } }),
+          para([txt("This report is generated by FinSight AI for informational purposes only. It does not constitute investment advice, a solicitation, or an offer to purchase or sell any security. Financial data is extracted from public filings using AI; verify figures against primary sources. Past performance is not indicative of future results.", { font: "Calibri", size: 18, italics: true, color: MID })], { align: AlignmentType.JUSTIFIED, spacing: { before: 60, after: 80, line: 320 } }),
+          para([txt(`© ${new Date().getFullYear()} FinSight AI  •  finsightai.org  •  Prepared by ${AUTHOR_NAME}`, { font: "Calibri", size: 16, color: MID })], { align: AlignmentType.CENTER, spacing: { before: 40, after: 80 } }),
         ],
         shading: { type: ShadingType.SOLID, color: "F7FAFF" },
         borders: thinBorder,
@@ -2365,12 +2377,12 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
     description: 'Goldman Sachs-style financial analysis report with ratios, SWOT, and charts',
     subject: 'Financial Analysis Report',
     keywords: 'financial-statements,MCA,XBRL,ratios,SWOT,FinSight',
-    styles: { default: { document: { run: { font: "Times New Roman", size: 22 }, paragraph: { spacing: { line: 320 } } } } },
+    styles: { default: { document: { run: { font: "Calibri", size: 22 }, paragraph: { spacing: { line: 276, after: 120 } } } } },
     sections: [{
       properties: {
         page: {
           size: { width: 12240, height: 15840 },
-          margin: { top: 1100, right: 1100, bottom: 1100, left: 1100, header: 700, footer: 700 },
+          margin: { top: 1200, right: 1440, bottom: 1200, left: 1440, header: 700, footer: 700 },
           borders: {
             pageBorderTop:    { style: BorderStyle.SINGLE, size: 12, color: NAVY, space: 24 },
             pageBorderRight:  { style: BorderStyle.SINGLE, size: 12, color: NAVY, space: 24 },
@@ -2384,18 +2396,18 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
           children: [
             new Table({
               width: { size: 100, type: WidthType.PERCENTAGE },
-              borders: { top: noBorder, bottom: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" }, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
+              borders: { top: noBorder, bottom: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" }, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
               rows: [new TableRow({
                 children: [
                   new TableCell({
                     width: { size: 60, type: WidthType.PERCENTAGE },
                     borders: noBorders,
-                    children: [new Paragraph({ children: [new TextRun({ text: companyInfo.name || "FinSight AI", bold: true, size: 16, color: NAVY, font: "Times New Roman" })], spacing: { before: 0, after: 60 } })],
+                    children: [new Paragraph({ children: [new TextRun({ text: companyInfo.name || "FinSight AI", bold: true, size: 16, color: NAVY, font: "Calibri" })], spacing: { before: 0, after: 60 } })],
                   }),
                   new TableCell({
                     width: { size: 40, type: WidthType.PERCENTAGE },
                     borders: noBorders,
-                    children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "FinSight AI", italics: true, size: 16, color: MID, font: "Times New Roman" })], spacing: { before: 0, after: 60 } })],
+                    children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "FinSight AI", italics: true, size: 16, color: MID, font: "Calibri" })], spacing: { before: 0, after: 60 } })],
                   }),
                 ]
               })]
@@ -2408,18 +2420,18 @@ async function generateOrganizedWordDoc(chunkResults, companyInfo, ratios, swot,
           children: [
             new Table({
               width: { size: 100, type: WidthType.PERCENTAGE },
-              borders: { top: { style: BorderStyle.SINGLE, size: 4, color: "C5D3E8" }, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
+              borders: { top: { style: BorderStyle.SINGLE, size: 4, color: "D0D5DD" }, bottom: noBorder, left: noBorder, right: noBorder, insideH: noBorder, insideV: noBorder },
               rows: [new TableRow({
                 children: [
                   new TableCell({
                     width: { size: 50, type: WidthType.PERCENTAGE },
                     borders: noBorders,
-                    children: [new Paragraph({ children: [new TextRun({ text: "finsightai.org", size: 15, color: MID, font: "Times New Roman" })], spacing: { before: 60, after: 0 } })],
+                    children: [new Paragraph({ children: [new TextRun({ text: "finsightai.org", size: 15, color: MID, font: "Calibri" })], spacing: { before: 60, after: 0 } })],
                   }),
                   new TableCell({
                     width: { size: 50, type: WidthType.PERCENTAGE },
                     borders: noBorders,
-                    children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "Page ", size: 15, color: MID, font: "Times New Roman" }), new TextRun({ children: [PageNumber.CURRENT], size: 15, color: NAVY, font: "Times New Roman" }), new TextRun({ text: " of ", size: 15, color: MID, font: "Times New Roman" }), new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 15, color: NAVY, font: "Times New Roman" })], spacing: { before: 60, after: 0 } })],
+                    children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "Page ", size: 15, color: MID, font: "Calibri" }), new TextRun({ children: [PageNumber.CURRENT], size: 15, color: NAVY, font: "Calibri" }), new TextRun({ text: " of ", size: 15, color: MID, font: "Calibri" }), new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 15, color: NAVY, font: "Calibri" })], spacing: { before: 60, after: 0 } })],
                   }),
                 ]
               })]
