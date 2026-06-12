@@ -89,7 +89,7 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
   cov.getRow(1).height = 26
   const covRows = [
     ['Company Name', companyName],
-    ['CIN', co.cin || co.registration_number || '—'],
+    ['CIN', co.cin || co.registration_number || co.company_identification_number || co.corporate_identification_number || analysis.cin || '—'],
     ['Industry', co.industry || '—'],
     ['Reporting Currency', co.reporting_currency || 'INR'],
     ['Financial Years Covered', years.join(', ')],
