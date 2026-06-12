@@ -390,10 +390,30 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
     f7.getRow(rn).height = 17
     applyCell(f7, rn, 1, label, bFont, fill, { vertical: 'middle' })
     years.forEach((yr, yi) => {
-      const val = ratiosByYear?.[yr]?.[key]
+      let val = ratiosByYear?.[yr]?.[key]
+      if (val == null && key === 'Debt to Equity') {
+        const eq = g(bs_, 'total_equity', yr) ?? g(bs_, 'net_worth', yr) ?? g(bs_, 'total_net_worth', yr)
+        if (eq != null && eq <= 0) {
+          val = 'n.m.'
+        } else if (eq != null) {
+          const ltd = g(bs_, 'long_term_debt', yr)
+          const std = g(bs_, 'short_term_debt', yr)
+          const totalDebt = ltd != null && std != null ? ltd + std : (ltd ?? std)
+          if (totalDebt != null) val = Math.round(totalDebt / eq * 10000) / 10000
+        }
+      }
+      if (val == null && key === 'Return on Equity %') {
+        const eq = g(bs_, 'total_equity', yr) ?? g(bs_, 'net_worth', yr) ?? g(bs_, 'total_net_worth', yr)
+        if (eq != null && eq <= 0) {
+          val = 'n.m.'
+        } else if (eq != null) {
+          const ni = g(is_, 'net_income', yr)
+          if (ni != null) val = Math.round(ni / eq * 10000) / 100
+        }
+      }
       let cellFont = bFont
       let display = val != null ? val : null
-      if (val != null) {
+      if (typeof val === 'number') {
         const pass = dir === 'min' ? val >= bench : val <= bench
         cellFont = pass ? greenTextFont : redTextFont
       }
