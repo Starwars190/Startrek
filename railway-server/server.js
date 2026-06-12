@@ -516,21 +516,35 @@ app.get('/fetch-mca/:cin', async (req, res) => {
   }
 
   // 3. Enqueue — jobId deduplicates so double-clicks collapse to one job
-  const job = await instafinancials.add('fetch-brisk', { cin }, { jobId: `brisk:${cin}` })
-  return res.status(202).json({ jobId: job.id, status: 'queued' })
+  if (!instafinancials) {
+    return res.status(503).json({ error: 'Queue unavailable — Redis not connected' })
+  }
+  try {
+    const job = await instafinancials.add('fetch-brisk', { cin }, { jobId: `brisk:${cin}` })
+    return res.status(202).json({ jobId: job.id, status: 'queued' })
+  } catch (err) {
+    console.error('[fetch-mca] enqueue failed:', err.message)
+    return res.status(503).json({ error: 'Queue unavailable' })
+  }
 })
 
 // ---------------------------------------------------------------------------
 // GET /jobs/:id — poll job state; returns result payload when complete
 // ---------------------------------------------------------------------------
 app.get('/jobs/:id', async (req, res) => {
-  const job = await instafinancials.getJob(req.params.id)
-  if (!job) return res.status(404).json({ error: 'Job not found' })
-  const state = await job.getState()
-  const response = { id: job.id, state, progress: job.progress }
-  if (state === 'completed') response.result    = job.returnvalue
-  if (state === 'failed')    response.failedReason = job.failedReason
-  return res.json(response)
+  if (!instafinancials) return res.status(503).json({ error: 'Queue unavailable — Redis not connected' })
+  try {
+    const job = await instafinancials.getJob(req.params.id)
+    if (!job) return res.status(404).json({ error: 'Job not found' })
+    const state = await job.getState()
+    const response = { id: job.id, state, progress: job.progress }
+    if (state === 'completed') response.result    = job.returnvalue
+    if (state === 'failed')    response.failedReason = job.failedReason
+    return res.json(response)
+  } catch (err) {
+    console.error('[jobs] getJob failed:', err.message)
+    return res.status(503).json({ error: 'Queue unavailable' })
+  }
 })
 
 ensureSchema().catch(err => console.error('[postgres] schema error:', err.message))
