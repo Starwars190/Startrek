@@ -79,7 +79,13 @@ async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
       continue;
     }
 
-    const json = await res.json();
+    const rawText = await res.text();
+    let json;
+    try {
+      json = JSON.parse(rawText);
+    } catch {
+      throw new Error(`Proxy returned non-JSON (status ${res.status}): ${rawText.substring(0, 300)}`);
+    }
     if (json.error) {
       if (json.error_type) {
         // Structured error from proxy (400/402/403): API is unavailable, not a transient failure
@@ -88,7 +94,7 @@ async function callClaude({ system, userMsg, tools = [], maxTokens = 4000 }) {
         err.errorType = json.error_type;
         throw err;
       }
-      throw new Error(json.error.message || "API call failed");
+      throw new Error(json.error.message || json.error || "API call failed");
     }
     return json.content.filter(b => b.type === "text").map(b => b.text).join("");
   }
