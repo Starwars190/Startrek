@@ -8,7 +8,7 @@ import { instafinancials } from './lib/queues.js'
 import pool, { ensureSchema } from './lib/postgres.js'
 import { extractFinancials } from './core/extractFinancials.js'
 import { normalize } from './core/normalize.js'
-import { deriveRatios } from './core/deriveMetrics.js'
+import { run } from './core/pipeline.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -87,27 +87,6 @@ async function callClaude({ system, content, vision = false }) {
   }
 }
 
-function validateAnalysis(analysis) {
-  const is_ = analysis.income_statement || {}
-  const bs_ = analysis.balance_sheet || {}
-  const years = analysis.financial_years || []
-  const warnings = []
-  for (const yr of years) {
-    const rev = parseFloat(String(is_.revenue?.[yr] || 0).replace(/,/g,'')) || 0
-    const ni = parseFloat(String(is_.net_income?.[yr] || 0).replace(/,/g,'')) || 0
-    const ta = parseFloat(String(bs_.total_assets?.[yr] || 0).replace(/,/g,'')) || 0
-    const te = parseFloat(String(bs_.total_equity?.[yr] || 0).replace(/,/g,'')) || 0
-    const tl = parseFloat(String(bs_.total_liabilities?.[yr] || 0).replace(/,/g,'')) || 0
-    if (rev < 0) warnings.push(yr + ': Revenue negative — likely extraction error')
-    if (rev > 0 && Math.abs(ni) > Math.abs(rev) * 2) warnings.push(yr + ': Net income exceeds 2x revenue — likely extraction error')
-    if (ta > 0 && te > 0 && tl > 0) {
-      const diff = Math.abs(ta - (te + tl))
-      if (diff / ta > 0.15) warnings.push(yr + ': Balance sheet gap ' + diff.toFixed(0) + ' lakhs')
-    }
-  }
-  if (warnings.length > 0) console.warn('[validation]', warnings.join(' | '))
-  return warnings
-}
 
 app.post('/analyze', async (req, res) => {
   try {
@@ -134,11 +113,20 @@ app.post('/analyze', async (req, res) => {
 
     if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
     console.log('[analyze] key_observations count:', analysis.key_observations?.length)
-    const warnings = validateAnalysis(analysis)
-    const ratiosByYear = deriveRatios(analysis)
+    const { ratiosByYear, warnings, cfmByYear } = run(analysis)
+    if (warnings.length) {
+      console.warn('[analyze] integrity gate BLOCKED:', warnings.join(' | '))
+      return res.status(422).json({
+        status: 'review_required',
+        stage: 'validate',
+        reasons: warnings,
+        warnings: normalized.flags,
+        error: warnings[0],
+      })
+    }
     return res.status(200).json({
-      success: true, analysis, ratiosByYear, mode, format: extraction.format,
-      warnings: [...warnings, ...normalized.flags],
+      success: true, analysis, ratiosByYear, cfmByYear, mode, format: extraction.format,
+      warnings: normalized.flags,
     })
 
   } catch (err) {
