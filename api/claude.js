@@ -1,4 +1,4 @@
-export const config = { maxDuration: 120 }
+export const config = { maxDuration: 300 }
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -53,8 +53,18 @@ export default async function handler(req, res) {
   try {
     const messages = [...body.messages]
     const MAX_TURNS = 5
+    const loopStart = Date.now()
+    const SOFT_TIMEOUT_MS = 240_000 // 240s — graceful exit before Vercel's 300s hard kill
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
+      if (Date.now() - loopStart > SOFT_TIMEOUT_MS) {
+        console.warn('[claude] soft timeout reached after', Math.round((Date.now() - loopStart) / 1000), 's')
+        return res.status(200).json({
+          stop_reason: 'end_turn',
+          content: [{ type: 'text', text: 'The web search is taking longer than expected. Please try again — results are usually faster on a second attempt.' }],
+        })
+      }
+
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers,

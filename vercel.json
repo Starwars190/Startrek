@@ -1,6 +1,6 @@
 {
   "functions": {
-    "api/claude.js": { "maxDuration": 60 },
+    "api/claude.js": { "maxDuration": 300 },
     "api/analyze.js": { "maxDuration": 120 }
   },
   "rewrites": [
