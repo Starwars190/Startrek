@@ -47,3 +47,60 @@ export function growthPct(current, prior) {
   if (current == null || prior == null || prior === 0) return null
   return Math.round((current - prior) / Math.abs(prior) * 10000) / 100
 }
+
+/**
+ * Normalise an extraction's raw payload to a canonical unit (INR Lakhs).
+ *
+ * Detects the reporting unit from company_profile.reporting_unit, scales
+ * every numeric figure in income_statement / balance_sheet / cash_flow if
+ * the source is in Crores (×100), and returns a stable meta object so
+ * callers never need to re-derive the unit.
+ *
+ * @param {{ lineItems: Object }} raw  As returned by extractFinancials ({ status:'ok' }).raw
+ * @returns {{ lineItems: Object, meta: { reportingUnit: string }, flags: string[] }}
+ */
+export function normalize(raw) {
+  // Deep-clone — never mutate the caller's extraction object
+  const lineItems = JSON.parse(JSON.stringify(raw.lineItems))
+  const co = lineItems.company_profile || {}
+  const ruRaw = String(co.reporting_unit || '').toLowerCase().trim()
+
+  const flags = []
+  let scale = 1
+
+  if (/crore/.test(ruRaw)) {
+    scale = 100
+    co.reporting_unit = 'INR Lakhs'
+    flags.push(`Reporting unit was Crores — all figures multiplied ×100 to convert to Lakhs`)
+  } else if (/hundred/.test(ruRaw)) {
+    flags.push(`Reporting unit '${co.reporting_unit}' (Hundreds) — no automatic conversion applied; manual review recommended`)
+  } else {
+    if (ruRaw && !/lakh/.test(ruRaw)) {
+      flags.push(`Reporting unit '${co.reporting_unit}' unrecognized — assuming INR Lakhs`)
+    }
+    co.reporting_unit = 'INR Lakhs'
+  }
+
+  if (scale !== 1) {
+    for (const section of ['income_statement', 'balance_sheet', 'cash_flow']) {
+      const sec = lineItems[section]
+      if (!sec || typeof sec !== 'object') continue
+      for (const byYear of Object.values(sec)) {
+        if (!byYear || typeof byYear !== 'object') continue
+        for (const yr of Object.keys(byYear)) {
+          const v = byYear[yr]
+          if (v == null) continue
+          const n = parseFloat(String(v).replace(/,/g, ''))
+          if (!isNaN(n)) byYear[yr] = Math.round(n * scale * 100) / 100
+        }
+      }
+    }
+  }
+
+  lineItems.company_profile = co
+  return {
+    lineItems,
+    meta: { reportingUnit: co.reporting_unit || 'INR Lakhs' },
+    flags,
+  }
+}

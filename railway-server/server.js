@@ -7,6 +7,7 @@ import { adaptBRiskReport } from './lib/brisk.js'
 import { instafinancials } from './lib/queues.js'
 import pool, { ensureSchema } from './lib/postgres.js'
 import { extractFinancials } from './core/extractFinancials.js'
+import { normalize } from './core/normalize.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -124,15 +125,20 @@ app.post('/analyze', async (req, res) => {
       return res.status(422).json(extraction)
     }
 
-    // Happy path
+    // Happy path — normalize to canonical unit (INR Lakhs)
     console.log('[analyze] coverage:', extraction.coverage)
-    const analysis = extraction.raw.lineItems
+    const normalized = normalize(extraction.raw)
+    const analysis = normalized.lineItems
+    if (normalized.flags.length) console.log('[analyze] normalize flags:', normalized.flags)
 
     if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
     console.log('[analyze] key_observations count:', analysis.key_observations?.length)
-    validateAnalysis(analysis)
+    const warnings = validateAnalysis(analysis)
     const ratiosByYear = calculateRatios(analysis)
-    return res.status(200).json({ success: true, analysis, ratiosByYear, mode, format: extraction.format })
+    return res.status(200).json({
+      success: true, analysis, ratiosByYear, mode, format: extraction.format,
+      warnings: [...warnings, ...normalized.flags],
+    })
 
   } catch (err) {
     console.error('[analyze] ERROR:', err.message)
