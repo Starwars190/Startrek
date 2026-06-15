@@ -163,7 +163,7 @@ function makeFinTable(analysis, rows, sectionKey, caption, years) {
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows], borders: tableBorders });
 }
 
-async function generateWordDoc(analysis, ratiosByYear) {
+async function generateWordDoc(analysis, ratiosByYear, { draft = false } = {}) {
   const co = analysis.company_profile || {};
   const years = analysis.financial_years || [];
   const companyName = co.name || 'Private Company';
@@ -273,10 +273,10 @@ async function generateWordDoc(analysis, ratiosByYear) {
       headers: {
         default: new Header({
           children: [new Paragraph({
-            border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: '0A1628' } },
+            border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: draft ? 'DC2626' : '0A1628' } },
             children: [
               new TextRun({ text: companyName + '   |   ', bold: true, size: 18, font: 'Arial', color: '0A1628' }),
-              new TextRun({ text: 'CONFIDENTIAL', bold: true, size: 18, font: 'Arial', color: 'FF6600' }),
+              new TextRun({ text: draft ? 'DRAFT — UNVERIFIED' : 'CONFIDENTIAL', bold: true, size: 18, font: 'Arial', color: draft ? 'DC2626' : 'FF6600' }),
             ]
           })]
         })
@@ -296,7 +296,13 @@ async function generateWordDoc(analysis, ratiosByYear) {
       },
       children: [
         // Cover
-        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 1440, after: 240 }, children: [new TextRun({ text: companyName, bold: true, size: 72, color: '0A1628', font: 'Arial' })] }),
+        ...(draft ? [new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { before: 720, after: 280 },
+          border: { top: { style: BorderStyle.SINGLE, size: 18, color: 'DC2626' }, bottom: { style: BorderStyle.SINGLE, size: 18, color: 'DC2626' } },
+          children: [new TextRun({ text: 'DRAFT — UNVERIFIED DATA — NOT FOR DISTRIBUTION', bold: true, size: 32, color: 'DC2626', font: 'Arial' })]
+        })] : []),
+        new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: draft ? 240 : 1440, after: 240 }, children: [new TextRun({ text: companyName, bold: true, size: 72, color: '0A1628', font: 'Arial' })] }),
         new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 120 }, children: [new TextRun({ text: co.industry || '', size: 28, color: '1A3A5C', font: 'Arial' })] }),
         new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 480 }, children: [new TextRun({ text: 'PRIVATE COMPANY FINANCIAL ANALYSIS', bold: true, size: 24, color: 'FF6600', font: 'Arial' })] }),
         new Paragraph({
@@ -404,7 +410,7 @@ async function generateWordDoc(analysis, ratiosByYear) {
 
 // ── Excel workbook ─────────────────────────────────────────────────────────────
 
-async function generateExcelWorkbook(analysis, ratiosByYear) {
+async function generateExcelWorkbook(analysis, ratiosByYear, { draft = false } = {}) {
   const co = analysis.company_profile || {};
   const years = analysis.financial_years || [];
   const companyName = co.name || 'Private Company';
@@ -443,9 +449,14 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
   });
 
   // Banner
+  const draftFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDC2626' } };
   dash.mergeCells('A1:F1');
-  applyCell(dash, 1, 1, companyName + '  —  Private Company Financial Analysis',
-    { name: 'Arial', size: 16, bold: true, color: { argb: 'FFFFFFFF' } }, navyFill,
+  applyCell(dash, 1, 1,
+    draft
+      ? 'DRAFT — UNVERIFIED  |  ' + companyName + '  —  Data Not Validated'
+      : companyName + '  —  Private Company Financial Analysis',
+    { name: 'Arial', size: 16, bold: true, color: { argb: 'FFFFFFFF' } },
+    draft ? draftFill : navyFill,
     { horizontal: 'center', vertical: 'middle' });
   dash.getRow(1).height = 36;
 
@@ -531,16 +542,26 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
   });
 
   // ── Helper: financial sheets ────────────────────────────────────────────────
-  function makeFinSheet(name, rows, sectionKey) {
+  function makeFinSheet(name, rows, sectionKey, isDraft = false) {
     const ws = wb.addWorksheet(name);
     ws.showGridLines = false;
-    ws.views = [{ state: 'frozen', xSplit: 1, ySplit: 1 }];
     ws.getColumn(1).width = 36;
     years.forEach((_, i) => { ws.getColumn(i + 2).width = 17; });
 
-    applyCell(ws, 1, 1, `${name}${co.reporting_unit ? ` (${co.reporting_unit})` : ''}`, hFont, navyFill, { vertical: 'middle' });
-    years.forEach((yr, i) => applyCell(ws, 1, i + 2, yr, hFont, navyFill, { horizontal: 'center', vertical: 'middle' }));
-    ws.getRow(1).height = 24;
+    let hdrRow = 1;
+    if (isDraft) {
+      ws.mergeCells(1, 1, 1, years.length + 1);
+      applyCell(ws, 1, 1, 'DRAFT — UNVERIFIED — DATA NOT VALIDATED',
+        { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } },
+        draftFill, { horizontal: 'center', vertical: 'middle' });
+      ws.getRow(1).height = 22;
+      hdrRow = 2;
+    }
+    ws.views = [{ state: 'frozen', xSplit: 1, ySplit: hdrRow }];
+
+    applyCell(ws, hdrRow, 1, `${name}${co.reporting_unit ? ` (${co.reporting_unit})` : ''}`, hFont, navyFill, { vertical: 'middle' });
+    years.forEach((yr, i) => applyCell(ws, hdrRow, i + 2, yr, hFont, navyFill, { horizontal: 'center', vertical: 'middle' }));
+    ws.getRow(hdrRow).height = 24;
 
     const sectionData = analysis[sectionKey] || {};
     const totalKeys = new Set(['revenue', 'gross_profit', 'ebitda', 'ebit', 'pbt', 'net_income',
@@ -548,7 +569,7 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
       'cfo', 'free_cash_flow']);
 
     rows.forEach(([label, key], idx) => {
-      const rowNum = idx + 2;
+      const rowNum = idx + hdrRow + 1;
       const isTotal = totalKeys.has(key);
       const rowFill = isTotal ? paleFill : (idx % 2 === 0 ? whiteFill : lgFill);
       ws.getRow(rowNum).height = 18;
@@ -576,7 +597,7 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
     ['EBITDA', 'ebitda'], ['Depreciation & Amortisation', 'depreciation_amortization'],
     ['EBIT', 'ebit'], ['Interest Expense', 'interest_expense'],
     ['PBT', 'pbt'], ['Tax', 'tax'], ['Net Income', 'net_income'],
-  ], 'income_statement');
+  ], 'income_statement', draft);
 
   makeFinSheet('Balance Sheet', [
     ['Cash & Equivalents', 'cash_equivalents'], ['Accounts Receivable', 'accounts_receivable'],
@@ -587,13 +608,13 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
     ['Long-Term Debt', 'long_term_debt'], ['Total Liabilities', 'total_liabilities'],
     ['Share Capital', 'share_capital'], ['Retained Earnings', 'retained_earnings'],
     ['Total Equity', 'total_equity'],
-  ], 'balance_sheet');
+  ], 'balance_sheet', draft);
 
   makeFinSheet('Cash Flow', [
     ['Cash Flow from Operations (CFO)', 'cfo'], ['Cash Flow from Investing (CFI)', 'cfi'],
     ['Cash Flow from Financing (CFF)', 'cff'], ['Capital Expenditure (Capex)', 'capex'],
     ['Free Cash Flow', 'free_cash_flow'],
-  ], 'cash_flow');
+  ], 'cash_flow', draft);
 
   // ── Sheet 5: Financial Ratios ───────────────────────────────────────────────
   const ratioWs = wb.addWorksheet('Financial Ratios');
@@ -613,6 +634,14 @@ async function generateExcelWorkbook(analysis, ratiosByYear) {
   ];
 
   let rRow = 1;
+  if (draft) {
+    ratioWs.mergeCells(rRow, 1, rRow, years.length + 1);
+    applyCell(ratioWs, rRow, 1, 'DRAFT — UNVERIFIED — RATIOS ARE APPROXIMATE',
+      { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } },
+      draftFill, { horizontal: 'center', vertical: 'middle' });
+    ratioWs.getRow(rRow).height = 22;
+    rRow++;
+  }
   ratioSections.forEach(section => {
     const secFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + section.color } };
     applyCell(ratioWs, rRow, 1, section.title, hFont, secFill, { vertical: 'middle' });
@@ -727,6 +756,7 @@ function AnalyzerCore() {
   const fileInputRef = useRef(null);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [confidentialMode, setConfidentialMode] = useState(false);
+  const [reviewData, setReviewData] = useState(null);
 
   useEffect(() => {
     if (stage === 'processing') {
@@ -868,10 +898,15 @@ function AnalyzerCore() {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
+        if (res.status === 422 && errData.status === 'review_required') {
+          setReviewData(errData);
+          setStage('review');
+          return;
+        }
         throw new Error(errData.error || `Server error: ${res.status}`);
       }
 
-      let { analysis, ratiosByYear } = await res.json();
+      let { analysis, ratiosByYear, warnings: apiWarnings = [] } = await res.json();
       if ((analysis.financial_years || []).length > 1) {
         analysis.financial_years = [...analysis.financial_years].sort((a, b) => {
           const numA = parseInt(String(a).match(/\d{4}/)?.[0] || '0');
@@ -986,6 +1021,8 @@ function AnalyzerCore() {
             e2.error.includes('content_policy')
           )) {
             console.warn('Vision fallback blocked by content filter — keeping existing data');
+          } else if (res2.status === 422 && e2.status === 'review_required') {
+            console.warn('Vision fallback blocked by integrity gate — keeping first-pass data');
           } else {
             throw new Error(e2.error || 'Vision fallback failed');
           }
@@ -1025,6 +1062,7 @@ function AnalyzerCore() {
         wordBlob: wordBlob,
         excelBlob: excelBlob,
         cmaBlob: cmaBlob,
+        warnings: apiWarnings,
       });
       setStepIdx(5);
       setStage('done');
@@ -1035,11 +1073,96 @@ function AnalyzerCore() {
     }
   };
 
+  const downloadDraft = async () => {
+    if (!reviewData?.partial || typeof reviewData.partial !== 'object') return;
+    const partial = reviewData.partial;
+    const safeName = (partial.company_profile?.name || companyName || 'Draft')
+      .replace(/[^a-zA-Z0-9 ]/g, '').trim().replace(/\s+/g, '_') || 'Draft';
+    try {
+      const wordBlob = await generateWordDoc(partial, {}, { draft: true });
+      triggerDownload(wordBlob, `${safeName}_DRAFT_Brief.docx`);
+      const excelBlob = await generateExcelWorkbook(partial, {}, { draft: true });
+      triggerDownload(excelBlob, `${safeName}_DRAFT_Model.xlsx`);
+      const cmaBlob = await generateCMAWorkbook(partial, {}, {}, { draft: true });
+      triggerDownload(cmaBlob, `${safeName}_DRAFT_CMA.xlsx`);
+    } catch (e) {
+      setError('Draft generation failed: ' + (e.message || 'Unknown error'));
+    }
+  };
+
   const reset = () => {
     setStage('idle'); setFile(null); setCompanyName('');
     setError(''); setResultMeta(null); setStepIdx(0);
-    setConfidentialMode(false);
+    setConfidentialMode(false); setReviewData(null);
   };
+
+  if (stage === 'review' && reviewData) {
+    const stageLabel = reviewData.stage === 'validate' ? 'Integrity Validation' : 'Extraction Quality Check';
+    const partial = reviewData.partial && typeof reviewData.partial === 'object' ? reviewData.partial : null;
+    const hasSec = (sec) => sec && Object.values(sec).some(
+      field => field && typeof field === 'object' && Object.values(field).some(v => v != null)
+    );
+    const hasDraftable = partial && (hasSec(partial.income_statement) || hasSec(partial.balance_sheet));
+    const sections = partial ? [
+      ['Income Statement', hasSec(partial.income_statement)],
+      ['Balance Sheet', hasSec(partial.balance_sheet)],
+      ['Cash Flow', hasSec(partial.cash_flow)],
+    ] : [];
+    return (
+      <div style={{ maxWidth: 520, margin: '0 auto', background: '#fff', borderRadius: 16, padding: '40px 36px', boxShadow: '0 4px 24px rgba(10,22,40,.1)', border: '1px solid #FECACA', textAlign: 'center' }}>
+        <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, margin: '0 auto 20px' }}>⚠</div>
+        <h2 style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontSize: 20, fontWeight: 800, color: '#DC2626', marginBottom: 8 }}>Analysis Blocked</h2>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 20 }}>
+          <span style={{ background: '#FEF2F2', color: '#DC2626', fontSize: 11, fontWeight: 700, padding: '4px 14px', borderRadius: 20, border: '1px solid #FECACA', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+            Stage: {stageLabel}
+          </span>
+        </div>
+        <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '14px 16px', marginBottom: 20, textAlign: 'left' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#DC2626', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.05em' }}>Issues Found</div>
+          {(reviewData.reasons || []).map((r, i) => (
+            <div key={i} style={{ fontSize: 13, color: '#7F1D1D', lineHeight: 1.7, display: 'flex', gap: 8 }}>
+              <span style={{ flexShrink: 0 }}>•</span><span>{r}</span>
+            </div>
+          ))}
+        </div>
+        {sections.length > 0 && (
+          <div style={{ background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: 10, padding: '14px 16px', marginBottom: 20, textAlign: 'left' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: NAVY, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.05em' }}>Extracted Data</div>
+            {sections.map(([label, ok]) => (
+              <div key={label} style={{ display: 'flex', gap: 8, fontSize: 13, marginBottom: 6 }}>
+                <span style={{ color: ok ? '#0D7A3E' : '#DC2626', fontWeight: 700 }}>{ok ? '✓' : '✗'}</span>
+                <span style={{ color: ok ? '#374151' : '#DC2626' }}>{label}{!ok ? ' — not extracted' : ''}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {(reviewData.warnings || []).length > 0 && (
+          <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8, padding: '10px 14px', marginBottom: 20, textAlign: 'left' }}>
+            {reviewData.warnings.map((w, i) => (
+              <div key={i} style={{ fontSize: 12, color: '#78350F', lineHeight: 1.7 }}>• {w}</div>
+            ))}
+          </div>
+        )}
+        {error && (
+          <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: '#DC2626', textAlign: 'left' }}>
+            {error}
+          </div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {hasDraftable && (
+            <button onClick={downloadDraft}
+              style={{ background: '#DC2626', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              📄 Download Draft (Watermarked)
+            </button>
+          )}
+          <button onClick={reset}
+            style={{ background: NAVY, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+            Try Again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (stage === 'done' && resultMeta) {
     return (
@@ -1074,6 +1197,16 @@ function AnalyzerCore() {
             <div style={{ fontSize: 13, color: '#374151' }}><span style={{ marginRight: 8 }}>📊</span><strong>{resultMeta.excelFile}</strong></div>
           </div>
         </div>
+        {resultMeta.warnings?.length > 0 && (
+          <div style={{ background: '#FFFBEB', border: '1px solid #FCD34D', borderRadius: 8, padding: '10px 14px', marginBottom: 16, textAlign: 'left' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#92400E', marginBottom: 4 }}>
+              ⚠ {resultMeta.warnings.length} non-fatal notice{resultMeta.warnings.length > 1 ? 's' : ''}
+            </div>
+            {resultMeta.warnings.map((w, i) => (
+              <div key={i} style={{ fontSize: 12, color: '#78350F', lineHeight: 1.7 }}>• {w}</div>
+            ))}
+          </div>
+        )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
           <button onClick={() => triggerDownload(resultMeta.wordBlob, resultMeta.wordFile)}
             style={{ background: NAVY, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>

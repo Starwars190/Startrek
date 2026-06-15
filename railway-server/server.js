@@ -122,6 +122,7 @@ app.post('/analyze', async (req, res) => {
         reasons: warnings,
         warnings: normalized.flags,
         error: warnings[0],
+        partial: analysis,
       })
     }
     return res.status(200).json({

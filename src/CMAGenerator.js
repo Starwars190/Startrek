@@ -87,6 +87,14 @@ export async function generateCMAWorkbook(analysis, ratiosByYear, cmaInputs = {}
   applyCell(cov, 1, 1, 'CMA DATA — CREDIT MONITORING ARRANGEMENT', hFont, navyFill, { vertical: 'middle' })
   cov.mergeCells(1, 1, 1, 2)
   cov.getRow(1).height = 26
+  if (dataFlags.draft) {
+    const draftFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDC2626' } }
+    applyCell(cov, 2, 1, 'DRAFT — UNVERIFIED — DATA NOT VALIDATED — NOT FOR CREDIT SUBMISSION',
+      { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } },
+      draftFill, { horizontal: 'center', vertical: 'middle' })
+    cov.mergeCells(2, 1, 2, 2)
+    cov.getRow(2).height = 20
+  }
   const covRows = [
     ['Company Name', companyName],
     ['CIN', co.cin || co.registration_number || co.company_identification_number || co.corporate_identification_number || analysis.cin || '—'],

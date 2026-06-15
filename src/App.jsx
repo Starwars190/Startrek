@@ -4230,8 +4230,11 @@ function checkBalanceSheet(bs, label) {
   const liabilities = equity + debt + currentLiab
   const delta = Math.abs(assets - liabilities)
   if (assets > 0 && delta > assets * 0.05) {
-    console.warn(`[FinSight] ${label} balance sheet mismatch: assets=${assets}, liabilities=${liabilities}, delta=${delta}`)
+    const msg = `${label}: balance sheet gap — assets=${assets}, liabilities≈${liabilities.toFixed(0)}, gap=${(delta / assets * 100).toFixed(1)}%`
+    console.warn(`[FinSight] ${msg}`)
+    return msg
   }
+  return null
 }
 
 async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () => {}) {
@@ -4420,7 +4423,7 @@ Rules:
     onDebug('EXTRACTED: company=' + claudeResult.company_name + ' revenue=' + claudeResult.profit_loss?.revenue?.current)
 
     deriveMetrics(claudeResult)
-    checkBalanceSheet(claudeResult.balance_sheet || {}, 'Current Year')
+    const bsWarning = checkBalanceSheet(claudeResult.balance_sheet || {}, 'Current Year')
 
     const pl = claudeResult?.profit_loss || {}
     const bs = claudeResult?.balance_sheet || {}
@@ -4582,7 +4585,7 @@ Rules:
       noFinancialData: false,
       apiUnavailable: false,
       extractionMethod: 'text',
-      extractionWarnings: [],
+      extractionWarnings: bsWarning ? [bsWarning] : [],
       sectionCount: 0,
       ratioCount: 0,
       hasSWOT: !!swot,
