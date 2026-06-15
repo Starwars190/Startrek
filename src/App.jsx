@@ -3137,15 +3137,15 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
   const dpo = getR('Efficiency Ratios', 'Payable Days (DPO)');
   const invT = getR('Efficiency Ratios', 'Inventory Turnover');
 
-  const ebitdaM = (c, p) => (c != null && p != null && p !== 0) ? (c / p) * 100 : null;
-  const wc = (a) => a.workingCapital ?? (a.currentAssets != null && a.currentLiabilities != null ? a.currentAssets - a.currentLiabilities : null);
+  const allRatioItems = (ratios || []).flatMap(cat => cat.items || []);
+  const findRatioVal = (name) => allRatioItems.find(i => i.name === name)?.rawValue ?? null;
 
   // ── Financial highlights table ────────────────────────────────────────────
   const finRows = [
     { L: 'Revenue',                c: aggregated.revenue,       p: aggregatedPrior.revenue },
     { L: 'COGS',                   c: aggregated.cogs,          p: aggregatedPrior.cogs },
     { L: 'EBITDA',                 c: aggregated.ebitda,        p: aggregatedPrior.ebitda },
-    { L: 'EBITDA Margin (%)',      c: ebitdaM(aggregated.ebitda, aggregated.revenue), p: ebitdaM(aggregatedPrior.ebitda, aggregatedPrior.revenue), isPct: true, noYoy: true },
+    { L: 'EBITDA Margin (%)',      c: findRatioVal('EBITDA Margin'), p: null, isPct: true, noYoy: true },
     { L: 'Net Income (After Tax)', c: aggregated.netIncome,     p: aggregatedPrior.netIncome },
     { L: 'Trade Receivables',      c: aggregated.receivables,   p: aggregatedPrior.receivables },
     { L: 'Receivable Days (DSO)',  c: dso?.rawValue, p: null, isDays: true, noYoy: true },
@@ -3155,7 +3155,7 @@ async function generateBriefWordDoc(chunkResults, companyInfo, aggregated, aggre
     { L: 'Long-term Borrowings',   c: aggregated.longTermDebt,  p: aggregatedPrior.longTermDebt },
     { L: 'Inventory',              c: aggregated.inventory,     p: aggregatedPrior.inventory },
     { L: 'Inventory Turnover',     c: invT?.rawValue, p: null, isMult: true, noYoy: true },
-    { L: 'Working Capital',        c: wc(aggregated),           p: wc(aggregatedPrior) },
+    { L: 'Working Capital',        c: aggregated.workingCapital ?? null, p: aggregatedPrior.workingCapital ?? null },
   ].filter(r => r.c != null || r.p != null).map(r => ({
     ...r,
     cs: r.isPct ? fp(r.c) : r.isDays ? (r.c != null ? `${r.c.toFixed(0)} days` : '—') : r.isMult ? (r.c != null ? `${r.c.toFixed(2)}x` : '—') : fn(r.c),

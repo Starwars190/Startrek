@@ -61,7 +61,7 @@ export function deriveRatios(data) {
     r['EBIT Margin %']                   = pct(ebit, rev)
     r['Net Profit Margin %']             = pct(ni, rev)
     r['Return on Assets %']              = pct(ni, ta)
-    r['Return on Equity %']              = pct(ni, eq)
+    r['Return on Equity %']              = (eq != null && eq <= 0) ? 'n.m.' : pct(ni, eq)
     r['Return on Capital Employed %']    = (ebit != null && ta != null && cl != null) ? pct(ebit, ta - cl) : null
     r['Asset Turnover']                  = div(rev, ta)
 
@@ -72,7 +72,7 @@ export function deriveRatios(data) {
     r['Operating CF Ratio']              = div(cfo, cl)
 
     // ── Leverage ──────────────────────────────────────────────────────────────
-    r['Debt to Equity']                  = div(debt, eq)
+    r['Debt to Equity']                  = (eq != null && eq <= 0) ? 'n.m.' : div(debt, eq)
     r['Total Debt to Assets %']          = pct(debt, ta)
     r['Equity Ratio %']                  = pct(eq, ta)
     r['Debt to EBITDA']                  = div(debt, ebitda)
@@ -106,9 +106,11 @@ export function deriveRatios(data) {
       const z = Math.round(((0.717 * A) + (0.847 * B) + (3.107 * C) + (0.420 * D) + (0.998 * E)) * 100) / 100
       r['Altman Z-Score'] = z
       r['Altman Zone']    = z >= 2.0 ? 'Safe Zone' : z >= 1.23 ? 'Grey Zone' : 'Distress Zone'
+      r['Credit Rating']  = z >= 5.0 ? 'AAA' : z >= 4.0 ? 'AA' : z >= 3.0 ? 'A' : z >= 2.9 ? 'BBB' : z >= 2.0 ? 'BB' : z >= 1.23 ? 'B' : 'D'
     } else {
       r['Altman Z-Score'] = null
       r['Altman Zone']    = null
+      r['Credit Rating']  = null
     }
 
     // ── YoY growth ────────────────────────────────────────────────────────────
