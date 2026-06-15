@@ -12,14 +12,20 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing messages in request body' })
   }
 
+  const hasWebSearch = Array.isArray(body.tools) &&
+    body.tools.some(t => t.type === 'web_search_20250305')
+
   try {
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    }
+    if (hasWebSearch) headers['anthropic-beta'] = 'web-search-2025-03-05'
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
+      headers,
       body: JSON.stringify(body)
     })
 
