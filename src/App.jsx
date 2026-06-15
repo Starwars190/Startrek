@@ -25,8 +25,8 @@ const C = {
 };
 
 const API_URL = "/api/claude";
-const MODEL = "claude-sonnet-4-5-20250514";
-const VISION_MODEL = "claude-sonnet-4-5-20250514";
+const MODEL = "claude-sonnet-4-6";
+const VISION_MODEL = "claude-sonnet-4-6";
 const AUTHOR_NAME = "Aashni Shah and Hitansh Jhaveri";
 
 const PERIODS = [
@@ -4282,7 +4282,7 @@ async function processPrivateCompanyDoc(file, options, onProgress, onDebug = () 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           max_tokens: 4000,
           system: 'You are a senior chartered accountant. Extract financial data from Indian company filings. Return ONLY valid JSON. No markdown, no text outside the JSON object.',
           messages: [{

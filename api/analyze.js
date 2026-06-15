@@ -47,7 +47,7 @@ export default async function handler(req, res) {
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-5-20250514',
+          model: 'claude-sonnet-4-6',
           max_tokens: 8192,
           messages: [{ role: 'user', content: visionContent }]
         })
@@ -96,7 +96,7 @@ export default async function handler(req, res) {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-5-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 4096,
         system: `You are a financial data extraction API. You output ONLY raw JSON.
 No prose. No markdown. No code fences. No explanation before or after.
