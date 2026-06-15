@@ -1,13 +1,16 @@
 /**
- * core.test.js  —  20 unit tests for railway-server/core/
+ * core.test.js  —  unit + golden-fixture tests for railway-server/core/
  *
  * Run with:  node railway-server/core/core.test.js
  *
- * Uses only Node.js built-ins (assert, process) — no test framework required.
+ * Uses only Node.js built-ins (assert, fs, process) — no test framework required.
  */
 
-import assert from 'assert/strict'
-import { toNum, div, pct, round2, growthPct }       from './normalize.js'
+import assert       from 'assert/strict'
+import { readFileSync } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
+import { toNum, div, pct, round2, growthPct, normalize } from './normalize.js'
 import { getField, resolveAliases,
          getRetainedEarnings, getTotalLiabilities }  from './extractFinancials.js'
 import { deriveRatios }                              from './deriveMetrics.js'
@@ -15,6 +18,9 @@ import { check }                                     from './financialIntegrity.
 import { computeWorkingCapital, computeMPBF,
          computeNWC, computeCCC }                    from './cfm.js'
 import { run }                                       from './pipeline.js'
+import { reconcile }                                 from './reconcile.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 let passed = 0
@@ -215,6 +221,55 @@ test('run() returns warnings array (empty for clean data)', () => {
   assert.ok(Array.isArray(warnings))
   assert.strictEqual(warnings.length, 0)
 })
+
+// ── per-format golden-fixture regression ─────────────────────────────────────
+// Each fixture encodes a real extraction specimen (xbrl / scanned / hybrid).
+// The pipeline runs normalize → reconcile → validateFinancials → deriveMetrics
+// and the output is deep-diffed against the stored expected with 0.01 tolerance.
+console.log('\nformat-fixture regression  (normalize → reconcile → validateFinancials → deriveMetrics)')
+
+const FIXTURES_DIR = join(__dirname, '__tests__', 'fixtures')
+
+function withinTolerance(actual, expected, tol = 0.01) {
+  if (typeof expected === 'number' && typeof actual === 'number') {
+    return Math.abs(actual - expected) <= tol
+  }
+  return actual === expected
+}
+
+function deepDiff(actual, expected, path = '') {
+  const diffs = []
+  for (const key of Object.keys(expected)) {
+    const p = path ? `${path}.${key}` : key
+    const e = expected[key]
+    const a = actual?.[key]
+    if (e !== null && typeof e === 'object' && !Array.isArray(e)) {
+      diffs.push(...deepDiff(a ?? {}, e, p))
+    } else if (!withinTolerance(a, e)) {
+      diffs.push(`${p}: expected ${JSON.stringify(e)}, got ${JSON.stringify(a)}`)
+    }
+  }
+  return diffs
+}
+
+for (const name of ['xbrl', 'scanned', 'hybrid']) {
+  test(`[${name}] pipeline matches golden fixture`, () => {
+    const fixture = JSON.parse(readFileSync(join(FIXTURES_DIR, `${name}.json`), 'utf8'))
+    assert.ok(fixture.expected !== null, 'fixture expected field must be populated')
+
+    const normalized   = normalize({ lineItems: fixture.lineItems })
+    const analysis     = reconcile(normalized)
+    const warnings     = check(analysis)
+    const ratiosByYear = deriveRatios(analysis)
+
+    assert.deepStrictEqual(warnings, fixture.expected.warnings,
+      `warnings mismatch for ${name}`)
+
+    const diffs = deepDiff(ratiosByYear, fixture.expected.ratiosByYear)
+    assert.strictEqual(diffs.length, 0,
+      `ratio diffs for ${name}:\n  ${diffs.join('\n  ')}`)
+  })
+}
 
 // ── summary ───────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`)

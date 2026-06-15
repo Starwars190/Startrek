@@ -1,0 +1,220 @@
+{
+  "description": "Lakshmi Precision Engineering — hybrid PDF (text + image pages), raw extraction in INR Crores. normalize() must convert ×100 to Lakhs. Balance sheet balances in Crores; expected output is in Lakhs.",
+  "format": "hybrid",
+  "declaredScale": "INR Crores",
+  "lineItems": {
+    "company_profile": {
+      "name": "Lakshmi Precision Engineering Limited",
+      "industry": "Manufacturing",
+      "sub_industry": "Industrial Components",
+      "headquarters": "Coimbatore, Tamil Nadu",
+      "reporting_currency": "INR",
+      "reporting_unit": "INR Crores",
+      "fiscal_year_end": "31-March"
+    },
+    "financial_years": [
+      "FY2025",
+      "FY2024"
+    ],
+    "income_statement": {
+      "revenue": {
+        "FY2025": 200,
+        "FY2024": 180
+      },
+      "cost_of_goods_sold": {
+        "FY2025": 130,
+        "FY2024": 118
+      },
+      "gross_profit": {
+        "FY2025": 70,
+        "FY2024": 62
+      },
+      "operating_expenses": {
+        "FY2025": 25,
+        "FY2024": 22
+      },
+      "ebitda": {
+        "FY2025": 45,
+        "FY2024": 40
+      },
+      "depreciation_amortization": {
+        "FY2025": 8,
+        "FY2024": 7
+      },
+      "ebit": {
+        "FY2025": 37,
+        "FY2024": 33
+      },
+      "interest_expense": {
+        "FY2025": 5,
+        "FY2024": 6
+      },
+      "pbt": {
+        "FY2025": 32,
+        "FY2024": 27
+      },
+      "tax": {
+        "FY2025": 8,
+        "FY2024": 7
+      },
+      "net_income": {
+        "FY2025": 24,
+        "FY2024": 20
+      }
+    },
+    "balance_sheet": {
+      "cash_equivalents": {
+        "FY2025": 15,
+        "FY2024": 12
+      },
+      "accounts_receivable": {
+        "FY2025": 35,
+        "FY2024": 32
+      },
+      "inventory": {
+        "FY2025": 28,
+        "FY2024": 25
+      },
+      "total_current_assets": {
+        "FY2025": 90,
+        "FY2024": 80
+      },
+      "fixed_assets_net": {
+        "FY2025": 80,
+        "FY2024": 75
+      },
+      "intangibles_goodwill": {
+        "FY2025": null,
+        "FY2024": null
+      },
+      "total_assets": {
+        "FY2025": 180,
+        "FY2024": 165
+      },
+      "accounts_payable": {
+        "FY2025": 18,
+        "FY2024": 16
+      },
+      "short_term_debt": {
+        "FY2025": 10,
+        "FY2024": 10
+      },
+      "total_current_liabilities": {
+        "FY2025": 40,
+        "FY2024": 37
+      },
+      "long_term_debt": {
+        "FY2025": 30,
+        "FY2024": 30
+      },
+      "total_liabilities": {
+        "FY2025": 70,
+        "FY2024": 67
+      },
+      "share_capital": {
+        "FY2025": 20,
+        "FY2024": 20
+      },
+      "retained_earnings": {
+        "FY2025": 90,
+        "FY2024": 78
+      },
+      "total_equity": {
+        "FY2025": 110,
+        "FY2024": 98
+      }
+    },
+    "cash_flow": {
+      "cfo": {
+        "FY2025": 30,
+        "FY2024": 25
+      },
+      "cfi": {
+        "FY2025": -10,
+        "FY2024": -8
+      },
+      "cff": {
+        "FY2025": -5,
+        "FY2024": -4
+      },
+      "capex": {
+        "FY2025": 10,
+        "FY2024": 8
+      },
+      "free_cash_flow": {
+        "FY2025": 20,
+        "FY2024": 17
+      }
+    }
+  },
+  "expected": {
+    "warnings": [],
+    "ratiosByYear": {
+      "FY2025": {
+        "Gross Margin %": 35,
+        "EBITDA Margin %": 22.5,
+        "EBIT Margin %": 18.5,
+        "Net Profit Margin %": 12,
+        "Return on Assets %": 13.33,
+        "Return on Equity %": 21.82,
+        "Return on Capital Employed %": 26.43,
+        "Asset Turnover": 1.1111,
+        "Current Ratio": 2.25,
+        "Quick Ratio": 1.55,
+        "Cash Ratio": 0.375,
+        "Operating CF Ratio": 0.75,
+        "Debt to Equity": 0.3636,
+        "Total Debt to Assets %": 22.22,
+        "Equity Ratio %": 61.11,
+        "Debt to EBITDA": 0.8889,
+        "Net Debt to EBITDA": 0.5556,
+        "Interest Cover (EBIT)": 7.4,
+        "Interest Cover (EBITDA)": 9,
+        "Inventory Days": 78.6,
+        "Receivables Days (DSO)": 63.9,
+        "Payables Days (DPO)": 50.6,
+        "Fixed Asset Turnover": 2.5,
+        "FCF Margin %": 10,
+        "Capex to Revenue %": 5,
+        "CFO to Net Income": 1.25,
+        "Altman Z-Score": 3.03,
+        "Altman Zone": "Safe Zone",
+        "Credit Rating": "A",
+        "Revenue Growth %": 11.11,
+        "Net Income Growth %": 20,
+        "EBITDA Growth %": 12.5
+      },
+      "FY2024": {
+        "Gross Margin %": 34.44,
+        "EBITDA Margin %": 22.22,
+        "EBIT Margin %": 18.33,
+        "Net Profit Margin %": 11.11,
+        "Return on Assets %": 12.12,
+        "Return on Equity %": 20.41,
+        "Return on Capital Employed %": 25.78,
+        "Asset Turnover": 1.0909,
+        "Current Ratio": 2.1622,
+        "Quick Ratio": 1.4865,
+        "Cash Ratio": 0.3243,
+        "Operating CF Ratio": 0.6757,
+        "Debt to Equity": 0.4082,
+        "Total Debt to Assets %": 24.24,
+        "Equity Ratio %": 59.39,
+        "Debt to EBITDA": 1,
+        "Net Debt to EBITDA": 0.7,
+        "Interest Cover (EBIT)": 5.5,
+        "Interest Cover (EBITDA)": 6.6667,
+        "Inventory Days": 77.3,
+        "Receivables Days (DSO)": 64.9,
+        "Payables Days (DPO)": 49.5,
+        "Fixed Asset Turnover": 2.4,
+        "FCF Margin %": 9.44,
+        "Capex to Revenue %": 4.44,
+        "CFO to Net Income": 1.25,
+        "Altman Z-Score": 2.91,
+        "Altman Zone": "Safe Zone",
+        "Credit Rating": "BBB"
+      }
+    }
+  }
+}
