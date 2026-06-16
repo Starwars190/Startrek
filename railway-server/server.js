@@ -113,7 +113,7 @@ app.post('/analyze', async (req, res) => {
 
     if (companyName && analysis.company_profile) analysis.company_profile.name = companyName
     console.log('[analyze] key_observations count:', analysis.key_observations?.length)
-    const { ratiosByYear, warnings, cfmByYear } = run(analysis)
+    const { ratiosByYear, warnings, validationFlags, cfmByYear } = run(analysis)
     if (warnings.length) {
       console.warn('[analyze] integrity gate BLOCKED:', warnings.join(' | '))
       return res.status(422).json({
@@ -125,9 +125,13 @@ app.post('/analyze', async (req, res) => {
         partial: analysis,
       })
     }
+    if (validationFlags.length) {
+      console.warn('[analyze] accounting identity flags:', validationFlags.map(f => `${f.fy} ${f.check}`).join(' | '))
+    }
     return res.status(200).json({
       success: true, analysis, ratiosByYear, cfmByYear, mode, format: extraction.format,
       warnings: normalized.flags,
+      validationFlags,
     })
 
   } catch (err) {

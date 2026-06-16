@@ -9,7 +9,7 @@
  */
 
 import { deriveRatios }  from './deriveMetrics.js'
-import { check }         from './financialIntegrity.js'
+import { check, identityGate } from './financialIntegrity.js'
 import { summariseCFM }  from './cfm.js'
 import { getField }      from './extractFinancials.js'
 
@@ -28,11 +28,12 @@ export function run(analysis) {
     throw new TypeError('pipeline.run: analysis must be a non-null object')
   }
 
-  const warnings    = check(analysis)
-  const ratiosByYear = deriveRatios(analysis)
-  const cfmByYear   = _deriveCFM(analysis, ratiosByYear)
+  const warnings        = check(analysis)
+  const validationFlags = identityGate(analysis)
+  const ratiosByYear    = deriveRatios(analysis)
+  const cfmByYear       = _deriveCFM(analysis, ratiosByYear)
 
-  return { ratiosByYear, warnings, cfmByYear }
+  return { ratiosByYear, warnings, validationFlags, cfmByYear }
 }
 
 // ── internal ─────────────────────────────────────────────────────────────────
