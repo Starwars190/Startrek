@@ -757,6 +757,7 @@ function AnalyzerCore() {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [confidentialMode, setConfidentialMode] = useState(false);
   const [reviewData, setReviewData] = useState(null);
+  const [flagsAcknowledged, setFlagsAcknowledged] = useState(false);
 
   useEffect(() => {
     if (stage === 'processing') {
@@ -906,7 +907,7 @@ function AnalyzerCore() {
         throw new Error(errData.error || `Server error: ${res.status}`);
       }
 
-      let { analysis, ratiosByYear, warnings: apiWarnings = [] } = await res.json();
+      let { analysis, ratiosByYear, warnings: apiWarnings = [], validationFlags: apiValidationFlags = [] } = await res.json();
       if ((analysis.financial_years || []).length > 1) {
         analysis.financial_years = [...analysis.financial_years].sort((a, b) => {
           const numA = parseInt(String(a).match(/\d{4}/)?.[0] || '0');
@@ -914,16 +915,6 @@ function AnalyzerCore() {
           return numA - numB;
         });
       }
-      const is_ = analysis.income_statement || {};
-      (analysis.financial_years || []).forEach(yr => {
-        const ebit = is_.ebit?.[yr];
-        const ie = is_.interest_expense?.[yr];
-        if (ebit != null && ie != null && is_.pbt?.[yr] != null) {
-          if (Math.abs(is_.pbt[yr] - ebit) < 0.1) {
-            is_.pbt[yr] = parseFloat((ebit - ie).toFixed(2));
-          }
-        }
-      });
       setStepIdx(2);
 
       const hasSection = (data, sectionKey, keys) => {
@@ -1038,6 +1029,9 @@ function AnalyzerCore() {
             analysis.cash_flow = data2.analysis.cash_flow;
           }
           ratiosByYear = data2.ratiosByYear ?? ratiosByYear;
+          if (data2.validationFlags?.length) {
+            apiValidationFlags = [...apiValidationFlags, ...data2.validationFlags];
+          }
         }
       }
 
@@ -1063,6 +1057,7 @@ function AnalyzerCore() {
         excelBlob: excelBlob,
         cmaBlob: cmaBlob,
         warnings: apiWarnings,
+        validationFlags: apiValidationFlags,
       });
       setStepIdx(5);
       setStage('done');
@@ -1093,7 +1088,7 @@ function AnalyzerCore() {
   const reset = () => {
     setStage('idle'); setFile(null); setCompanyName('');
     setError(''); setResultMeta(null); setStepIdx(0);
-    setConfidentialMode(false); setReviewData(null);
+    setConfidentialMode(false); setReviewData(null); setFlagsAcknowledged(false);
   };
 
   if (stage === 'review' && reviewData) {
@@ -1207,6 +1202,35 @@ function AnalyzerCore() {
             ))}
           </div>
         )}
+        {resultMeta.validationFlags?.length > 0 && !flagsAcknowledged && (
+          <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '16px', marginBottom: 16, textAlign: 'left' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#DC2626', marginBottom: 10 }}>
+              Accounting Identity Check Failed ({resultMeta.validationFlags.length} issue{resultMeta.validationFlags.length > 1 ? 's' : ''})
+            </div>
+            <div style={{ fontSize: 11, color: '#7F1D1D', marginBottom: 10 }}>
+              The following figures do not satisfy accounting identities. Review before relying on this output.
+            </div>
+            {resultMeta.validationFlags.map((f, i) => (
+              <div key={i} style={{ fontSize: 12, color: '#7F1D1D', lineHeight: 1.8, display: 'flex', gap: 6 }}>
+                <span style={{ flexShrink: 0, color: '#DC2626' }}>✗</span>
+                <span><strong>{f.fy}</strong> — {f.check}: expected {f.expected?.toLocaleString('en-IN', { maximumFractionDigits: 1 })}, got {f.got?.toLocaleString('en-IN', { maximumFractionDigits: 1 })}</span>
+              </div>
+            ))}
+            <button
+              onClick={() => setFlagsAcknowledged(true)}
+              style={{ marginTop: 14, background: '#DC2626', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+              I understand — proceed to download
+            </button>
+          </div>
+        )}
+        {resultMeta.validationFlags?.length > 0 && flagsAcknowledged && (
+          <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '8px 12px', marginBottom: 12, textAlign: 'left' }}>
+            <div style={{ fontSize: 11, color: '#DC2626', fontWeight: 600 }}>
+              ⚠ {resultMeta.validationFlags.length} accounting identity issue{resultMeta.validationFlags.length > 1 ? 's' : ''} acknowledged — verify figures independently
+            </div>
+          </div>
+        )}
+        {(!resultMeta.validationFlags?.length || flagsAcknowledged) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
           <button onClick={() => triggerDownload(resultMeta.wordBlob, resultMeta.wordFile)}
             style={{ background: NAVY, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
@@ -1221,6 +1245,7 @@ function AnalyzerCore() {
             🏦 Download CMA Data
           </button>
         </div>
+        )}
         <button onClick={reset} style={{ background: NAVY, color: '#fff', border: 'none', borderRadius: 10, padding: '12px 28px', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
           Analyse Another Document
         </button>
