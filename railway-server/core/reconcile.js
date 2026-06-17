@@ -9,5 +9,6 @@
  * @returns {Object}  The analysis object (lineItems), ready for check() / deriveRatios()
  */
 export function reconcile({ lineItems }) {
+  console.log('RECONCILE INPUT', JSON.stringify(lineItems, null, 2))
   return lineItems
 }

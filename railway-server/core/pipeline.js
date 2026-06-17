@@ -12,6 +12,7 @@ import { deriveRatios }  from './deriveMetrics.js'
 import { check, identityGate } from './financialIntegrity.js'
 import { summariseCFM }  from './cfm.js'
 import { getField }      from './extractFinancials.js'
+import { reconcile }     from './reconcile.js'
 
 /**
  * Run the full pipeline on a parsed analysis object.
@@ -28,10 +29,11 @@ export function run(analysis) {
     throw new TypeError('pipeline.run: analysis must be a non-null object')
   }
 
-  const warnings        = check(analysis)
-  const validationFlags = identityGate(analysis)
-  const ratiosByYear    = deriveRatios(analysis)
-  const cfmByYear       = _deriveCFM(analysis, ratiosByYear)
+  const lineItems       = reconcile({ lineItems: analysis })
+  const warnings        = check(lineItems)
+  const validationFlags = identityGate(lineItems)
+  const ratiosByYear    = deriveRatios(lineItems)
+  const cfmByYear       = _deriveCFM(lineItems, ratiosByYear)
 
   return { ratiosByYear, warnings, validationFlags, cfmByYear }
 }
